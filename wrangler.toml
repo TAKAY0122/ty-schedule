@@ -1,0 +1,16 @@
+name = "ty-schedule"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+
+[assets]
+directory = "public"
+binding = "ASSETS"
+run_worker_first = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "schedule-db"
+database_id = "2806d7f0-3096-4e9a-a2cc-f45f7a1cc6f7"
+
+[triggers]
+crons = ["0 12 * * *"]  # JST 21:00(新人報告の催促通知)

@@ -1,0 +1,485 @@
+/* RB事業2課 スケジュール管理 — シック(濃紺 × 金)*/
+:root{
+  --ink:#1b2333;          /* 濃紺 */
+  --ink2:#2a3550;
+  --gold:#c9a227;         /* 金 */
+  --paper:#f5f4f0;
+  --line:#c9c9c4;
+  --cell-site:#ffe94d;    /* 現場名(黄)*/
+  --cell-off:#d93636;     /* 休暇・×(赤)*/
+  --sat:#1f5fd6; --sun:#d93636;
+  --ok:#2e7d32; --warn:#b26a00;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",Meiryo,sans-serif;background:var(--paper);color:#222;font-size:14px}
+button{cursor:pointer;font-family:inherit}
+input,select,textarea{font-family:inherit;font-size:13px;padding:6px 8px;border:1px solid var(--line);border-radius:4px;background:#fff}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--gold);outline-offset:0}
+a{color:var(--ink2)}
+
+/* ===== ヘッダー ===== */
+header{background:var(--ink);color:#f3f1ea;display:flex;align-items:center;gap:12px;padding:0 12px;height:54px;position:sticky;top:0;z-index:50;box-shadow:0 2px 8px rgba(0,0,0,.25)}
+.brand{font-weight:700;letter-spacing:.06em;border-left:3px solid var(--gold);padding-left:9px;white-space:nowrap;font-size:15px}
+.brand small{display:block;font-size:9px;color:var(--gold);letter-spacing:.2em;font-weight:400}
+.cur-page{font-size:15px;font-weight:600;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+.hright{display:flex;align-items:center;gap:10px;margin-left:auto}
+.bell{position:relative;background:none;border:none;font-size:18px;color:#f3f1ea;padding:4px;cursor:pointer}
+.bell .badge{position:absolute;top:-4px;right:-6px;background:var(--cell-off);color:#fff;font-size:10px;border-radius:9px;padding:1px 5px;font-weight:700}
+.uname{font-size:12px;color:#cfd4e0;white-space:nowrap;text-align:right;line-height:1.25}
+.menu-btn{background:none;border:1px solid #4a5570;color:#f3f1ea;border-radius:5px;padding:6px 11px;font-size:17px;cursor:pointer;line-height:1}
+.menu-btn:hover{background:var(--ink2)}
+
+/* ハンバーガー ドロワー */
+#menu-drawer:empty{display:none}
+.drawer-bg{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:80}
+.drawer{position:fixed;top:0;left:0;height:100%;width:260px;max-width:82vw;background:#fff;z-index:90;box-shadow:4px 0 24px rgba(0,0,0,.3);overflow-y:auto;animation:slidein .18s ease}
+@keyframes slidein{from{transform:translateX(-100%)}to{transform:translateX(0)}}
+.drawer-head{background:var(--ink);color:var(--gold);font-weight:700;letter-spacing:.1em;padding:16px 18px;font-size:13px}
+.drawer-link{display:block;width:100%;text-align:left;padding:13px 18px;border:none;background:none;font-size:14.5px;color:#222;text-decoration:none;cursor:pointer;border-bottom:1px solid #f0eee7}
+.drawer-link:hover{background:#f5f3ec}
+.drawer-link.active{background:#fdf6e0;color:var(--ink);font-weight:700;box-shadow:inset 4px 0 0 var(--gold)}
+.drawer-link.danger{color:#b23b3b}
+.drawer-sep{height:8px;background:#f0eee7}
+.dropdown{position:absolute;right:12px;top:50px;background:#fff;color:#222;border:1px solid var(--line);border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.2);min-width:230px;z-index:100;overflow:hidden}
+.dropdown button,.dropdown a{display:block;width:100%;text-align:left;padding:11px 14px;border:none;background:none;font-size:13px;text-decoration:none;color:#222}
+.dropdown button:hover,.dropdown a:hover{background:#f0eee7}
+.dropdown .sep{border-top:1px solid var(--line)}
+.notif-list{max-height:380px;overflow-y:auto}
+.notif-item{padding:10px 14px;border-bottom:1px solid #eee;font-size:12.5px;line-height:1.5}
+.notif-item.unread{background:#fdf6e0}
+.notif-item time{display:block;color:#888;font-size:10.5px}
+/* 折り返し防止(名前・カタカナ・登録番号など) */
+.nowrap{white-space:nowrap}
+table.list td.nowrap,table.list th{white-space:nowrap}
+select.nowrap{max-width:none}
+
+/* ===== レイアウト ===== */
+main{max-width:1100px;margin:0 auto;padding:18px 14px 60px}
+h2{font-size:17px;margin:6px 0 14px;color:var(--ink);border-left:4px solid var(--gold);padding-left:9px}
+.card{background:#fff;border:1px solid var(--line);border-radius:8px;padding:16px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.btn{background:var(--ink);color:#fff;border:none;border-radius:5px;padding:8px 16px;font-size:13px}
+.btn:hover{background:var(--ink2)}
+.btn.gold{background:var(--gold);color:#1b2333;font-weight:700}
+.btn.ghost{background:#fff;color:var(--ink);border:1px solid var(--line)}
+.btn.danger{background:var(--cell-off)}
+.btn.sm{padding:4px 10px;font-size:12px}
+.btn.xs{padding:2px 7px;font-size:11px;display:block;width:100%}
+tr.slot-extra td.slot-cont{color:#aaa;background:#fafafa}
+tr.slot-extra{background:#fcfcfa}
+.msg{padding:9px 12px;border-radius:5px;margin:8px 0;font-size:13px}
+.msg.ok{background:#e6f4e6;color:var(--ok)}
+.msg.err{background:#fdebeb;color:#b71c1c}
+.tag{display:inline-block;font-size:11px;border-radius:3px;padding:2px 7px;font-weight:700}
+.tag.admin{background:#1b2333;color:var(--gold)}
+.tag.handler{background:var(--gold);color:#1b2333}
+.tag.chief{background:#3b5bdb;color:#fff}
+.tag.member{background:#d8d6cf;color:#444}
+.tag.pending{background:#ffe1b3;color:#8a5300}
+.tag.checked{background:#d7ecd7;color:#2e7d32}
+.muted{color:#888;font-size:12px}
+
+/* ===== ログイン ===== */
+.login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(160deg,var(--ink) 0%,#0e1320 100%)}
+.login-card{background:#fff;border-radius:10px;padding:38px 34px;width:340px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+.login-card h1{font-size:18px;color:var(--ink);text-align:center;margin-bottom:4px;letter-spacing:.05em}
+.login-card .sub{color:var(--gold);text-align:center;font-size:11px;letter-spacing:.3em;margin-bottom:24px}
+.login-card input{width:100%;margin-bottom:12px;padding:11px}
+.login-card .btn{width:100%;padding:12px;font-size:14px}
+.login-card .hint{font-size:11px;color:#999;text-align:center;margin-top:14px}
+
+/* ===== スケジュール表(写真風)===== */
+.month-nav{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.month-nav .mtitle{font-size:17px;font-weight:700;color:var(--ink);min-width:120px;text-align:center}
+.sched-wrap{overflow-x:auto;border:1px solid #888;border-radius:4px;background:#fff}
+table.sched{border-collapse:collapse;width:100%;min-width:780px;font-size:12.5px}
+table.sched th{background:var(--ink);color:#fff;border:1px solid #555;padding:6px 4px;font-size:12px;white-space:nowrap}
+table.sched td{border:1px solid #999;padding:4px 6px;height:30px;background:#fff}
+table.sched td.c{text-align:center}
+table.sched td.r{text-align:right}
+td.day{width:34px;text-align:center;font-weight:700}
+td.wd{width:30px;text-align:center;font-weight:700}
+.wd.sat{color:#fff;background:var(--sat)!important}
+.wd.sun{color:#fff;background:var(--sun)!important}
+td.site-multi{background:var(--cell-site);font-weight:600;max-width:230px;line-height:1.5}
+.site-cell{cursor:pointer;border-radius:3px}
+.site-cell:hover{outline:2px solid var(--gold)}
+td.off-cell{background:var(--cell-off);color:#fff;font-weight:700}
+td.venue-multi{max-width:200px;line-height:1.5}
+.venue-cell{cursor:pointer;color:#1a4fb0}
+.venue-cell:hover{text-decoration:underline}
+.rookie-badge{display:inline-block;background:#2e7d32;color:#fff;font-size:10px;border-radius:3px;padding:1px 5px;margin-left:5px;vertical-align:middle}
+td.note-cell{max-width:180px;font-size:11.5px;color:#444}
+td.plan-cell{max-width:180px;font-size:11.5px;color:#444;cursor:default}
+td.plan-cell[data-date]:hover{outline:1px solid var(--gold)}
+.plan-edit{color:var(--gold);font-size:11px;opacity:.6}
+tr.total-row td{background:#efede6;font-weight:700;border-top:2px solid #555}
+.red-num{color:#c62828;font-weight:700}
+
+/* ===== 入力グリッド ===== */
+table.egrid{border-collapse:collapse;width:100%;font-size:12px}
+table.egrid th{background:var(--ink);color:#fff;padding:5px;border:1px solid #555;font-size:11.5px}
+table.egrid td{border:1px solid #bbb;padding:2px}
+table.egrid input,table.egrid select{width:100%;border:none;padding:5px 6px;border-radius:0;background:transparent}
+table.egrid input:focus,table.egrid select:focus{background:#fffbe6}
+.tin-col{width:62px}.pay-col{width:80px}.type-col{width:78px}
+
+/* ===== 汎用テーブル ===== */
+table.list{border-collapse:collapse;width:100%;font-size:13px;background:#fff}
+table.list th{background:var(--ink);color:#fff;padding:8px;border:1px solid #444;font-size:12px;white-space:nowrap}
+table.list td{border:1px solid #ccc;padding:7px 8px}
+table.list tr.click:hover{background:#fdf6e0;cursor:pointer}
+
+/* ===== フォーム ===== */
+.form-grid{display:grid;grid-template-columns:170px 1fr;gap:10px 14px;align-items:center;max-width:640px}
+.form-grid label{font-size:13px;font-weight:600;color:var(--ink)}
+.form-grid textarea{min-height:80px}
+.section-label{grid-column:1/-1;background:#efede6;padding:6px 10px;border-left:4px solid var(--gold);font-weight:700;font-size:13px;margin-top:8px}
+
+/* ===== モーダル ===== */
+.modal-bg{position:fixed;inset:0;background:rgba(15,20,35,.55);display:flex;align-items:center;justify-content:center;z-index:200;padding:16px}
+.modal{background:#fff;border-radius:8px;max-width:560px;width:100%;max-height:85vh;overflow-y:auto;padding:20px;box-shadow:0 24px 80px rgba(0,0,0,.45)}
+.modal h3{color:var(--ink);border-bottom:2px solid var(--gold);padding-bottom:8px;margin-bottom:12px;font-size:15px}
+.modal .close-x{float:right;background:none;border:none;font-size:18px;color:#888}
+.kv{display:grid;grid-template-columns:140px 1fr;gap:6px 12px;font-size:13px;margin-bottom:8px}
+.kv dt{font-weight:700;color:var(--ink)}
+.kv dd{white-space:pre-wrap}
+
+/* ===== オンライン表示 ===== */
+.online-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#2ecc71;margin-right:7px}
+.pulse{animation:pulse 2s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(46,204,113,.5)}70%{box-shadow:0 0 0 7px rgba(46,204,113,0)}100%{box-shadow:0 0 0 0 rgba(46,204,113,0)}}
+
+/* PC/スマホ 表示切替(デフォルト=PC:日リストを隠す) */
+.sp-only{display:none}
+.pc-only{display:block}
+
+/* スマホ用 日リスト(デフォルト非表示。@media で表示) */
+.sched-mobile{display:none;flex-direction:column;gap:8px}
+.m-day{display:flex;background:#fff;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.m-day.m-empty{opacity:.55}
+.m-date{flex:0 0 52px;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#f5f3ec;border-right:1px solid var(--line);padding:8px 0}
+.m-date.sat{background:#e8f0fb}.m-date.sun{background:#fbeaea}
+.m-dnum{font-size:20px;font-weight:700;color:var(--ink);line-height:1}
+.m-dwd{font-size:12px;color:#666;margin-top:2px}
+.m-date.sat .m-dwd{color:#2f6fb0}.m-date.sun .m-dwd{color:#c0392b}
+.m-content{flex:1;padding:9px 11px;min-width:0;display:flex;flex-direction:column;gap:7px}
+.m-none{color:#bbb;font-size:13px}
+.m-off-label{display:inline-block;font-weight:700;color:#c0392b;font-size:14px}
+.m-site{padding:7px 9px;background:#fcfbf7;border:1px solid #ece9df;border-radius:6px;display:flex;flex-direction:column;gap:4px}
+.m-site + .m-site{margin-top:2px}
+.m-sitename{font-weight:700;font-size:15px;color:var(--ink);word-break:break-word}
+.m-line{display:flex;gap:8px;font-size:13px;line-height:1.5}
+.m-k{flex:0 0 40px;color:#888;font-size:12px;padding-top:1px}
+.m-v{flex:1;color:#222;word-break:break-word;min-width:0}
+.m-plan{cursor:pointer}
+.m-total{margin-top:4px;padding:11px 14px;background:var(--ink);color:#fff;border-radius:8px;display:flex;flex-direction:column;gap:3px;font-size:13.5px}
+.m-total b{color:var(--gold)}.m-total b.red-num{color:#ff8a8a}
+
+/* スマホ用 汎用カード(一覧表の代替。デフォルト非表示) */
+.cards{display:none;flex-direction:column;gap:10px}
+.dcard{background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px 14px;box-shadow:0 1px 3px rgba(0,0,0,.05)}
+.dcard.clickable{cursor:pointer}
+.dcard-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid #f0eee7}
+.dcard-title{font-weight:700;font-size:15.5px;color:var(--ink);word-break:break-word}
+.dcard-sub{font-size:12px;color:#888}
+.drow{display:flex;gap:10px;font-size:13.5px;padding:3px 0;line-height:1.5}
+.dk{flex:0 0 80px;color:#888;font-size:12.5px}
+.dv{flex:1;color:#222;word-break:break-word;min-width:0}
+.dcard-actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.dcard-actions select{flex:1;min-width:120px}
+.dscore{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
+.dscore span{background:#f5f3ec;border-radius:5px;padding:2px 8px;font-size:12px}
+
+/* スマホ用 スケジュール入力(日選択フォーム) */
+.me-pick{display:flex;align-items:center;gap:10px;margin-bottom:12px;background:var(--ink);padding:10px 12px;border-radius:8px}
+.me-pick label{color:#fff;font-size:13px;font-weight:600}
+.me-pick select{flex:1;font-size:15px;padding:8px}
+.me-slot{border:1px solid var(--line);border-radius:8px;padding:11px 12px;margin-bottom:10px;background:#fcfbf7}
+.me-row{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.me-row:last-child{margin-bottom:0}
+.me-row label{flex:0 0 76px;font-size:13px;color:#555}
+.me-row input,.me-row select{flex:1;font-size:16px;padding:8px;min-width:0}
+.me-fields{margin-top:4px}
+.me-del{margin-top:6px}
+
+/* 完了ポップアップ */
+.popup-modal{max-width:340px;text-align:center;padding:24px 22px}
+.popup-icon{font-size:42px;line-height:1}
+.popup-msg{margin-top:10px;font-size:15px;color:#222;line-height:1.6;font-weight:600}
+
+/* 一括登録セクション */
+.bulk-head{display:flex;justify-content:space-between;align-items:center;cursor:pointer;font-size:14px;color:var(--ink)}
+.bulk-head b{color:var(--gold-d,#a07e10)}
+.bulk-label{font-size:13px;font-weight:700;color:#444}
+.bulk-chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{display:inline-flex;align-items:center;gap:6px;background:#fdf6e0;border:1px solid #e6cf85;border-radius:14px;padding:3px 10px;font-size:13px}
+.chip button{background:none;border:none;color:#b23b3b;cursor:pointer;font-size:12px;padding:0}
+.bulk-members{display:flex;flex-direction:column;gap:2px;max-height:240px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:8px}
+.bulk-all{font-weight:700;padding:6px 4px;border-bottom:1px solid #eee;margin-bottom:4px;display:flex;gap:8px;align-items:center}
+.bulk-mem{display:flex;align-items:center;gap:8px;padding:7px 4px;font-size:14px}
+.bulk-mem input{width:18px;height:18px}
+.bulk-sub{color:#999;font-size:12px;margin-left:auto}
+
+/* 一括登録:メンバーごとの割り当てカード */
+.bk-person{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:10px;background:#fff}
+.bk-person-head{display:flex;align-items:center;gap:8px;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #f0eee7}
+.bk-person-head b{font-size:15px;color:var(--ink)}
+.bk-person-del{margin-left:auto;background:none;border:1px solid #e0a0a0;color:#b23b3b;border-radius:5px;padding:3px 9px;font-size:12px;cursor:pointer}
+.bk-d-input{font-size:15px;padding:7px}
+
+/* 現場一覧 */
+.st-day{margin-bottom:14px}
+.st-date{font-weight:700;color:var(--ink);font-size:14px;padding:4px 0;border-bottom:2px solid var(--gold);margin-bottom:8px}
+.st-date.sat{color:#2f6fb0}.st-date.sun{color:#c0392b}
+.st-sites{display:flex;flex-direction:column;gap:8px}
+.st-site{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:#fff;border:1px solid var(--line);border-radius:8px;padding:12px 14px;cursor:pointer;font-size:14px}
+.st-site:hover{background:#fdf6e0;border-color:#e6cf85}
+.st-site-name{font-weight:700;color:var(--ink);font-size:15px}
+.st-site-venue{color:#777;font-size:13px}
+.st-site-cnt{margin-left:auto;background:var(--ink);color:#fff;border-radius:12px;padding:2px 10px;font-size:12px;font-weight:700;flex:0 0 auto}
+
+/* ===== タブレット ===== */
+@media (max-width:900px){
+  main{padding:14px 10px 60px}
+  nav a{padding:8px 8px;font-size:12.5px}
+  .form-grid{grid-template-columns:150px 1fr}
+}
+
+/* ===== スマホ ===== */
+@media (max-width:640px){
+  header{height:52px;padding:0 8px;gap:8px}
+  .brand{font-size:13px}
+  .brand small{display:none}
+  .cur-page{font-size:14px}
+  .menu-btn{padding:6px 9px;font-size:16px}
+  .uname{font-size:10.5px;line-height:1.15;max-width:90px;overflow:hidden;text-overflow:ellipsis}
+  main{padding:10px 6px 70px}
+  h2{font-size:17px}
+  .card{padding:12px}
+  .sched-wrap,.list-wrap{position:relative}
+  table.sched{min-width:680px;font-size:12px}
+  table.list{font-size:12px;min-width:560px}
+  table.list th,table.list td{padding:6px 5px}
+  table.egrid{min-width:680px}
+  .form-grid{grid-template-columns:1fr;gap:7px 0}
+  .form-grid label{font-weight:600;margin-top:6px}
+  /* ボタンはタップしやすく */
+  .btn{padding:9px 14px;font-size:14px}
+  .btn.sm,.btn.xs{padding:6px 10px;font-size:12.5px}
+  /* 月ナビ */
+  .month-nav .mtitle{font-size:15px;min-width:90px}
+  .row{flex-wrap:wrap;gap:8px}
+  /* モーダルは画面いっぱい近くに */
+  .modal{max-width:100%;width:100%;max-height:92vh;padding:16px;border-radius:10px 10px 0 0}
+  .modal-bg{align-items:flex-end}
+  .dropdown{right:6px;left:6px;min-width:auto}
+  /* 入力欄が小さすぎないように(iOSズーム防止に16px) */
+  input,select,textarea{font-size:16px}
+  table.egrid input,table.egrid select{font-size:13px}
+  /* リスト系テーブルはセル内折り返さず横スクロール(現場情報・報告一覧など) */
+  table.list td{white-space:nowrap}
+  /* スケジュールはPC表を隠し、スマホ用 日リストを表示 */
+  .pc-only{display:none !important}
+  .sp-only{display:block}
+  .sched-mobile.sp-only{display:flex}
+  .cards.sp-only{display:flex}
+  .m-total .red-num{color:#ff8a8a}
+}
+
+/* スクロール可能なテーブルの右端にうっすらフェード(横スクロールを示唆) */
+.sched-wrap::after{content:"";position:absolute;top:0;right:0;width:18px;height:100%;
+  background:linear-gradient(to right,rgba(255,255,255,0),rgba(255,255,255,.9));pointer-events:none;opacity:0;transition:opacity .2s}
+@media (max-width:900px){ .sched-wrap{position:relative} .sched-wrap::after{opacity:1} }
+
+/* ===== 課(1課/2課)の視覚区別 ===== */
+:root{ --ka1:#2E6FB7; --ka1-bg:#EAF2FB; --ka2:#C9A227; --ka2-bg:#FBF6E7; }
+.ka-tabs{ display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
+.ka-tab{ flex:1; min-width:100px; padding:10px 12px; border:2px solid var(--line); border-radius:10px;
+  background:#fff; font-weight:700; cursor:pointer; font-size:15px; transition:all .15s; }
+.ka-tab.ka2.on{ border-color:var(--ka2); background:var(--ka2-bg); color:#8a6d12; }
+.ka-tab.ka1.on{ border-color:var(--ka1); background:var(--ka1-bg); color:#1f5391; }
+.ka-tab.on{ box-shadow:0 2px 6px rgba(0,0,0,.08); }
+.ka-badge{ font-size:13px; padding:2px 10px; border-radius:999px; vertical-align:middle; margin-left:6px; }
+.ka-badge.ka-1{ background:var(--ka1-bg); color:var(--ka1); border:1px solid var(--ka1); }
+.ka-badge.ka-2{ background:var(--ka2-bg); color:#8a6d12; border:1px solid var(--ka2); }
+.ka-pill{ font-size:11px; padding:1px 7px; border-radius:999px; font-weight:700; }
+.ka-pill.ka-1{ background:var(--ka1-bg); color:var(--ka1); }
+.ka-pill.ka-2{ background:var(--ka2-bg); color:#8a6d12; }
+/* テーブル左帯で課を表現 */
+.ka-table.ka-1 tr td:first-child{ box-shadow:inset 3px 0 var(--ka1); }
+.ka-table.ka-2 tr td:first-child{ box-shadow:inset 3px 0 var(--ka2); }
+.dcard.ka-1{ border-left:4px solid var(--ka1); }
+.dcard.ka-2{ border-left:4px solid var(--ka2); }
+.be-item.ka-1{ border-left:4px solid var(--ka1)!important; }
+.be-item.ka-2{ border-left:4px solid var(--ka2)!important; }
+.ka-row-1 td:first-child{ box-shadow:inset 3px 0 var(--ka1); }
+.ka-row-2 td:first-child{ box-shadow:inset 3px 0 var(--ka2); }
+/* 手配者モード:編集可能な行 */
+.editable-row{ position:relative; }
+table.sched tbody tr.editable-row:hover td:not(.site-multi):not(.plan-cell){ background:#FBF6E7; cursor:pointer; }
+.sched-mobile .m-day.editable-row:active{ background:#FBF6E7; }
+.md-slot{ border:1px solid var(--line); border-radius:8px; padding:10px; margin-bottom:8px; }
+.md-slot .md-del{ margin-top:6px; }
+
+/* ===== 検索・フィルタバー ===== */
+.filter-bar{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:6px; }
+.search-input{ flex:1; min-width:180px; padding:9px 12px; border:1.5px solid var(--line); border-radius:9px; font-size:15px; }
+.search-input:focus{ border-color:var(--gold); outline:none; }
+.filter-select{ padding:9px 10px; border:1.5px solid var(--line); border-radius:9px; font-size:14px; background:#fff; max-width:200px; }
+@media (max-width:480px){ .filter-bar{ gap:6px } .search-input{ min-width:0; flex:1 1 100% } .filter-select{ flex:1 } }
+
+/* ===== コンフリクト検知モーダル ===== */
+.cf-layer{position:fixed;inset:0;background:rgba(20,25,40,.55);display:flex;align-items:center;justify-content:center;z-index:200;padding:16px}
+.cf-box{background:#fff;border-radius:10px;max-width:560px;width:100%;max-height:88vh;overflow:auto;padding:18px;box-shadow:0 10px 40px rgba(0,0,0,.35);border-top:4px solid var(--cell-off)}
+.cf-title{font-size:17px;font-weight:700;color:var(--ink);margin-bottom:12px}
+.cf-sec{margin-bottom:12px}
+.cf-h{font-size:12px;font-weight:700;letter-spacing:.04em;padding:4px 0;margin-bottom:4px}
+.cf-h.block{color:var(--cell-off)}
+.cf-h.warn{color:var(--warn)}
+.cf-row{font-size:13px;line-height:1.5;padding:8px 10px;border-radius:6px;margin-bottom:6px;border-left:3px solid}
+.cf-row.block{background:#fdecec;border-color:var(--cell-off)}
+.cf-row.warn{background:#fff6e5;border-color:var(--warn)}
+.cf-row .cf-date{display:inline-block;background:var(--ink);color:#fff;border-radius:4px;font-size:11px;padding:0 6px;margin:0 4px}
+.cf-actions{display:flex;gap:10px;margin-top:8px}
+.cf-actions .btn{flex:1}
+
+/* ===== 稼働サマリー ===== */
+.sum-stats{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:12px}
+.sum-stat{background:#fff;border:1px solid var(--line);border-radius:8px;padding:10px 6px;text-align:center}
+.sum-stat .sum-num{font-size:22px;font-weight:700;color:var(--ink);line-height:1.1}
+.sum-stat .sum-lbl{font-size:11px;color:#666;margin-top:2px}
+.sum-stat.st-over{background:#fdecec;border-color:var(--cell-off)}
+.sum-stat.st-over .sum-num{color:var(--cell-off)}
+.sum-stat.st-streak{background:#fff6e5;border-color:var(--warn)}
+.sum-stat.st-streak .sum-num{color:var(--warn)}
+.sum-stat.st-few{background:#eef3fb;border-color:var(--sat)}
+.sum-stat.st-few .sum-num{color:var(--sat)}
+@media(max-width:560px){.sum-stats{grid-template-columns:repeat(3,1fr)}}
+
+.mgr-row{margin-bottom:8px}
+.mgr-name{font-size:13px;margin-bottom:3px}
+.mgr-bar-wrap{position:relative;background:#eee;border-radius:5px;height:20px;overflow:hidden}
+.mgr-bar{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,var(--ink2),var(--gold));border-radius:5px}
+.mgr-val{position:absolute;right:8px;top:0;line-height:20px;font-size:11px;color:#333;font-weight:700}
+
+.sum-table{width:100%;border-collapse:collapse;font-size:13px}
+.sum-table th{background:var(--ink);color:#f3f1ea;font-size:11px;font-weight:600;padding:6px 8px;text-align:left;white-space:nowrap;position:sticky;top:0}
+.sum-table td{padding:6px 8px;border-bottom:1px solid #eee}
+.sum-table td.c{text-align:center}
+.sum-table td.num{text-align:right;font-variant-numeric:tabular-nums}
+.sum-table td.hot{color:var(--cell-off);font-weight:700}
+.sum-table .s-name{white-space:nowrap;font-weight:600}
+.sum-table tr.r-over{background:#fdf0f0}
+.sum-table tr.r-streak{background:#fff9ee}
+.sum-table tr.r-few{background:#f2f6fc}
+.sum-badge{display:inline-block;font-size:10px;font-weight:700;border-radius:4px;padding:1px 6px;white-space:nowrap}
+.sum-badge.over{background:var(--cell-off);color:#fff}
+.sum-badge.streak{background:var(--warn);color:#fff}
+.sum-badge.few{background:var(--sat);color:#fff}
+.sum-badge.zero{background:#bbb;color:#fff}
+.btn.xs.on{background:var(--gold);color:#fff;border-color:var(--gold)}
+
+/* ===== 今日のハイライト(マイスケジュール) ===== */
+.today-pill{display:inline-block;background:var(--gold);color:#1b2333;font-size:9px;font-weight:700;line-height:1.4;border-radius:4px;padding:0 5px;margin-left:4px;vertical-align:middle;letter-spacing:.02em}
+/* PC表 */
+.sched tr.is-today > td{background:#fff7e0}
+.sched tr.is-today > td:first-child{box-shadow:inset 4px 0 0 var(--gold)}
+.sched tr.is-today td.day{font-weight:800;color:var(--ink)}
+/* スマホ日リスト */
+.sched-mobile .m-day.is-today{background:#fff7e0;border-left:4px solid var(--gold);border-radius:8px}
+.sched-mobile .m-day.is-today .m-dnum{color:var(--ink);font-weight:800}
+
+/* ===== 稼働サマリー: スマホ対応 + 手配ドリルダウン ===== */
+.sum-head{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+.sum-filter{margin-top:10px;background:#eef3fb;border:1px solid var(--sat);border-radius:8px;padding:7px 10px;font-size:13px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.sum-filter b{color:var(--ink)}
+.sum-clear{margin-left:auto;background:var(--ink);color:#fff;border:none;border-radius:6px;padding:3px 10px;font-size:12px;cursor:pointer}
+/* 手配バー(タップ可) */
+.mgr-row{margin-bottom:6px;padding:6px 8px;border-radius:8px;cursor:pointer;transition:background .12s;border:1px solid transparent}
+.mgr-row:hover{background:#f3f5f9}
+.mgr-row.sel{background:#eef3fb;border-color:var(--sat)}
+.mgr-row .mgr-bar-wrap{height:10px;margin-top:4px}
+.mgr-row.sel .mgr-bar{background:linear-gradient(90deg,var(--sat),var(--gold))}
+/* PC表 / スマホカードの出し分け */
+.sum-table-wrap{overflow-x:auto}
+.sum-cards{display:none;flex-direction:column;gap:8px}
+@media(max-width:640px){
+  .sum-table-wrap{display:none}
+  .sum-cards{display:flex}
+}
+.sum-card{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:#fff}
+.sum-card.r-over{background:#fdf0f0;border-color:#f3c6c6}
+.sum-card.r-streak{background:#fff9ee;border-color:#f0dca8}
+.sum-card.r-few{background:#f2f6fc;border-color:#cdd}
+.sum-card .sc-top{display:flex;align-items:baseline;gap:8px}
+.sum-card .sc-name{font-weight:700;font-size:15px;color:var(--ink)}
+.sum-card .sc-rank{font-size:11px;color:#888}
+.sum-card .sc-mgr{font-size:12px;color:#666;margin-top:1px}
+.sum-card .sc-stats{display:flex;gap:8px;margin-top:8px}
+.sum-card .sc-stat{flex:1;background:#f7f8fa;border-radius:8px;padding:6px 2px;text-align:center}
+.sum-card .sc-stat b{display:block;font-size:18px;line-height:1.1;color:var(--ink);font-variant-numeric:tabular-nums}
+.sum-card .sc-stat span{font-size:10px;color:#888}
+.sum-card .sc-stat.hot b{color:var(--cell-off)}
+.sum-card .sc-badges{margin-top:8px;display:flex;gap:4px;flex-wrap:wrap}
+
+/* ===== サマリー→個人スケジュール遷移 ===== */
+.sum-table tbody tr.sum-link{cursor:pointer}
+.sum-table tbody tr.sum-link:hover>td{background:#eef3fb}
+.sum-go{font-size:11px;opacity:.45}
+.sum-table tbody tr.sum-link:hover .sum-go{opacity:1}
+.sum-card.sum-link{cursor:pointer}
+.sum-card.sum-link:active{transform:scale(.99)}
+.sum-card .sc-go{margin-left:auto;font-size:11px;color:var(--sat);font-weight:600;white-space:nowrap}
+
+/* ===== 管理者ページ: 折りたたみ + 目次 ===== */
+.adm-nav{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.adm-chip{border:1px solid var(--line);background:#fff;border-radius:999px;padding:5px 12px;font-size:13px;cursor:pointer;white-space:nowrap;color:var(--ink)}
+.adm-chip:hover{background:var(--ink);color:#fff;border-color:var(--ink)}
+.adm-sec{background:#fff;border:1px solid var(--line);border-radius:10px;margin-bottom:10px;overflow:hidden}
+.adm-sec>summary{list-style:none;cursor:pointer;padding:12px 14px;font-weight:700;font-size:14px;color:var(--ink);display:flex;align-items:center;justify-content:space-between;gap:8px;user-select:none}
+.adm-sec>summary::-webkit-details-marker{display:none}
+.adm-sec>summary::after{content:'▾';color:#aaa;font-size:13px;transition:transform .15s;flex:none}
+.adm-sec[open]>summary::after{transform:rotate(180deg)}
+.adm-sec[open]>summary{border-bottom:1px solid var(--line)}
+.adm-sec>summary:hover{background:#f7f8fa}
+.adm-body{padding:12px 14px}
+
+/* ===== 時給設定テーブル ===== */
+.wage-tbl{width:100%;border-collapse:collapse;font-size:13px;max-width:420px}
+.wage-tbl th,.wage-tbl td{border:1px solid var(--line);padding:5px 8px;text-align:center}
+.wage-tbl th{background:var(--ink);color:#f3f1ea}
+.wage-in{width:96px;padding:5px;text-align:right;border:1px solid var(--line);border-radius:6px}
+
+/* ===== スケジュール状態(1日OK/休暇/有給/×) ===== */
+.off-cell{font-weight:700;text-align:center}
+.off-ok{color:#1f7a3d;background:#e7f6ec}
+.off-off{color:#555;background:#eef0f3}
+.off-paid{color:#1d5fa8;background:#e8f1fb}
+.off-x{color:#b03030;background:#fbeaea}
+.m-off.m-ok .m-off-label{color:#1f7a3d}
+.m-off.m-paid .m-off-label{color:#1d5fa8}
+.m-off.m-x .m-off-label{color:#b03030}
+/* ===== アカウント停止 ===== */
+.susp-tag{display:inline-block;font-size:10px;background:#b03030;color:#fff;border-radius:4px;padding:1px 6px;vertical-align:middle}
+tr.is-suspended{background:#fafafa;color:#999}
+tr.is-suspended .nowrap{opacity:.7}
+.dcard.is-suspended{opacity:.7;background:#fafafa}
+.tag.suspended{background:#999;color:#fff}
+
+/* ===== PC見栄え調整: 1つの値が2行に折り返さないように ===== */
+main{max-width:1180px}
+.tag{white-space:nowrap}                       /* 役割バッジ(チーフ(手配者)等)を必ず1行 */
+/* スケジュール: 現場名・会場・業務は1行(複数現場は<br>で改行)。長い時は横スクロール */
+table.sched{min-width:940px}
+td.site-multi,td.venue-multi{max-width:none;white-space:nowrap}
+.sched td.duty-col{white-space:nowrap}
+.sched .site-cell,.sched .venue-cell{white-space:nowrap}
+/* 稼働サマリー: 担当名・各セルを1行に */
+.mgr-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sum-table td{white-space:nowrap}
+.sum-card .sc-mgr{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* .list表(メンバー一覧など): 短い値は1行、できること等の長文のみ折り返し */
+.list-scroll{overflow-x:auto;border:1px solid #888;border-radius:4px}
+table.list.ka-table td{white-space:nowrap}
+table.list.ka-table td.wrapcell{white-space:normal;min-width:150px}
