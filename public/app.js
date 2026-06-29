@@ -621,7 +621,7 @@ function isLockedDate(date){ const d=new Date(Date.now()+9*3600e3); d.setDate(d.
 
 async function openMemberDayEdit(uid, u, date){
   if(ME.handler !== 1){ return; }
-  if(isLockedDate(date)){ modal(`<h3>${h(u.name)} さん / ${h(date)}</h3><div class="msg" style="background:#fff6e5;border:1px solid #f0dca8;color:#8a5a00;padding:12px;border-radius:8px">この日は<b>給与確定済み</b>（現場日から2週間経過）のため編集できません。</div><div class="row" style="margin-top:12px"><button class="btn ghost" onclick="closeModal()">閉じる</button></div>`); return; }
+  if(isLockedDate(date) && ME.role !== 'admin'){ modal(`<h3>${h(u.name)} さん / ${h(date)}</h3><div class="msg" style="background:#fff6e5;border:1px solid #f0dca8;color:#8a5a00;padding:12px;border-radius:8px">この日は<b>給与確定済み</b>（現場日から2週間経過）のため編集できません。</div><div class="row" style="margin-top:12px"><button class="btn ghost" onclick="closeModal()">閉じる</button></div>`); return; }
   // その日の既存スロットを取得
   let existing = [];
   try{

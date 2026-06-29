@@ -80,7 +80,7 @@ function calcPay({ rank, date, tin, tout, duty, loadEnd, showEnd, multi }, resol
 
 // 給与確定ロック: 現場日から2週間(14日)を過ぎたら確定(編集不可)
 function payLockDate(){ const d = new Date(Date.now() + 9 * 3600e3); d.setDate(d.getDate() - 14); return d.toISOString().slice(0, 10); }
-function isLocked(date){ return String(date) <= payLockDate(); }
+function isLocked(date, me){ if (me && me.role === 'admin') return false; return String(date) <= payLockDate(); }
 
 // ---- コンフリクト検知 ----
 // "H:MM" を分に変換(不正は null)
@@ -648,7 +648,7 @@ async function api(req, env, url) {
       if (!(a.uid in nameCache)) { const u = await env.DB.prepare('SELECT name, rank FROM users WHERE id=?').bind(a.uid).first(); nameCache[a.uid] = u ? { name: u.name, rank: u.rank } : { name: '', rank: '' }; }
       const uname = nameCache[a.uid].name;
       for (const date of a.dates) {
-        if (isLocked(date)) { skipped++; continue; } // 給与確定済みは編集不可
+        if (isLocked(date, me)) { skipped++; continue; } // 給与確定済みは編集不可(管理者は除く)
         const before = (await env.DB.prepare('SELECT * FROM schedule WHERE user_id=? AND date=? ORDER BY slot').bind(a.uid, date).all()).results;
         if (before.some(b => b.site === site)) { skipped++; continue; } // 同一現場は無害なので静かにスキップ
         // IN/OUTが既存の現場と重なるか
@@ -689,7 +689,7 @@ async function api(req, env, url) {
     const keepUids = Array.isArray(body.keepUids) ? body.keepUids.map(Number).filter(Boolean) : [];
     const ts = jstTs();
     let updated = 0, removed = 0;
-    if (isLocked(date)) return ERR('給与確定済みのため編集できません（現場日から2週間経過）', 409);
+    if (isLocked(date, me)) return ERR('給与確定済みのため編集できません（現場日から2週間経過）', 409);
     const resolve = await loadWageResolver(env);
     // 削除対象
     for (const uid of removeUids) {
@@ -743,7 +743,7 @@ async function api(req, env, url) {
     const trank = tgt ? tgt.rank : '';
     const resolve = await loadWageResolver(env);
     // 給与確定(現場日から2週間)済みの日付は編集不可
-    const lockedDates = Object.keys(byDate).filter(isLocked);
+    const lockedDates = Object.keys(byDate).filter(d => isLocked(d, me));
     if (lockedDates.length) return ERR('給与確定済みのため編集できません（現場日から2週間経過）: ' + lockedDates.join(', '), 409);
     const allConflicts = [];
     for (const date of Object.keys(byDate)) {
