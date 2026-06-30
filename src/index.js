@@ -350,9 +350,9 @@ function parseSheetXml(xml, sst) {
   const grid = [];
   for (const rowm of xml.matchAll(/<row\b[^>]*>([\s\S]*?)<\/row>/g)) {
     const cells = [];
-    for (const cm of rowm[1].matchAll(/<c\b([^>]*)>([\s\S]*?)<\/c>|<c\b([^>]*)\/>/g)) {
-      const attrs = cm[1] || cm[3] || '';
-      const inner = cm[2] || '';
+    for (const cm of rowm[1].matchAll(/<c\b([^>]*?)\/>|<c\b([^>]*)>([\s\S]*?)<\/c>/g)) {
+      const attrs = cm[1] || cm[2] || '';
+      const inner = cm[3] || '';
       const rref = (attrs.match(/r="([A-Z]+\d+)"/) || [])[1] || '';
       const ci = rref ? colToIdx(rref) : cells.length;
       const t = (attrs.match(/t="([^"]+)"/) || [])[1] || '';
@@ -439,8 +439,17 @@ function parseCsv(text) {
 // 時刻文字列を H:MM に正規化(全角・前後空白・"8:00"などを許容)
 function normTime(v) {
   let s = String(v == null ? '' : v).trim().replace(/[０-９：]/g, ch => '0123456789:'['０１２３４５６７８９：'.indexOf(ch)]);
+  if (!s) return '';
   const m = s.match(/(\d{1,2}):(\d{2})/);
-  return m ? `${Number(m[1])}:${m[2]}` : '';
+  if (m) return `${Number(m[1])}:${m[2]}`;
+  // Excelの時刻はしばしば「1日に対する割合」の小数(シリアル値)で保存される。例: 0.354...=8:30
+  const f = Number(s);
+  if (Number.isFinite(f) && f > 0 && f < 1.5) {
+    const totalMin = Math.round((f % 1) * 24 * 60);
+    const hh = Math.floor(totalMin / 60), mm = totalMin % 60;
+    if (hh >= 0 && hh < 30) return `${hh}:${String(mm).padStart(2, '0')}`;
+  }
+  return '';
 }
 
 // 日付文字列を YYYY-MM-DD に正規化。基準年月(ym='2026-06')を補完に使う
@@ -529,7 +538,8 @@ function parseFormatC(rows, cfg, fileDate) {
       const line = rows[d] || [];
       // 次のブロックのヘッダに当たったら break(外ループが拾う)
       if (findHeaderCols(line)) { r = d - 1; break; }
-      const regno = String(line[cols.regno] || '').trim();
+      // Excelの数値セルは "122842.0" のように小数点付きで来ることがあるため整数化してから判定
+      const regno = String(line[cols.regno] || '').trim().replace(/\.0+$/, '');
       if (!/^\d{3,}$/.test(regno)) {
         if (++blank > 8) break;           // FALSE埋めが続く=ブロック終端
         continue;
