@@ -8,7 +8,7 @@ const ROLE_JP = { admin:'チーフ(管理者)', handler:'チーフ(手配者)', 
 function roleLabel(u){ if(u && u.suspended) return (u.role==='member'?'メンツ':'チーフ')+'(アカウント停止)'; return ROLE_JP[u.role]||u.role; }
 const LV = { member:0, chief:1, handler:2, admin:3 };
 // 個別追加権限の基準レベル(バックエンドのPERMSと対応)
-const PERM_BASE_LV = { site_pay:2, site_manage:2, import_data:2, handler_tools:2, wage_settings:3, account_manage:3, daicho_manage:3 };
+const PERM_BASE_LV = { report_check:1, blacklist_manage:1, site_pay:2, site_manage:2, import_data:2, handler_tools:2, wage_settings:3, account_manage:3, daicho_manage:3 };
 // has(key): MEがその機能を使えるか(基本権限を満たす、または個別に追加権限がある)
 function has(key){
   if(!ME) return false;
@@ -409,8 +409,8 @@ function renderShell(hash){
     ['#/members','👥 メンバー', isChief],
     ['#/report','📝 新人報告', true],
     ['#/reports','📋 報告一覧', true],
-    ['#/draft','⭐ ドラフト', isChief],
-    ['#/blacklist','🚫 ブラックリスト', isChief],
+    ['#/draft','⭐ ドラフト', has('report_check')],
+    ['#/blacklist','🚫 ブラックリスト', has('blacklist_manage')],
     ['#/edit','✏️ スケジュール入力', ME.handler === 1],
     ['#/admin','⚙️ アカウント管理', canAdmin],
     ['#/daicho','🗂️ 台帳保管', ME.role === 'admin' || has('daicho_manage')],
@@ -1445,7 +1445,7 @@ async function pageEdit(app){
 
 /* ===== 新人報告フォーム ===== */
 function pageReportForm(app){
-  const isChief = LV[ME.role] >= 1;
+  const isChief = has('report_check');
   app.innerHTML = `
   <h2>新人報告</h2>
   <div class="card"><div class="form-grid">
@@ -1511,7 +1511,8 @@ async function pageReports(app){
 
 function openReport(r){
   const pending = r.status === 'pending';
-  const isChief = LV[ME.role] >= 1; // 2次チェックの記入・修正、ブラックリスト登録はチーフ以上のみ
+  const canCheck = has('report_check'); // 2次チェックの記入・修正
+  const canBlacklist = has('blacklist_manage'); // ブラックリスト登録
   modal(`<h3>新人報告 #${r.id} ${pending?'<span class="tag pending">2次未チェック</span>':'<span class="tag checked">チェック済</span>'}</h3>
   <dl class="kv">
     <dt>タイムスタンプ</dt><dd>${h(r.ts)}</dd>
@@ -1529,7 +1530,7 @@ function openReport(r){
     <dt>2次 育成計画</dt><dd>${h(r.plan)}</dd>
     <dt>チーフチェック者</dt><dd>${h(r.checker)}</dd>` : ''}
   </dl>
-  ${isChief ? `
+  ${canCheck ? `
   <h3 style="margin-top:14px">${pending ? '2次チェックを入力' : '2次チェックを修正'}</h3>
   <div class="form-grid">
     <label>やる気・表情(5段階)</label><select id="c-mot">${[1,2,3,4,5].map(n=>`<option ${n===(r.s_motivation??3)?'selected':''}>${n}</option>`).join('')}</select>
@@ -1539,9 +1540,9 @@ function openReport(r){
     <label>今後の育成計画</label><textarea id="c-plan">${h(r.plan||'')}</textarea>
     <label>チーフチェック者名</label><input id="c-checker" value="${h(r.checker||ME.name)}">
   </div>
-  <div class="row" style="margin-top:12px"><button class="btn gold" id="c-save">${pending ? 'チェック完了' : '修正を保存'}</button>${!pending?'<span class="muted" style="font-size:12px">※ ドラフト承認を「OK」にするとドラフト一覧に表示されます</span>':''}</div>
-  <div class="row" style="margin-top:14px"><button class="btn danger sm" id="bl-add">ブラックリストに登録</button></div>`
-  : (pending ? `<div class="msg" style="background:#f0efe9;padding:12px;border-radius:8px;margin-top:14px;font-size:13px">2次チェックはまだ行われていません。</div>` : '')}`);
+  <div class="row" style="margin-top:12px"><button class="btn gold" id="c-save">${pending ? 'チェック完了' : '修正を保存'}</button>${!pending?'<span class="muted" style="font-size:12px">※ ドラフト承認を「OK」にするとドラフト一覧に表示されます</span>':''}</div>`
+  : (pending ? `<div class="msg" style="background:#f0efe9;padding:12px;border-radius:8px;margin-top:14px;font-size:13px">2次チェックはまだ行われていません。</div>` : '')}
+  ${canBlacklist ? `<div class="row" style="margin-top:14px"><button class="btn danger sm" id="bl-add">ブラックリストに登録</button></div>` : ''}`);
 
   const cs = $('#c-save');
   if(cs) cs.onclick = async () => {
@@ -1569,7 +1570,7 @@ function openReport(r){
 
 /* ===== ドラフトリスト ===== */
 async function pageDraft(app){
-  if(LV[ME.role] < 1){ notFound(app); return; }
+  if(!has('report_check')){ notFound(app); return; }
   const rows = (await api('/reports')).filter(r => r.draft === 'OK');
   app.innerHTML = `
   <h2>ドラフトあげる人リスト(新人報告で承認OK)</h2>
@@ -1592,7 +1593,7 @@ async function pageDraft(app){
 
 /* ===== ブラックリスト ===== */
 async function pageBlacklist(app){
-  if(LV[ME.role] < 1){ notFound(app); return; }
+  if(!has('blacklist_manage')){ notFound(app); return; }
   const rows = await api('/blacklist');
   const sc = id => `<select id="${id}" style="width:64px"><option value="">-</option>${[1,2,3,4,5].map(n=>`<option>${n}</option>`).join('')}</select>`;
   const scTh = ['会話','服装','身なり','遅刻','業務'];

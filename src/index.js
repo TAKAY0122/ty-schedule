@@ -10,6 +10,8 @@ const HOURLY = 1150; // 基本時給
 // 各キーには「通常この機能を使えるのは誰か(基準レベル)」を持たせ、
 // 基準レベルを満たしていない人でも、追加権限が付与されていればその機能を使える。
 const PERMS = {
+  report_check:    { label: '新人報告の2次チェック(記入・修正)', baseLv: 1 },
+  blacklist_manage:{ label: 'ブラックリストの閲覧・登録・編集', baseLv: 1 },
   site_pay:        { label: '現場の給与・業務内容を見る', baseLv: 2 },
   site_manage:     { label: '現場へのメンバー登録・編集', baseLv: 2 },
   import_data:     { label: 'スプレッドシートからの取り込み', baseLv: 2 },
@@ -1476,7 +1478,7 @@ async function api(req, env, url) {
     return J(rows);
   }
   if ((mm = path.match(/^\/reports\/(\d+)$/)) && method === 'PATCH') {
-    if (lv(me) < 1) return ERR('2次チェックの記入にはチーフ以上の権限が必要です', 403);
+    if (!has(me, 'report_check')) return ERR('2次チェックの記入には権限が必要です', 403);
     const id = Number(mm[1]);
     const r = await env.DB.prepare('SELECT * FROM reports WHERE id=?').bind(id).first();
     if (!r) return ERR('報告が見つかりません', 404);
@@ -1489,13 +1491,13 @@ async function api(req, env, url) {
     return J({ ok: 1 });
   }
 
-  // ---- ブラックリスト(提出・閲覧ともチーフ以上)----
+  // ---- ブラックリスト(提出・閲覧ともチーフ以上、または個別権限)----
   if (method === 'GET' && path === '/blacklist') {
-    if (lv(me) < 1) return ERR('ページが見つかりません', 404);
+    if (!has(me, 'blacklist_manage')) return ERR('ページが見つかりません', 404);
     return J((await env.DB.prepare('SELECT * FROM blacklist ORDER BY id DESC').all()).results);
   }
   if (method === 'POST' && path === '/blacklist') {
-    if (lv(me) < 1) return ERR('ページが見つかりません', 404);
+    if (!has(me, 'blacklist_manage')) return ERR('ページが見つかりません', 404);
     if (!body.name) return ERR('名前は必須です');
     const sc = v => { const n = Number(v); return (n >= 1 && n <= 5) ? n : null; };
     await env.DB.prepare(
