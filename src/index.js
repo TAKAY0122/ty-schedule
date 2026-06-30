@@ -1135,9 +1135,11 @@ async function api(req, env, url) {
     if (!target) return ERR('ユーザーが見つかりません', 404);
     const rows = (await env.DB.prepare("SELECT * FROM schedule WHERE user_id=? AND date LIKE ? ORDER BY date, slot").bind(uid, month + '%').all()).results;
     const canSeePay = has(me, 'site_pay'); // 時間・給与・IN・OUT を閲覧できるか
+    const canSeePaidLeave = has(me, 'site_manage'); // 有給は手配者以上のみ閲覧可(本人も含め、それ以外には「休暇」として見せる)
     const entries = {};            // entries[date] = [ {現場1}, {現場2}, ... ]
     for (const r of rows) {
       if (!canSeePay) { r.hours = 0; r.overtime = 0; r.pay = 0; r.tin = ''; r.tout = ''; r.duty = ''; r.load_end = ''; r.show_end = ''; r.multi = 0; }
+      if (r.type === 'paid' && !canSeePaidLeave) { r.type = 'off'; r.hours = 0; r.overtime = 0; r.pay = 0; }
       (entries[r.date] ||= []).push(r);
     }
     // 育成計画(人×日)

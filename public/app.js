@@ -731,7 +731,7 @@ async function openMemberDayEdit(uid, u, date){
       <span class="muted" style="font-size:12px">またはこの日を:</span>
       <button class="btn ghost sm md-status" data-t="ok">1日OK</button>
       <button class="btn ghost sm md-status" data-t="off">休暇</button>
-      <button class="btn ghost sm md-status" data-t="paid">有給</button>
+      ${has('site_manage') ? `<button class="btn ghost sm md-status" data-t="paid">有給</button>` : ''}
       <button class="btn ghost sm md-status" data-t="x">×</button>
     </div>`);
   let idx = existing.length || 1;
