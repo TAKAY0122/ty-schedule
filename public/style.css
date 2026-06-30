@@ -483,3 +483,11 @@ td.site-multi,td.venue-multi{max-width:none;white-space:nowrap}
 .list-scroll{overflow-x:auto;border:1px solid #888;border-radius:4px}
 table.list.ka-table td{white-space:nowrap}
 table.list.ka-table td.wrapcell{white-space:normal;min-width:150px}
+
+/* ===== 現場一覧モーダルから個人編集(タップ可能な行/カード) ===== */
+tr.sm-edit{cursor:pointer;transition:background .12s}
+tr.sm-edit:hover{background:#fbf7ea}
+td.sm-edit-cell{text-align:center;color:var(--gold);font-size:15px}
+.dcard.sm-edit{cursor:pointer;position:relative}
+.dcard.sm-edit:active{transform:scale(.99)}
+.sm-edit-hint{margin-top:8px;font-size:12px;color:var(--gold);font-weight:600;text-align:right}

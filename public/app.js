@@ -16,6 +16,7 @@ let TOKEN = localStorage.getItem('tk') || '';
 let ME = null;
 let MONTH = new Date(Date.now()+9*3600e3).toISOString().slice(0,7);
 let USERS_CACHE = null;
+let LOCK_DAYS = 14;   // 給与確定ロック日数(管理者設定。render時にサーバーから取得)
 let timers = [];
 
 async function api(path, opt = {}) {
@@ -33,6 +34,16 @@ function logoutLocal(){ TOKEN=''; ME=null; localStorage.removeItem('tk'); locati
 function clearTimers(){ timers.forEach(clearInterval); timers=[]; }
 function shiftMonth(m, d){ const [y,mm]=m.split('-').map(Number); const dt=new Date(y, mm-1+d, 1); return dt.getFullYear()+'-'+pad(dt.getMonth()+1); }
 async function getUsers(force){ if(!USERS_CACHE||force) USERS_CACHE = await api('/users'); return USERS_CACHE; }
+
+// 認証ヘッダ付きでファイルを取得しブラウザにダウンロードさせる
+async function downloadFile(path, filename){
+  const res = await fetch('/api'+path, { headers: TOKEN ? { authorization:'Bearer '+TOKEN } : {} });
+  if(!res.ok){ const d=await res.json().catch(()=>({})); throw new Error(d.error || 'ダウンロードに失敗しました'); }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download=filename||'download'; document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(url); a.remove(); }, 1000);
+}
 
 /* ===== モーダル ===== */
 function modal(html){
@@ -129,14 +140,16 @@ async function openSiteModal(date, site){
   const chiefs = list.filter(p => p.role !== 'member');
   const members = list.filter(p => p.role === 'member');
   const kaTag = p => p.ka ? `<span class="ka-pill ka-${p.ka==='1課'?'1':'2'}">${p.ka}</span>` : '';
-  const card = p => `<div class="dcard ka-${p.ka==='1課'?'1':'2'}">
+  const editable = canAdd; // 手配者モードなら個人編集可
+  const card = p => `<div class="dcard ka-${p.ka==='1課'?'1':'2'} ${editable?'sm-edit':''}" ${editable?`data-uid="${p.uid}"`:''}>
     <div class="dcard-head"><span class="dcard-title">${h(p.name)} ${kaTag(p)}</span><span class="tag ${p.role}">${roleLabel(p)}</span></div>
     <div class="drow"><span class="dk">ランク/班</span><span class="dv">${h(p.rank)||'—'} / ${h(p.han)||'—'}</span></div>
     ${canPay&&(p.tin||p.tout)?`<div class="drow"><span class="dk">IN/OUT</span><span class="dv">${h(p.tin)}〜${h(p.tout)}</span></div>`:''}
     ${p.note?`<div class="drow"><span class="dk">備考</span><span class="dv">${h(p.note)}</span></div>`:''}
+    ${editable?'<div class="sm-edit-hint">タップして編集 ✏️</div>':''}
   </div>`;
-  const row = p => `<tr class="ka-row-${p.ka==='1課'?'1':'2'}"><td>${h(p.name)} ${kaTag(p)}</td><td><span class="tag ${p.role}">${roleLabel(p)}</span></td><td>${h(p.rank)}</td><td>${h(p.han)}</td>${canPay?`<td>${h(p.tin)}</td><td>${h(p.tout)}</td>`:''}<td>${h(p.note)}</td></tr>`;
-  const tbl = arr => `<table class="list pc-only"><tr><th>氏名</th><th>役割</th><th>ランク</th><th>班</th>${canPay?'<th>IN</th><th>OUT</th>':''}<th>備考</th></tr>${arr.map(row).join('')}</table>
+  const row = p => `<tr class="ka-row-${p.ka==='1課'?'1':'2'} ${editable?'sm-edit':''}" ${editable?`data-uid="${p.uid}"`:''}><td>${h(p.name)} ${kaTag(p)}</td><td><span class="tag ${p.role}">${roleLabel(p)}</span></td><td>${h(p.rank)}</td><td>${h(p.han)}</td>${canPay?`<td>${h(p.tin)}</td><td>${h(p.tout)}</td>`:''}<td>${h(p.note)}</td>${editable?'<td class="sm-edit-cell">✏️</td>':''}</tr>`;
+  const tbl = arr => `<table class="list pc-only"><tr><th>氏名</th><th>役割</th><th>ランク</th><th>班</th>${canPay?'<th>IN</th><th>OUT</th>':''}<th>備考</th>${editable?'<th></th>':''}</tr>${arr.map(row).join('')}</table>
     <div class="cards sp-only">${arr.map(card).join('')}</div>`;
   modal(`<h3>現場情報</h3>
     <dl class="kv">
@@ -151,14 +164,26 @@ async function openSiteModal(date, site){
       <div class="section-label" style="margin-top:12px">メンツ</div>
       ${members.length ? tbl(members) : '<div class="muted" style="padding:4px 2px">登録されていません</div>'}
     ` : '<div class="muted">この日・この現場に入っているメンバーはいません</div>'}
-    ${canAdd ? `<div id="site-add-wrap" style="margin-top:16px;border-top:1px solid var(--line);padding-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+    ${canAdd && list.length ? `<div class="muted" style="margin-top:8px;font-size:12px">💡 メンバーを1人タップすると、その人だけIN/OUT・業務名・搬入終了・終演を編集できます。</div>` : ''}
+    ${canAdd ? `<div id="site-add-wrap" style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px;display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn gold" id="site-add-btn">＋ メンバーを追加</button>
-      ${list.length?`<button class="btn ghost" id="site-edit-btn">✏️ 既存メンバーを一括編集</button>`:''}
+      ${list.length?`<button class="btn ghost" id="site-edit-btn">✏️ 全員まとめて一括編集</button>`:''}
     </div>` : ''}`);
   if(canAdd){
     $('#site-add-btn').onclick = () => openSiteAdd(date, site, venue, (list.find(p=>p.tin)||{}).tin || '', (list.find(p=>p.tout)||{}).tout || '');
     const eb = $('#site-edit-btn');
     if(eb) eb.onclick = () => openSiteBulkEdit(date, site, venue, list);
+    // 各メンバー行/カードをタップ → 個人のその日の編集モーダルへ
+    const byUid = {}; list.forEach(p => byUid[p.uid] = p);
+    document.querySelectorAll('.sm-edit[data-uid]').forEach(el => {
+      el.style.cursor = 'pointer';
+      el.onclick = () => {
+        const uid = Number(el.dataset.uid);
+        const p = byUid[uid];
+        if(!p) return;
+        openMemberDayEdit(uid, { name:p.name, role:p.role, rank:p.rank, ka:p.ka, han:p.han }, date);
+      };
+    });
   }
 }
 
@@ -277,6 +302,10 @@ async function render(){
   if(!ME){
     try{ ME = await api('/me'); } catch(e){ renderLogin(e.message); return; }
   }
+  // 初期パスワードのまま or 強制変更フラグが立っている場合は、変更するまで他を使えない
+  if(ME.must_change){ renderForcedPassword(); return; }
+  // 給与ロック日数を取得(手配者以上のみ。表示用の目安。最終判定はサーバー側)
+  if(LV[ME.role] >= 2){ try{ const ls = await api('/lock-settings'); if(ls && typeof ls.days==='number') LOCK_DAYS = ls.days; }catch(_){} }
   const hash = location.hash || '#/schedule';
   renderShell(hash);
   const app = $('#app');
@@ -292,6 +321,7 @@ async function render(){
     else if(hash === '#/blacklist') await pageBlacklist(app);
     else if(hash === '#/handler') await pageHandler(app);
     else if(hash === '#/admin') await pageAdmin(app);
+    else if(hash === '#/daicho') await pageDaicho(app);
     else if(hash === '#/password') pagePassword(app);
     else { location.hash='#/schedule'; }
   }catch(e){ app.innerHTML = `<div class="msg err">${h(e.message)}</div>`; }
@@ -322,6 +352,41 @@ function renderLogin(err){
   $('#l-pw').onkeydown = e => { if(e.key==='Enter') go(); };
 }
 
+/* ===== 初回ログイン時の強制パスワード変更 ===== */
+function renderForcedPassword(){
+  clearTimers();
+  document.getElementById('root').innerHTML = `
+  <div class="login-wrap"><div class="login-card">
+    <h1>パスワードの変更</h1>
+    <div class="sub" style="margin-bottom:14px">安全のため、初回ログイン時はパスワードの変更が必要です</div>
+    <div class="msg" style="background:#fff6e5;border:1px solid #f0dca8;color:#8a5a00;padding:10px;border-radius:8px;margin-bottom:12px;font-size:13px;text-align:left">
+      初期パスワード（登録番号と同じ）は他人に推測されやすく危険です。あなただけが分かる新しいパスワードを設定してください。
+    </div>
+    <input id="fp-old" type="password" placeholder="現在のパスワード（登録番号）" autocomplete="current-password">
+    <input id="fp-new" type="password" placeholder="新しいパスワード（4文字以上）" autocomplete="new-password">
+    <input id="fp-new2" type="password" placeholder="新しいパスワード（確認）" autocomplete="new-password">
+    <button class="btn gold" id="fp-btn">変更して続ける</button>
+    <div id="fp-err" style="margin-top:8px"></div>
+    <div class="hint" style="margin-top:12px"><a href="#" id="fp-logout">別のアカウントでログイン</a></div>
+  </div></div>`;
+  const go = async () => {
+    const oldpw = $('#fp-old').value, newpw = $('#fp-new').value, newpw2 = $('#fp-new2').value;
+    const err = m => $('#fp-err').innerHTML = `<div class="msg err">${h(m)}</div>`;
+    if(newpw.length < 4){ err('新しいパスワードは4文字以上にしてください'); return; }
+    if(newpw !== newpw2){ err('確認用パスワードが一致しません'); return; }
+    if(newpw === ME.regno){ err('登録番号と同じパスワードは使えません'); return; }
+    try{
+      await api('/password', { method:'POST', body:{ oldpw, newpw } });
+      ME.must_change = 0;
+      popup('パスワードを変更しました');
+      location.hash = '#/schedule'; render();
+    }catch(e){ err(e.message); }
+  };
+  $('#fp-btn').onclick = go;
+  $('#fp-new2').onkeydown = e => { if(e.key==='Enter') go(); };
+  $('#fp-logout').onclick = (e) => { e.preventDefault(); api('/logout',{method:'POST'}).catch(()=>{}); logoutLocal(); };
+}
+
 /* ===== シェル(ヘッダー)===== */
 function renderShell(hash){
   const isChief = LV[ME.role] >= 1, isHandler = LV[ME.role] >= 2;
@@ -336,6 +401,7 @@ function renderShell(hash){
     ['#/blacklist','🚫 ブラックリスト', isChief],
     ['#/edit','✏️ スケジュール入力', ME.handler === 1],
     ['#/admin','⚙️ アカウント管理', ME.role === 'admin'],
+    ['#/daicho','🗂️ 台帳保管', ME.role === 'admin'],
   ].filter(l => l[2]);
   // 現在ページ名(ヘッダー中央に表示)
   const cur = links.find(l => hash.startsWith(l[0]));
@@ -617,7 +683,7 @@ async function pageSchedule(app, hash){
 
 // 手配者モード:特定メンバーの特定日の現場を追加・編集
 const DUTIES = ['案内','受付・案内','準備','本部付','制作補助','運営補助','雑務','準備・設営','搬入','搬出','機材搬入','機材搬出','ステージハンド','搬入・案内','案内・搬出','パッケージ','ケータリング','物品販売'];
-function isLockedDate(date){ const d=new Date(Date.now()+9*3600e3); d.setDate(d.getDate()-14); return String(date) <= d.toISOString().slice(0,10); }
+function isLockedDate(date){ const d=new Date(Date.now()+9*3600e3); d.setDate(d.getDate()-LOCK_DAYS); return String(date) <= d.toISOString().slice(0,10); }
 
 async function openMemberDayEdit(uid, u, date){
   if(ME.handler !== 1){ return; }
@@ -686,14 +752,16 @@ async function openMemberDayEdit(uid, u, date){
         if(!(await conflictModal(r.conflicts))) return;
         r = await api('/schedule',{method:'PUT',body:{uid,date,slots,force:true}});
       }
-      closeModal(); popup(withWarnNote('保存しました', r)); render();
+      closeModal(); popup(withWarnNote('保存しました', r));
+      if(location.hash.startsWith('#/sites')){ pageSites(document.getElementById('app')); } else render();
     }catch(e){ popup(e.message,'error'); }
   };
   document.querySelectorAll('.md-status').forEach(b=>b.onclick = async () => {
     const t=b.dataset.t, lbl={ok:'1日OK',off:'休暇',paid:'有給',x:'×'}[t];
     try{
       await api('/schedule',{method:'PUT',body:{uid,date,slots:[{type:t}]}});
-      closeModal(); popup(lbl+'に設定しました'); render();
+      closeModal(); popup(lbl+'に設定しました');
+      if(location.hash.startsWith('#/sites')){ pageSites(document.getElementById('app')); } else render();
     }catch(e){ popup(e.message,'error'); }
   });
 }
@@ -1607,14 +1675,29 @@ async function pageHandler(app){
     try{
       const d = await api('/import-urls');
       const el = $('#imp-saved'); if(!el) return;
-      el.innerHTML = d.urls.length ? '保存済みURL:<br>' + d.urls.map(u=>`<span style="font-family:monospace;font-size:11px">${h(u)}</span>`).join('<br>') : '保存済みURLはありません';
+      if(!d.urls.length){ el.innerHTML = '保存済みURLはありません'; return; }
+      el.innerHTML = `<div style="margin-bottom:6px">保存済みURL (${d.urls.length}件): <button class="btn ghost xs" id="imp-clear-all">すべて削除</button></div>` +
+        d.urls.map(u=>`<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+          <span style="font-family:monospace;font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${h(u)}</span>
+          <button class="btn ghost xs imp-del-one" data-url="${h(u)}">削除</button>
+        </div>`).join('');
+      const ca = $('#imp-clear-all');
+      if(ca) ca.onclick = async () => {
+        if(!confirm('保存済みURLをすべて削除しますか？\n\n※取り込み済みのスケジュール・給与データ・保管した台帳は残ります。次回また取り込む際にURLを貼り直す必要があるだけです。')) return;
+        try{ await api('/import-urls/delete',{method:'POST',body:{all:true}}); popup('保存済みURLをすべて削除しました'); showSaved(); }
+        catch(e){ popup(e.message,'error'); }
+      };
+      el.querySelectorAll('.imp-del-one').forEach(b => b.onclick = async () => {
+        try{ await api('/import-urls/delete',{method:'POST',body:{url:b.dataset.url}}); popup('URLを削除しました'); showSaved(); }
+        catch(e){ popup(e.message,'error'); }
+      });
     }catch(_){}
   };
   showSaved();
   $('#imp-run').onclick = async () => {
     const urls = $('#imp-urls').value.split(/\s+/).map(s=>s.trim()).filter(Boolean);
     if(!urls.length){ $('#imp-result').innerHTML='<span class="msg err">URLを入力してください</span>'; return; }
-    $('#imp-run').disabled = true; $('#imp-result').innerHTML = '<span class="muted">取り込み中…</span>';
+    $('#imp-run').disabled = true; $('#imp-result').innerHTML = '<span class="muted">取り込み中…（全シートを読み込むため少し時間がかかります）</span>';
     try{
       const d = await api('/import-from-url', { method:'POST', body:{
         urls, month: $('#imp-month').value, format: $('#imp-format').value,
@@ -1623,8 +1706,10 @@ async function pageHandler(app){
       $('#imp-result').innerHTML = '<table class="list"><tr><th>URL</th><th>結果</th></tr>' + d.results.map(r=>{
         const short = r.url.length>50 ? r.url.slice(0,50)+'…' : r.url;
         if(!r.ok) return `<tr><td style="font-family:monospace;font-size:11px">${h(short)}</td><td><span class="msg err">${h(r.error)}</span></td></tr>`;
-        const errs = r.errors&&r.errors.length ? `<br><span class="muted">注意: ${r.errors.map(h).join(' / ')}</span>` : '';
-        return `<tr><td style="font-family:monospace;font-size:11px">${h(short)}</td><td><span class="msg ok">[${r.format}] 反映 ${r.applied} / スキップ ${r.skipped}</span>${errs}</td></tr>`;
+        const errs = r.errors&&r.errors.length ? `<br><span class="muted">注意: ${r.errors.slice(0,5).map(h).join(' / ')}${r.errors.length>5?` ほか${r.errors.length-5}件`:''}</span>` : '';
+        const arch = r.archived ? '<br><span class="muted">📦 台帳をサーバーに保管しました</span>' : (r.archiveError?`<br><span class="muted">⚠️保管失敗:${h(r.archiveError)}</span>`:'');
+        const shList = r.sheets&&r.sheets.length ? `<br><span class="muted">シート: ${r.sheets.map(s=>`${h(s.name)}(${s.count})`).join(' / ')}</span>` : '';
+        return `<tr><td style="font-family:monospace;font-size:11px">${h(short)}</td><td><span class="msg ok">${r.sheetsRead||1}シート読込 / 反映 ${r.applied} / スキップ ${r.skipped}</span>${shList}${errs}${arch}</td></tr>`;
       }).join('') + '</table>';
       showSaved();
     }catch(e){ $('#imp-result').innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
@@ -1674,6 +1759,50 @@ async function pageHandler(app){
   </div>`).join('')}</div>` : '<div class="muted">編集履歴はありません</div>';
 }
 
+/* ===== 台帳保管(管理者のみ) ===== */
+async function pageDaicho(app){
+  if(ME.role !== 'admin'){ notFound(app); return; }
+  app.innerHTML = '<h2>🗂️ 台帳保管</h2><div class="card"><div class="muted">読み込み中…</div></div>';
+  let data;
+  try{ data = await api('/daicho'); }
+  catch(e){ app.innerHTML = `<h2>🗂️ 台帳保管</h2><div class="card"><div class="msg err">${h(e.message)}</div></div>`; return; }
+  const items = data.items || [];
+  const fmtSize = n => { n=Number(n||0); if(n<1024) return n+'B'; if(n<1048576) return (n/1024).toFixed(0)+'KB'; return (n/1048576).toFixed(1)+'MB'; };
+  app.innerHTML = `
+  <h2 style="margin-bottom:8px">🗂️ 台帳保管</h2>
+  <div class="card">
+    <div class="muted" style="margin-bottom:12px">スプレッドシートを取り込むたびに、元のExcelがそのままサーバーに保管されます（給与計算の根拠・監査用）。ここから閲覧・ダウンロード・削除ができます。<b>管理者のみ</b>がアクセスできます。</div>
+    ${items.length ? `
+    <div class="muted" style="margin-bottom:8px">保管件数: ${items.length}件</div>
+    <div class="list-scroll">
+      <table class="list">
+        <tr><th>取り込み日時</th><th>取り込んだ人</th><th>反映件数</th><th>シート数</th><th>サイズ</th><th>ファイル</th><th></th></tr>
+        ${items.map(it=>`<tr>
+          <td style="white-space:nowrap">${h(it.ts)}</td>
+          <td style="white-space:nowrap">${h(it.importer_name||'—')}</td>
+          <td>${it.applied!=null?it.applied+'件':'—'}</td>
+          <td>${it.sheets!=null?it.sheets:'—'}</td>
+          <td style="white-space:nowrap">${fmtSize(it.size)}</td>
+          <td style="white-space:nowrap"><button class="btn ghost xs dc-dl" data-id="${it.id}" data-name="${h(it.file_name||'daicho.xlsx')}">⬇️ ダウンロード</button></td>
+          <td><button class="btn danger xs dc-del" data-id="${it.id}" data-ts="${h(it.ts)}">削除</button></td>
+        </tr>`).join('')}
+      </table>
+    </div>
+    ` : '<div class="muted" style="padding:24px 0;text-align:center">まだ保管された台帳はありません。スプレッドシートを取り込むと、ここに元Excelが保管されます。</div>'}
+  </div>`;
+  app.querySelectorAll('.dc-dl').forEach(b => b.onclick = async () => {
+    b.disabled=true; const old=b.textContent; b.textContent='取得中…';
+    try{ await downloadFile(`/daicho/${b.dataset.id}/download`, b.dataset.name); }
+    catch(e){ popup(e.message,'error'); }
+    finally{ b.disabled=false; b.textContent=old; }
+  });
+  app.querySelectorAll('.dc-del').forEach(b => b.onclick = async () => {
+    if(!confirm(`${b.dataset.ts} に取り込んだ台帳を削除しますか？\n\n※元Excelファイルが完全に削除されます。すでに登録済みのスケジュール・給与データは残ります。`)) return;
+    try{ await api(`/daicho/${b.dataset.id}/delete`,{method:'POST'}); popup('削除しました'); pageDaicho(app); }
+    catch(e){ popup(e.message,'error'); }
+  });
+}
+
 /* ===== アカウント管理(管理者)===== */
 async function pageAdmin(app){
   if(ME.role !== 'admin'){ notFound(app); return; }
@@ -1682,6 +1811,8 @@ async function pageAdmin(app){
   const pin = (await api('/settings/handler-pin')).pin;
   const importTok = (await api('/settings/import-token')).token;
   const wageData = await api('/wage-rates').catch(()=>null);
+  const notifyData = await api('/notify-settings').catch(()=>null);
+  const lockData = await api('/lock-settings').catch(()=>null);
   const adq = (app._adq||'').trim(), admgr = app._admgr||'';
   const aList = users.filter(u=>{
     const mq = !adq || (u.name||'').includes(adq) || (u.regno||'').includes(adq);
@@ -1693,7 +1824,7 @@ async function pageAdmin(app){
   app.innerHTML = `
   <h2 style="margin-bottom:8px">アカウント管理</h2>
   <div class="adm-nav">
-    ${[['pin','🔑 PIN'],['link','🔗 連携'],['wage','💴 時給'],['data','📋 全データ'],['create','➕ 新規作成'],['list','👥 アカウント一覧']].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
+    ${[['pin','🔑 PIN'],['link','🔗 連携'],['notify','🔔 通知'],['wage','💴 時給'],['data','📋 全データ'],['create','➕ 新規作成'],['list','👥 アカウント一覧']].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
   </div>
 
   ${sec('pin','🔑 手配者専用パスワード(PIN)', `
@@ -1712,8 +1843,42 @@ async function pageAdmin(app){
     </div>
     <div class="muted" style="margin-top:6px">このトークンをGoogleスプレッドシート側のスクリプト(同梱の gas-連携.gs)に貼り付けると、シートの内容がアプリのスケジュールに自動反映されます。再発行すると古いトークンは無効になります。</div>`)}
 
+  ${sec('notify','🔔 通知設定 <span class="muted" style="font-weight:400">(新人報告の催促)</span>', notifyData ? `
+    <div class="muted" style="margin-bottom:10px">毎日決まった時刻に「新人報告がまだ提出されていません」というお知らせ（🔔）を対象者へ送ります。</div>
+    <div class="form-grid" style="grid-template-columns:120px 1fr;max-width:440px;gap:10px 12px;align-items:center">
+      <label>通知</label>
+      <label style="font-weight:400;display:flex;align-items:center;gap:8px"><input type="checkbox" id="nt-enabled" ${notifyData.enabled?'checked':''} style="width:auto"> 通知をオンにする</label>
+      <label>送信時刻</label>
+      <select id="nt-hour" style="width:120px">${Array.from({length:24},(_,i)=>`<option value="${i}" ${notifyData.hour===i?'selected':''}>${String(i).padStart(2,'0')}:00</option>`).join('')}</select>
+      <label>送信対象</label>
+      <select id="nt-target" style="width:auto">
+        <option value="handlers" ${notifyData.target==='handlers'?'selected':''}>チーフ(手配者)・管理者のみ</option>
+        <option value="chiefs" ${notifyData.target==='chiefs'?'selected':''}>チーフ全員（チーフ・手配者・管理者）</option>
+      </select>
+    </div>
+    <div class="row" style="margin-top:14px;gap:8px;align-items:center">
+      <button class="btn gold sm" id="nt-save">通知設定を保存</button>
+      <button class="btn ghost sm" id="nt-test">今すぐテスト送信</button>
+      <span id="nt-msg" class="muted"></span>
+    </div>
+    <div class="muted" style="margin-top:8px">※その日に誰かが既に新人報告を提出していれば、催促は送られません。通知はアプリ内のお知らせ（🔔）に届きます。</div>
+  ` : '<div class="muted">通知設定を取得できませんでした</div>')}
+
   ${sec('wage','💴 時給設定 <span class="muted" style="font-weight:400">(ランク×時期)</span>', wageData ? `
     <div class="muted" style="margin-bottom:8px">現場日に有効な時給が給与計算に使われます。<b>${h(wageData.lockBefore)}</b> 以前の現場は給与確定済み（時給を変えても再計算されません）。</div>
+    ${lockData ? `
+    <div style="background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:12px">
+      <div style="font-weight:700;margin-bottom:6px">🔒 給与確定ロック期間</div>
+      <div class="muted" style="margin-bottom:8px">現場日からこの日数を過ぎると、チーフ・手配者は編集できなくなります（管理者は常に編集可）。</div>
+      <div class="row" style="align-items:center;gap:8px;flex-wrap:wrap">
+        <span>現場日から</span>
+        <input type="number" id="lock-days" value="${lockData.days}" min="0" max="3650" style="width:90px">
+        <span>日後に確定</span>
+        <button class="btn gold sm" id="lock-save">保存</button>
+        <span id="lock-msg" class="muted"></span>
+      </div>
+      <div class="muted" style="margin-top:6px;font-size:12px">現在の設定では <b>${h(lockData.lockBefore)}</b> 以前が確定済みです。0にすると当日以降すべて編集可、長くすると過去まで編集可になります。</div>
+    </div>` : ''}
     ${wageData.periods.map(p=>`
       <div style="font-weight:700;margin:10px 0 4px">${p.effective_from==='1900-01-01'?'旧時給（〜2025/9）':h(p.effective_from)+' 〜（改定）'}</div>
       <table class="wage-tbl">
@@ -1805,12 +1970,34 @@ async function pageAdmin(app){
       try{ const r=await api('/wage-rates',{method:'PUT',body:{rates}}); $('#wage-msg').textContent=`${r.updated}件 保存しました`; popup('時給を更新しました'); }
       catch(e){ $('#wage-msg').textContent=e.message; }
   }; }
+  { const ls = $('#lock-save'); if(ls) ls.onclick = async () => {
+      const days = Number($('#lock-days').value);
+      $('#lock-msg').textContent='保存中…';
+      try{ const r=await api('/lock-settings',{method:'PUT',body:{days}});
+        $('#lock-msg').textContent=`${r.lockBefore} 以前を確定`; popup('ロック期間を保存しました'); pageAdmin(app); }
+      catch(e){ $('#lock-msg').textContent=e.message; }
+  }; }
   { const rb = $('#recalc-btn'); if(rb) rb.onclick = async () => {
       if(!confirm('取り込み済みの全現場の給与・残業を、現在の時給・新ルールで再計算します。手動入力した給与も上書きされます。よろしいですか？')) return;
       rb.disabled=true; $('#recalc-msg').textContent='再計算中…（件数が多いと数十秒かかります）';
       try{ const r=await api('/recalc',{method:'POST'}); $('#recalc-msg').textContent=`${r.updated}件 再計算しました`; popup(`${r.updated}件を再計算しました`); }
       catch(e){ $('#recalc-msg').textContent=e.message; }
       finally{ rb.disabled=false; }
+  }; }
+  { const ns = $('#nt-save'); if(ns) ns.onclick = async () => {
+      const enabled = $('#nt-enabled').checked;
+      const hour = Number($('#nt-hour').value);
+      const target = $('#nt-target').value;
+      $('#nt-msg').textContent='保存中…';
+      try{ const r=await api('/notify-settings',{method:'PUT',body:{enabled,hour,target}});
+        $('#nt-msg').textContent = r.enabled ? `毎日 ${String(r.hour).padStart(2,'0')}:00 に送信` : '通知オフ';
+        popup('通知設定を保存しました'); }
+      catch(e){ $('#nt-msg').textContent=e.message; }
+  }; }
+  { const nt = $('#nt-test'); if(nt) nt.onclick = async () => {
+      $('#nt-msg').textContent='送信中…';
+      try{ await api('/notify-test',{method:'POST'}); $('#nt-msg').textContent='テスト通知を送りました（🔔を確認）'; popup('テスト通知を送信しました。画面上部の🔔を確認してください'); }
+      catch(e){ $('#nt-msg').textContent=e.message; }
   }; }
 
   const adS=$('#ad-search');

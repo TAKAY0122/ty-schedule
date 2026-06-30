@@ -22,7 +22,7 @@ async function pbkdf2(pw, salt) {
   return [...new Uint8Array(bits)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0 });
+const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0, must_change: u.must_change ? 1 : 0 });
 
 // ===== 給与計算 (RB事業2課ルール) =====
 // 業務名 → 計算区分。 g5=案内料金(最低5h) / l3=搬入出料金(最低3h) / lg,gl,lgl=時間帯分割 / skip=対象外
@@ -78,9 +78,11 @@ function calcPay({ rank, date, tin, tout, duty, loadEnd, showEnd, multi }, resol
   return { hours: Math.round(total * 100) / 100, overtime: Math.round(otDisp * 100) / 100, night: Math.round(night * 100) / 100, pay };
 }
 
-// 給与確定ロック: 現場日から2週間(14日)を過ぎたら確定(編集不可)
-function payLockDate(){ const d = new Date(Date.now() + 9 * 3600e3); d.setDate(d.getDate() - 14); return d.toISOString().slice(0, 10); }
-function isLocked(date, me){ if (me && me.role === 'admin') return false; return String(date) <= payLockDate(); }
+// 給与確定ロック: 現場日からロック日数(既定14)を過ぎたら確定(編集不可)
+// lockDays は呼び出し側で getLockDays(env) から取得して渡す
+function payLockDate(lockDays){ const d = new Date(Date.now() + 9 * 3600e3); d.setDate(d.getDate() - (lockDays || 14)); return d.toISOString().slice(0, 10); }
+function isLocked(date, me, lockDays){ if (me && me.role === 'admin') return false; return String(date) <= payLockDate(lockDays); }
+async function getLockDays(env){ const v = parseInt(await getSetting(env, 'lock_days', '14'), 10); return (isNaN(v) || v < 0) ? 14 : v; }
 
 // ---- コンフリクト検知 ----
 // "H:MM" を分に変換(不正は null)
@@ -220,9 +222,34 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
 
 // グリッドからフォーマットを推定。Cは勤務表(打刻/退勤/集合などの語)、それ以外はAB(月間表)
 function detectFormat(grid) {
-  const head = grid.slice(0, 12).flat().join(' ');
+  const head = grid.slice(0, 14).flat().join(' ');
   if (/退勤時間|打刻時間|集合時間|終了予定時間|就業回数/.test(head)) return 'C';
   return 'AB';
+}
+
+// グリッドから「出勤/退勤/受注番号…」のヘッダ行を探し、各列の位置を特定する。
+// フォーマット差(出勤と退勤の間に空列があるか)を吸収するため、ヘッダ名で列を引く。
+function findHeaderCols(line) {
+  const idxOf = (...names) => {
+    for (let c = 0; c < line.length; c++) {
+      const v = String(line[c] || '').trim();
+      if (names.includes(v)) return c;
+    }
+    return -1;
+  };
+  const regno = idxOf('登録番号');
+  if (regno < 0) return null;
+  return {
+    saimotsu: idxOf('催物名'),
+    venueCol: idxOf('会場名'),
+    gyomu: idxOf('業務名'),
+    regno,
+    rank: idxOf('ランク'),
+    start: idxOf('開始時間'),
+    tend: idxOf('終了予定時間', '終了予定'),
+    tout: idxOf('退勤時間'),
+    note: idxOf('備考'),
+  };
 }
 
 // ---- スプレッドシートURL取り込み用ヘルパー ----
@@ -237,6 +264,139 @@ function parseSheetUrl(url) {
 // CSVエクスポートURLを組み立て(「リンクを知る全員が閲覧可」のシートのみ取得可能)
 function csvExportUrl(id, gid) {
   return `https://docs.google.com/spreadsheets/d/${id}/export?format=csv&gid=${gid}`;
+}
+
+// スプレッドシート内の全シート(タブ)を取得する処理は fetchXlsxSheets() に統合した。
+
+// gvizのCSV出力(これは公開不要・共有リンク権限で取得できる場合がある)
+function gvizCsvUrl(id, gid) {
+  return `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv&gid=${gid}`;
+}
+
+// ===== xlsx を丸ごと取得して全シートを2次元配列で返す(依存ライブラリなし) =====
+// Google Sheets の /export?format=xlsx は共有リンク権限のままファイル全体を返す。
+// xlsx は zip なので、ZIP(ストア/Deflate)を自前展開し、sheetN.xml を簡易パースする。
+async function fetchXlsxSheets(id) {
+  const url = `https://docs.google.com/spreadsheets/d/${id}/export?format=xlsx`;
+  const resp = await fetch(url, { redirect: 'follow' });
+  if (!resp.ok) throw new Error(`xlsx取得失敗(HTTP ${resp.status})`);
+  const buf = new Uint8Array(await resp.arrayBuffer());
+  if (buf[0] !== 0x50 || buf[1] !== 0x4b) throw new Error('xlsxではない応答(共有設定を確認してください)');
+  const files = await unzip(buf);
+  // 共有文字列
+  const sstXml = files['xl/sharedStrings.xml'] ? new TextDecoder().decode(files['xl/sharedStrings.xml']) : '';
+  const sst = parseSharedStrings(sstXml);
+  // workbook.xml でシート名と r:id、_rels で r:id→ファイル名 の対応を取る
+  const wbXml = files['xl/workbook.xml'] ? new TextDecoder().decode(files['xl/workbook.xml']) : '';
+  const relsXml = files['xl/_rels/workbook.xml.rels'] ? new TextDecoder().decode(files['xl/_rels/workbook.xml.rels']) : '';
+  const relMap = {};
+  for (const m of relsXml.matchAll(/<Relationship\b[^>]*\/?>/g)) {
+    const tag = m[0];
+    const id2 = (tag.match(/Id="([^"]+)"/) || [])[1];
+    const target = (tag.match(/Target="([^"]+)"/) || [])[1];
+    if (id2 && target) relMap[id2] = target;
+  }
+  const norm = (t) => {
+    if (!t) return '';
+    let s = t.replace(/^\//, '');
+    if (s.startsWith('xl/')) return s;
+    return 'xl/' + s;
+  };
+  const sheets = [];
+  for (const m of wbXml.matchAll(/<sheet\b[^>]*\/?>/g)) {
+    const tag = m[0];
+    const name = (tag.match(/name="([^"]+)"/) || [])[1];
+    const rid = (tag.match(/r:id="([^"]+)"/) || [])[1];
+    if (!name || !rid) continue;
+    const key = norm(relMap[rid]);
+    const xml = files[key];
+    if (xml) sheets.push({ name: unescapeXml(name), grid: parseSheetXml(new TextDecoder().decode(xml), sst) });
+  }
+  return { sheets, raw: buf };   // raw = 元xlsxバイト列(R2保管用)
+}
+
+function parseSharedStrings(xml) {
+  const arr = [];
+  for (const si of xml.matchAll(/<si>([\s\S]*?)<\/si>/g)) {
+    let s = ''; for (const t of si[1].matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)) s += t[1];
+    arr.push(unescapeXml(s));
+  }
+  return arr;
+}
+
+function colToIdx(ref) { // "B12" → 1
+  const m = String(ref).match(/^([A-Z]+)/); if (!m) return 0;
+  let n = 0; for (const ch of m[1]) n = n * 26 + (ch.charCodeAt(0) - 64);
+  return n - 1;
+}
+
+function parseSheetXml(xml, sst) {
+  const grid = [];
+  for (const rowm of xml.matchAll(/<row\b[^>]*>([\s\S]*?)<\/row>/g)) {
+    const cells = [];
+    for (const cm of rowm[1].matchAll(/<c\b([^>]*)>([\s\S]*?)<\/c>|<c\b([^>]*)\/>/g)) {
+      const attrs = cm[1] || cm[3] || '';
+      const inner = cm[2] || '';
+      const rref = (attrs.match(/r="([A-Z]+\d+)"/) || [])[1] || '';
+      const ci = rref ? colToIdx(rref) : cells.length;
+      const t = (attrs.match(/t="([^"]+)"/) || [])[1] || '';
+      let val = '';
+      const vm = inner.match(/<v>([\s\S]*?)<\/v>/);
+      const isuf = inner.match(/<is>[\s\S]*?<t[^>]*>([\s\S]*?)<\/t>[\s\S]*?<\/is>/);
+      if (t === 's' && vm) val = sst[+vm[1]] || '';
+      else if (t === 'inlineStr' && isuf) val = unescapeXml(isuf[1]);
+      else if (vm) val = unescapeXml(vm[1]);
+      while (cells.length < ci) cells.push('');
+      cells[ci] = val;
+    }
+    grid.push(cells);
+  }
+  return grid;
+}
+
+function unescapeXml(s) {
+  return String(s).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&#(\d+);/g, (_, n) => String.fromCharCode(+n)).replace(/&amp;/g, '&');
+}
+
+// 最小限のZIP展開(method 0=store, 8=deflate)。DecompressionStreamでinflate。
+async function unzip(buf) {
+  const files = {};
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  // End of Central Directory を末尾から探す
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= 0 && i > buf.length - 22 - 65536; i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('zip構造が不正');
+  const cdOffset = dv.getUint32(eocd + 16, true);
+  const cdCount = dv.getUint16(eocd + 10, true);
+  let p = cdOffset;
+  for (let n = 0; n < cdCount; n++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const method = dv.getUint16(p + 10, true);
+    const compSize = dv.getUint32(p + 20, true);
+    const nameLen = dv.getUint16(p + 28, true);
+    const extraLen = dv.getUint16(p + 30, true);
+    const commentLen = dv.getUint16(p + 32, true);
+    const lhOffset = dv.getUint32(p + 42, true);
+    const name = new TextDecoder().decode(buf.subarray(p + 46, p + 46 + nameLen));
+    // ローカルヘッダから実データ開始位置
+    const lhNameLen = dv.getUint16(lhOffset + 26, true);
+    const lhExtraLen = dv.getUint16(lhOffset + 28, true);
+    const dataStart = lhOffset + 30 + lhNameLen + lhExtraLen;
+    const comp = buf.subarray(dataStart, dataStart + compSize);
+    if (/(sharedStrings|workbook)\.xml$|worksheets\/sheet\d+\.xml$|workbook\.xml\.rels$/.test(name)) {
+      files[name] = method === 0 ? comp : await inflateRaw(comp);
+    }
+    p += 46 + nameLen + extraLen + commentLen;
+  }
+  return files;
+}
+
+async function inflateRaw(comp) {
+  const ds = new DecompressionStream('deflate-raw');
+  const stream = new Response(comp).body.pipeThrough(ds);
+  return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
 // CSVを2次元配列にパース(ダブルクォート・改行・カンマ対応)
@@ -279,46 +439,97 @@ function normSheetDate(v, ym) {
   return '';
 }
 
-// フォーマットC(IN/OUT表)を解析 → [{regno,date,site,venue,tin,tout,duty,load_end,show_end,note}]
-// 既定の列位置(0始まり): 催物名F=5, 会場名G=6, 業務名H=7, 登録番号I=8, 開始時間P=15, 終了予定Q=16, 退勤時間S=18
-// OUT = max(退勤時間, 終了予定時間)。搬入終了/終演はブロックヘッダから取得
+// フォーマットC(IN/OUT台帳)を解析。
+// 1シートに複数イベントブロックが縦に積まれる。各ブロックは
+//   「日付/受注番号」「催物名/会場名」「搬入終了」「終演時間」を含むメタ行群 →
+//   「出勤…登録番号…業務名…」ヘッダ行 → 人数分のデータ行(FALSE埋めで終端)
+// の構造。ヘッダ行(登録番号を含む行)を見つけるたびに直前メタから日付/会場/搬入終了/終演/2stを拾う。
 function parseFormatC(rows, cfg) {
-  const col = Object.assign({ saimotsu: 5, venueCol: 6, gyomu: 7, regno: 8, start: 15, tend: 16, tout: 18, headerRow: 10 }, cfg && cfg.C || {});
   const curYear = new Date(Date.now() + 9 * 3600e3).getFullYear();
-  let date = '';
-  for (let r = 0; r < 4 && !date; r++) for (const cell of (rows[r] || [])) {
-    const d = normSheetDate(cell, String(curYear) + '-01');
-    if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) { date = d; break; }
-  }
-  let venue = '';
-  for (let r = 0; r < 6 && !venue; r++) { const line = rows[r] || []; const idx = line.findIndex(x => String(x).includes('会場')); if (idx >= 0 && line[idx + 1]) venue = String(line[idx + 1]).trim(); }
-  // 搬入終了 / 終演時間 をヘッダ付近から取得(「搬入終了/10:15」「終演時間 15:00」等)
-  let loadEnd = '', showEnd = '';
-  for (let r = 0; r < 12; r++) for (const cell of (rows[r] || [])) {
-    const s = String(cell); let mm;
-    if (!loadEnd && (mm = s.match(/搬入終了[\s\/:：]*(\d{1,2}:\d{2})/))) loadEnd = mm[1];
-    if (!showEnd && (mm = s.match(/終演[時間]*[\s\/:：]*(\d{1,2}:\d{2})/))) showEnd = mm[1];
-  }
-  // OUT = 退勤と終了予定の遅い方(早朝<6:00は翌日扱いで比較)
+  const ym0 = String(curYear) + '-01';
+
+  // OUT = 退勤と終了予定の遅い方(早朝<6:00は翌日扱い)
   const laterTime = (a, b) => {
     if (!a) return b || ''; if (!b) return a || '';
     const v = t => { const m = String(t).match(/^(\d{1,2}):(\d{2})$/); if (!m) return -1; let x = +m[1] * 60 + +m[2]; if (x < 360) x += 1440; return x; };
     return v(a) >= v(b) ? a : b;
   };
+  // メタ行群(直近ヘッダの手前12行)から日付・会場・搬入終了・終演・2st を拾う
+  const scanMeta = (startRow, headerRow) => {
+    let date = '', venue = '', loadEnd = '', showEnd = '', site = '', has2st = false;
+    for (let r = startRow; r < headerRow; r++) {
+      const line = rows[r] || [];
+      for (let c = 0; c < line.length; c++) {
+        const s = String(line[c] == null ? '' : line[c]);
+        // 「日付/受注番号」セルの右隣に "6/29(月)/192266"
+        if (!date && /日付[\s\/]*受注番号/.test(s)) {
+          const nx = String(line[c + 1] || '');
+          const d = normSheetDate(nx, ym0); if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) date = d;
+        }
+        // 「催物名/会場名」セルの右隣に "催物名/会場名"
+        if (!site && /催物名[\s\/]*会場名/.test(s)) {
+          const nx = String(line[c + 1] || '');
+          const parts = nx.split('/');
+          if (parts[0] && parts[0] !== '催物名') site = parts[0].trim();
+          if (parts[1]) venue = parts[1].trim();
+        }
+        // 搬入終了 / 終演時間 は "搬入終了/11:00" か、セル"搬入終了"+右隣 の両対応
+        let mm;
+        if (!loadEnd) {
+          if ((mm = s.match(/搬入終了[\s\/:：]+(\d{1,2}:\d{2})/))) loadEnd = mm[1];
+          else if (/^搬入終了$/.test(s.trim())) { const t = normTime(line[c + 1]); if (t) loadEnd = t; }
+        }
+        if (!showEnd) {
+          if ((mm = s.match(/終演[時間]*[\s\/:：]+(\d{1,2}:\d{2})/))) showEnd = mm[1];
+          else if (/^終演時間$/.test(s.trim())) { const t = normTime(line[c + 1]); if (t) showEnd = t; }
+        }
+        if (!has2st && /(^|[^0-9a-zA-Z])2st([^0-9a-zA-Z]|$)/i.test(s) && c + 1 < line.length) {
+          // 手当欄の "2st" ラベル右に氏名や値があれば手当ありとみなす(空ならスキップ)
+          // ※業務名側の(2st)で確実判定するのでここは補助
+        }
+      }
+    }
+    return { date, venue, loadEnd, showEnd, site };
+  };
+
   const out = [];
-  for (let r = col.headerRow + 1; r < rows.length; r++) {
-    const line = rows[r] || [];
-    const regno = String(line[col.regno] || '').trim();
-    if (!/^\d{3,}$/.test(regno)) continue;
-    const duty = String(line[col.gyomu] || '').trim();        // 業務名(給与区分)
-    const site = String(line[col.saimotsu] || '').trim() || duty; // 現場名=催物名(無ければ業務名)
-    const venueCell = String(line[col.venueCol] || '').trim() || venue;
-    const tin = normTime(line[col.start]);
-    const tout = laterTime(normTime(line[col.tout]), normTime(line[col.tend])); // 退勤 vs 終了予定
-    if (!tin && !tout && !duty) continue;
-    out.push({ regno, date, site, venue: venueCell, tin, tout, duty, load_end: loadEnd, show_end: showEnd });
+  let lastDate = '', lastVenue = '';
+  for (let r = 0; r < rows.length; r++) {
+    const cols = findHeaderCols(rows[r] || []);
+    if (!cols) continue;                  // ヘッダ行(登録番号を含む)を探す
+    // このブロックのメタを直前から取得
+    const meta = scanMeta(Math.max(0, r - 12), r);
+    if (meta.date) lastDate = meta.date;
+    if (meta.venue) lastVenue = meta.venue;
+    const blockDate = meta.date || lastDate;
+    const blockVenue = meta.venue || lastVenue;
+    const blockLoadEnd = meta.loadEnd, blockShowEnd = meta.showEnd;
+    // データ行: ヘッダの次から、登録番号が数値の行を読む。空行/FALSE埋めが続いたら終端
+    let blank = 0;
+    for (let d = r + 1; d < rows.length; d++) {
+      const line = rows[d] || [];
+      // 次のブロックのヘッダに当たったら break(外ループが拾う)
+      if (findHeaderCols(line)) { r = d - 1; break; }
+      const regno = String(line[cols.regno] || '').trim();
+      if (!/^\d{3,}$/.test(regno)) {
+        if (++blank > 8) break;           // FALSE埋めが続く=ブロック終端
+        continue;
+      }
+      blank = 0;
+      let duty = String(line[cols.gyomu] || '').trim();
+      let multi = 0;
+      // 業務名に "(2st)" → 2st手当ON、表記を除去
+      if (/[（(]\s*2st\s*[)）]/i.test(duty)) { multi = 1; duty = duty.replace(/[（(]\s*2st\s*[)）]/ig, '').trim(); }
+      const site = (cols.saimotsu >= 0 ? String(line[cols.saimotsu] || '').trim() : '') || meta.site || duty;
+      const venueCell = (cols.venueCol >= 0 ? String(line[cols.venueCol] || '').trim() : '') || blockVenue;
+      const tin = normTime(line[cols.start]);
+      const tout = laterTime(normTime(cols.tout >= 0 ? line[cols.tout] : ''), normTime(cols.tend >= 0 ? line[cols.tend] : ''));
+      const note = cols.note >= 0 ? String(line[cols.note] || '').trim() : '';
+      if (!tin && !tout && !duty) continue;
+      out.push({ regno, date: blockDate, site, venue: venueCell, tin, tout, duty, load_end: blockLoadEnd, show_end: blockShowEnd, multi, note });
+    }
   }
-  return { date, venue, rows: out };
+  return { date: lastDate, venue: lastVenue, rows: out };
 }
 
 // フォーマットA/B(個人スケジュール月間表・横長)を解析
@@ -394,7 +605,9 @@ async function api(req, env, url) {
       if (password !== u.regno) return ERR('登録番号またはパスワードが違います', 401);
       const salt = rnd();
       const h = await pbkdf2(password, salt);
-      await env.DB.prepare('UPDATE users SET pass_hash=?, salt=? WHERE id=?').bind(h, salt, u.id).run();
+      // 初期パスワード(=登録番号)での初回ログイン → 強制変更フラグを立てる
+      await env.DB.prepare('UPDATE users SET pass_hash=?, salt=?, must_change=1 WHERE id=?').bind(h, salt, u.id).run();
+      u.must_change = 1;
     } else {
       const h = await pbkdf2(password || '', u.salt);
       if (h !== u.pass_hash) return ERR('登録番号またはパスワードが違います', 401);
@@ -431,8 +644,10 @@ async function api(req, env, url) {
     if (!newpw || newpw.length < 4) return ERR('新しいパスワードは4文字以上にしてください');
     const h = await pbkdf2(oldpw || '', me.salt);
     if (h !== me.pass_hash) return ERR('現在のパスワードが違います');
+    // 初期PW(登録番号)と同じものへの変更は許可しない(強制変更の意味がなくなるため)
+    if (newpw === me.regno) return ERR('登録番号と同じパスワードは使えません。別のパスワードを設定してください');
     const salt = rnd();
-    await env.DB.prepare('UPDATE users SET pass_hash=?, salt=? WHERE id=?').bind(await pbkdf2(newpw, salt), salt, me.id).run();
+    await env.DB.prepare('UPDATE users SET pass_hash=?, salt=?, must_change=0 WHERE id=?').bind(await pbkdf2(newpw, salt), salt, me.id).run();
     return J({ ok: 1 });
   }
 
@@ -494,7 +709,7 @@ async function api(req, env, url) {
     const rows = (await env.DB.prepare('SELECT effective_from,rank,kind,amount FROM wage_rates ORDER BY effective_from,rank,kind').all()).results;
     const periods = {};
     for (const r of rows) { (periods[r.effective_from] ||= { effective_from: r.effective_from, rates: {} }); (periods[r.effective_from].rates[r.rank] ||= {})[r.kind] = r.amount; }
-    return J({ lockBefore: payLockDate(), periods: Object.values(periods) });
+    return J({ lockBefore: payLockDate(await getLockDays(env)), lockDays: await getLockDays(env), periods: Object.values(periods) });
   }
   // 時給テーブル更新(管理者)。body.rates=[{effective_from,rank,kind,amount}]。新規effective_fromの追加も可
   if (method === 'PUT' && path === '/wage-rates') {
@@ -533,6 +748,45 @@ async function api(req, env, url) {
       n++;
     }
     return J({ ok: 1, updated: n });
+  }
+
+  // ---- 通知設定(管理者) ----
+  if (method === 'GET' && path === '/notify-settings') {
+    if (lv(me) < 2) return ERR('ページが見つかりません', 404);
+    return J({
+      enabled: (await getSetting(env, 'notify_enabled', '1')) !== '0',
+      hour: parseInt(await getSetting(env, 'notify_hour', '21'), 10),
+      target: await getSetting(env, 'notify_target', 'handlers'),
+    });
+  }
+  if (method === 'PUT' && path === '/notify-settings') {
+    if (lv(me) < 3) return ERR('管理者のみ変更できます', 403);
+    const enabled = body.enabled ? '1' : '0';
+    let hour = parseInt(body.hour, 10); if (isNaN(hour) || hour < 0 || hour > 23) hour = 21;
+    const target = ['handlers', 'chiefs', 'all'].includes(body.target) ? body.target : 'handlers';
+    await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('notify_enabled',?)").bind(enabled).run();
+    await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('notify_hour',?)").bind(String(hour)).run();
+    await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('notify_target',?)").bind(target).run();
+    return J({ ok: 1, enabled: enabled === '1', hour, target });
+  }
+  if (method === 'POST' && path === '/notify-test') {
+    if (lv(me) < 3) return ERR('管理者のみ実行できます', 403);
+    await notify(env, [me.id], 'remind', '🔔【テスト通知】通知は正常に動作しています。');
+    return J({ ok: 1 });
+  }
+
+  // ---- 給与確定ロック期間の設定 ----
+  if (method === 'GET' && path === '/lock-settings') {
+    if (lv(me) < 2) return ERR('ページが見つかりません', 404);
+    const days = await getLockDays(env);
+    return J({ days, lockBefore: payLockDate(days) });
+  }
+  if (method === 'PUT' && path === '/lock-settings') {
+    if (lv(me) < 3) return ERR('管理者のみ変更できます', 403);
+    let days = parseInt(body.days, 10);
+    if (isNaN(days) || days < 0 || days > 3650) return ERR('日数は0〜3650の範囲で指定してください');
+    await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('lock_days',?)").bind(String(days)).run();
+    return J({ ok: 1, days, lockBefore: payLockDate(days) });
   }
   if (method === 'POST' && path === '/users') {
     if (lv(me) < 2) return ERR('ページが見つかりません', 404);
@@ -643,12 +897,13 @@ async function api(req, env, url) {
     let added = 0, skipped = 0;
     const conflicts = [];
     const nameCache = {};
+    const lockDays = await getLockDays(env);
     const ts = jstTs();
     for (const a of assignments) {
       if (!(a.uid in nameCache)) { const u = await env.DB.prepare('SELECT name, rank FROM users WHERE id=?').bind(a.uid).first(); nameCache[a.uid] = u ? { name: u.name, rank: u.rank } : { name: '', rank: '' }; }
       const uname = nameCache[a.uid].name;
       for (const date of a.dates) {
-        if (isLocked(date, me)) { skipped++; continue; } // 給与確定済みは編集不可(管理者は除く)
+        if (isLocked(date, me, lockDays)) { skipped++; continue; } // 給与確定済みは編集不可(管理者は除く)
         const before = (await env.DB.prepare('SELECT * FROM schedule WHERE user_id=? AND date=? ORDER BY slot').bind(a.uid, date).all()).results;
         if (before.some(b => b.site === site)) { skipped++; continue; } // 同一現場は無害なので静かにスキップ
         // IN/OUTが既存の現場と重なるか
@@ -689,7 +944,7 @@ async function api(req, env, url) {
     const keepUids = Array.isArray(body.keepUids) ? body.keepUids.map(Number).filter(Boolean) : [];
     const ts = jstTs();
     let updated = 0, removed = 0;
-    if (isLocked(date, me)) return ERR('給与確定済みのため編集できません（現場日から2週間経過）', 409);
+    if (isLocked(date, me, await getLockDays(env))) return ERR('給与確定済みのため編集できません（確定期間を過ぎています）', 409);
     const resolve = await loadWageResolver(env);
     // 削除対象
     for (const uid of removeUids) {
@@ -743,7 +998,8 @@ async function api(req, env, url) {
     const trank = tgt ? tgt.rank : '';
     const resolve = await loadWageResolver(env);
     // 給与確定(現場日から2週間)済みの日付は編集不可
-    const lockedDates = Object.keys(byDate).filter(d => isLocked(d, me));
+    const lockDays = await getLockDays(env);
+    const lockedDates = Object.keys(byDate).filter(d => isLocked(d, me, lockDays));
     if (lockedDates.length) return ERR('給与確定済みのため編集できません（現場日から2週間経過）: ' + lockedDates.join(', '), 409);
     const allConflicts = [];
     for (const date of Object.keys(byDate)) {
@@ -878,22 +1134,59 @@ async function api(req, env, url) {
     for (const rawUrl of urls) {
       const meta = parseSheetUrl(rawUrl);
       if (!meta) { results.push({ url: rawUrl, ok: false, error: 'URLの形式が正しくありません' }); continue; }
-      let csv;
-      try {
-        const resp = await fetch(csvExportUrl(meta.id, meta.gid), { redirect: 'follow' });
-        if (!resp.ok) { results.push({ url: rawUrl, ok: false, error: `取得失敗(HTTP ${resp.status})。シートが「リンクを知る全員が閲覧可」か確認してください` }); continue; }
-        csv = await resp.text();
-        if (/<html/i.test(csv.slice(0, 200))) { results.push({ url: rawUrl, ok: false, error: 'シートが非公開の可能性があります(「リンクを知る全員が閲覧可」に設定してください)' }); continue; }
-      } catch (e) { results.push({ url: rawUrl, ok: false, error: '取得時にエラー: ' + e.message }); continue; }
 
-      const grid = parseCsv(csv);
-      const fmt = body.format && body.format !== 'auto' ? body.format : detectFormat(grid);
-      let parsed;
-      if (fmt === 'C') parsed = parseFormatC(grid, body.cfg).rows;
-      else parsed = parseFormatAB(grid, month, body.cfg).rows;
-      if (!parsed.length) { results.push({ url: rawUrl, ok: false, format: fmt, error: '取り込めるデータが見つかりませんでした(フォーマットや対象月を確認してください)' }); continue; }
-      const r = await applyImportRows(env, parsed, me.id, mode, 'スプレッドシートURL');
-      results.push({ url: rawUrl, ok: true, format: fmt, applied: r.applied, skipped: r.skipped, errors: r.errors });
+      // まず xlsx 一括取得で全シート(タブ)を読む。失敗したら単一CSVにフォールバック。
+      let sheets = null, fellBack = false, rawXlsx = null;
+      try {
+        const got = await fetchXlsxSheets(meta.id);
+        sheets = got.sheets; rawXlsx = got.raw;
+      } catch (e) {
+        fellBack = true;
+        try {
+          const resp = await fetch(csvExportUrl(meta.id, meta.gid), { redirect: 'follow' });
+          if (!resp.ok) { results.push({ url: rawUrl, ok: false, error: `取得失敗(HTTP ${resp.status})。シートを「リンクを知る全員が閲覧可」にしてください` }); continue; }
+          const csv = await resp.text();
+          if (/<html/i.test(csv.slice(0, 200))) { results.push({ url: rawUrl, ok: false, error: 'シートが非公開の可能性があります(「リンクを知る全員が閲覧可」に設定してください)' }); continue; }
+          sheets = [{ name: '(単一シート)', grid: parseCsv(csv) }];
+        } catch (e2) { results.push({ url: rawUrl, ok: false, error: '取得エラー: ' + e2.message }); continue; }
+      }
+
+      // 各シートを解析して1つにまとめる。台帳/シート名/料金タブ等の不要シートは自動スキップ。
+      let allRows = [];
+      const sheetReport = [];
+      for (const sh of sheets) {
+        const nm = sh.name || '';
+        if (/^(シート名|台帳|会場リスト|料金|集計|Sheet\d*|フォーマット)/.test(nm)) continue; // 集計系は除外
+        const grid = sh.grid;
+        if (!grid || !grid.length) continue;
+        const fmt = body.format && body.format !== 'auto' ? body.format : detectFormat(grid);
+        let parsed;
+        if (fmt === 'C') parsed = parseFormatC(grid, body.cfg).rows;
+        else parsed = parseFormatAB(grid, month, body.cfg).rows;
+        if (parsed && parsed.length) { allRows = allRows.concat(parsed); sheetReport.push({ name: nm, count: parsed.length }); }
+      }
+
+      if (!allRows.length) { results.push({ url: rawUrl, ok: false, error: '取り込めるデータが見つかりませんでした(対象月やフォーマットを確認してください)', sheets: sheetReport }); continue; }
+      const r = await applyImportRows(env, allRows, me.id, mode, 'スプレッドシートURL');
+
+      // 監査・証拠用に、取り込んだ元Excel(xlsx)をR2へ保管しインデックスを記録する。
+      let archived = false, archiveError = '';
+      if (rawXlsx && env.DAICHO) {
+        try {
+          const ts = jstTs();
+          const r2key = `daicho/${ts.replace(/[: ]/g, '-')}_${meta.id}.xlsx`;
+          await env.DAICHO.put(r2key, rawXlsx, {
+            httpMetadata: { contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
+          });
+          const fname = `台帳_${ts.slice(0, 10)}_${meta.id.slice(0, 8)}.xlsx`;
+          await env.DB.prepare(
+            'INSERT INTO daicho_archive(ts,importer_id,importer_name,source_url,file_id,r2_key,file_name,size,applied,sheets) VALUES(?,?,?,?,?,?,?,?,?,?)'
+          ).bind(ts, me.id, me.name, rawUrl, meta.id, r2key, fname, rawXlsx.length, r.applied, sheetReport.length).run();
+          archived = true;
+        } catch (e) { archiveError = e.message; }
+      }
+
+      results.push({ url: rawUrl, ok: true, sheetsRead: sheetReport.length, sheets: sheetReport, applied: r.applied, skipped: r.skipped, errors: r.errors, mode: fellBack ? '単一シート(全タブ取得に失敗)' : '全シート', archived, archiveError });
     }
     if (body.save) {
       const saved = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
@@ -913,6 +1206,52 @@ async function api(req, env, url) {
     const urls = Array.isArray(body.urls) ? body.urls.filter(u => parseSheetUrl(u)) : [];
     await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('import_urls',?)").bind(JSON.stringify(urls.slice(-50))).run();
     return J({ ok: 1, urls });
+  }
+
+  // ---- 台帳保管(管理者のみ) ----
+  if (method === 'GET' && path === '/daicho') {
+    if (lv(me) < 3) return ERR('管理者のみ閲覧できます', 403);
+    const rows = (await env.DB.prepare(
+      'SELECT id,ts,importer_name,source_url,file_id,file_name,size,applied,sheets FROM daicho_archive ORDER BY id DESC LIMIT 500'
+    ).all()).results;
+    return J({ items: rows });
+  }
+  let dm;
+  if (method === 'GET' && (dm = path.match(/^\/daicho\/(\d+)\/download$/))) {
+    if (lv(me) < 3) return ERR('管理者のみダウンロードできます', 403);
+    const rec = await env.DB.prepare('SELECT r2_key,file_name FROM daicho_archive WHERE id=?').bind(Number(dm[1])).first();
+    if (!rec) return ERR('見つかりません', 404);
+    if (!env.DAICHO) return ERR('R2が未設定です', 500);
+    const obj = await env.DAICHO.get(rec.r2_key);
+    if (!obj) return ERR('ファイル本体が見つかりません(削除済みの可能性)', 404);
+    const fname = encodeURIComponent(rec.file_name || 'daicho.xlsx');
+    return new Response(obj.body, {
+      headers: {
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'Content-Disposition': `attachment; filename*=UTF-8''${fname}`
+      }
+    });
+  }
+  if (method === 'POST' && (dm = path.match(/^\/daicho\/(\d+)\/delete$/))) {
+    if (lv(me) < 3) return ERR('管理者のみ削除できます', 403);
+    const rec = await env.DB.prepare('SELECT r2_key FROM daicho_archive WHERE id=?').bind(Number(dm[1])).first();
+    if (!rec) return ERR('見つかりません', 404);
+    if (env.DAICHO) { try { await env.DAICHO.delete(rec.r2_key); } catch (e) {} }
+    await env.DB.prepare('DELETE FROM daicho_archive WHERE id=?').bind(Number(dm[1])).run();
+    return J({ ok: 1 });
+  }
+
+  // 保存済み取り込みURLの削除(手配者以上)
+  if (method === 'POST' && path === '/import-urls/delete') {
+    if (lv(me) < 2) return ERR('ページが見つかりません', 404);
+    const saved = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
+    let next;
+    if (body.all) next = [];
+    else if (body.url) next = saved.filter(u => u !== body.url);
+    else if (Array.isArray(body.urls)) next = saved.filter(u => !body.urls.includes(u));
+    else next = saved;
+    await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('import_urls',?)").bind(JSON.stringify(next)).run();
+    return J({ ok: 1, urls: next });
   }
 
   // ---- 手配者専用 ----
@@ -1023,15 +1362,31 @@ async function api(req, env, url) {
 }
 
 // 毎日21:00(JST)= 12:00 UTC: 現場入りしているチーフへ新人報告の催促
-async function cron2100(env) {
+// 毎時実行され、設定時刻(JST)に一致する場合のみ新人報告の催促通知を送る。
+// settings: notify_enabled('1'/'0'), notify_hour('21'), notify_target('handlers'|'chiefs'|'all')
+async function cronNotify(env) {
+  const enabled = await getSetting(env, 'notify_enabled', '1');
+  if (enabled === '0') return;
+  const targetHour = parseInt(await getSetting(env, 'notify_hour', '21'), 10);
+  const now = new Date(Date.now() + 9 * 3600e3);   // JST
+  if (now.getHours() !== targetHour) return;        // 設定時刻の回だけ実行
+
   const today = jstDate();
-  const chiefs = (await env.DB.prepare(
-    "SELECT DISTINCT u.id FROM users u JOIN schedule s ON s.user_id=u.id WHERE s.date=? AND s.type='work' AND u.role!='member'"
-  ).bind(today).all()).results;
-  for (const c of chiefs) {
-    const done = await env.DB.prepare('SELECT 1 FROM reports WHERE reporter_id=? AND ts LIKE ?').bind(c.id, today + '%').first();
-    if (!done) await notify(env, [c.id], 'remind', '⏰【催促】本日の新人報告がまだ提出されていません。忘れずに提出をお願いします。');
-  }
+  const scope = await getSetting(env, 'notify_target', 'handlers'); // 既定:手配者以上
+  let where = "role IN ('handler','admin')";
+  if (scope === 'chiefs') where = "role IN ('chief','handler','admin')";
+  else if (scope === 'all') where = "role IN ('chief','handler','admin')"; // メンツには送らない
+
+  const recipients = (await env.DB.prepare(
+    `SELECT id FROM users WHERE ${where} AND COALESCE(suspended,0)=0`
+  ).all()).results;
+
+  // 本日まだ新人報告が無ければ催促
+  const anyReport = await env.DB.prepare('SELECT 1 FROM reports WHERE ts LIKE ?').bind(today + '%').first();
+  if (anyReport) return; // 誰かが提出済みなら催促しない
+
+  const ids = recipients.map(r => r.id);
+  if (ids.length) await notify(env, ids, 'remind', '⏰【リマインド】本日の新人報告がまだ提出されていません。対象者がいる場合は忘れずに提出をお願いします。');
 }
 
 export default {
@@ -1043,5 +1398,5 @@ export default {
     }
     return env.ASSETS.fetch(req);
   },
-  async scheduled(event, env) { await cron2100(env); }
+  async scheduled(event, env) { await cronNotify(env); }
 };

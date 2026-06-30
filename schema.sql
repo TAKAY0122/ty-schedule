@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS users(
   pass_hash TEXT,                        -- NULL = 初期PW(登録番号)で初回ログイン
   salt TEXT,
   suspended INTEGER DEFAULT 0,           -- 1 = アカウント停止(ログイン不可・一覧等には表示)
+  must_change INTEGER DEFAULT 0,         -- 1 = 次回ログイン時にパスワード変更を強制
   created TEXT DEFAULT (datetime('now'))
 );
 
@@ -144,5 +145,20 @@ INSERT OR IGNORE INTO wage_rates(effective_from,rank,kind,amount) VALUES
  ('2025-10-01','D','guide',1190),('2025-10-01','D','load',1290),
  ('2025-10-01','E','guide',1180),('2025-10-01','E','load',1280);
 
--- 初期管理者(初期パスワードは登録番号と同じ: 371166)
-INSERT OR IGNORE INTO users(regno, name, role) VALUES('371166', '管理者', 'admin');
+-- 取り込んだ台帳(元Excel)の保管インデックス。実ファイルはR2に保存し、ここはメタ情報のみ。
+CREATE TABLE IF NOT EXISTS daicho_archive(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,            -- 取り込み日時(JST)
+  importer_id INTEGER,        -- 取り込んだ人のユーザーID
+  importer_name TEXT,         -- 取り込んだ人の氏名(削除耐性のため文字列でも保持)
+  source_url TEXT,            -- 取り込み元のスプレッドシートURL
+  file_id TEXT,               -- スプレッドシートのファイルID
+  r2_key TEXT NOT NULL,       -- R2上の保存キー(=ダウンロード識別子)
+  file_name TEXT,             -- 元ファイル名(表示用)
+  size INTEGER,               -- バイトサイズ
+  applied INTEGER,            -- このとき反映された件数
+  sheets INTEGER              -- 読み取ったシート数
+);
+
+-- 初期管理者(初期パスワードは登録番号と同じ: 323331)
+INSERT OR IGNORE INTO users(regno, name, role) VALUES('323331', '管理者', 'admin');
