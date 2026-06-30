@@ -156,6 +156,15 @@ function withAuthor(text, authorName) {
 // rows: [{regno,date,type?,site,venue,tin,tout,pay?,note?}]
 // mode 'replace-person-day': (登録番号,日付)単位でその日を全置換(複数現場対応)
 // mode 'add': 既存に追記(slotを足す)。重複は site で判定してスキップ
+// "H:MM" を分に変換(早朝<6:00は翌日扱いで+24h)。比較専用。
+function timeToMin(t) {
+  const m = String(t || '').match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return -1;
+  let x = +m[1] * 60 + +m[2];
+  if (x < 360) x += 1440;
+  return x;
+}
+
 async function applyImportRows(env, rows, editorId, mode = 'replace-person-day', srcLabel = 'spreadsheet') {
   const ts = jstTs();
   const resolve = await loadWageResolver(env);
@@ -177,13 +186,35 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
     groups[key].items.push(r);
   }
   for (const key of order) {
-    const { uid, rank, date, items } = groups[key];
+    const { uid, rank, name, date, items } = groups[key];
     const before = (await env.DB.prepare('SELECT * FROM schedule WHERE user_id=? AND date=? ORDER BY slot').bind(uid, date).all()).results;
     let baseSlots = [];
     if (mode === 'add') baseSlots = before.map(stripRow);
+    // 同一(現場名)の行が複数ある場合は1つにマージする(台帳側で準備/搬入/本番などが
+    // 別行に分かれていても、同じ人が同じ現場に複数回登録されるのを防ぐため)。
+    // IN=最も早い時刻、OUT=最も遅い時刻、業務名は重複を除いて「/」で連結。
+    const mergedMap = {}; const mergedOrder = [];
+    for (const r of items) {
+      const mkey = (r.site || '') + '|' + (r.type || 'work');
+      if (!mergedMap[mkey]) { mergedMap[mkey] = { ...r, _duties: new Set() }; mergedOrder.push(mkey); }
+      const g = mergedMap[mkey];
+      if (r.tin && (!g.tin || timeToMin(r.tin) < timeToMin(g.tin))) g.tin = r.tin;
+      if (r.tout && (!g.tout || timeToMin(r.tout) > timeToMin(g.tout))) g.tout = r.tout;
+      if (r.load_end && !g.load_end) g.load_end = r.load_end;
+      if (r.show_end && !g.show_end) g.show_end = r.show_end;
+      if (r.multi) g.multi = 1;
+      if (r.duty) g._duties.add(r.duty);
+      if (r.note && !g.note) g.note = r.note;
+    }
+    const mergedItems = mergedOrder.map(k => {
+      const g = mergedMap[k];
+      const duties = [...g._duties];
+      return { ...g, duty: duties.length ? duties.join('/') : g.duty };
+    });
+    const mergeNote = mergedItems.length < items.length ? `(${items.length}行→${mergedItems.length}件に統合)` : '';
     // 取り込み行を整形
     const incoming = [];
-    for (const r of items) {
+    for (const r of mergedItems) {
       const type = ['work', 'off', 'paid', 'x', 'ok'].includes(r.type) ? r.type : 'work';
       let hours = 0, overtime = 0, pay = 0;
       if (type === 'work' || type === 'paid') {
@@ -220,6 +251,7 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
     await env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
       .bind(ts, editorId, uid, date, beforeJson, JSON.stringify({ slots: afterJson, _src: srcLabel })).run();
     applied += items.length;
+    if (mergeNote) errors.push(`${name || uid}さん ${date}: 同一現場の重複行を統合しました ${mergeNote}`);
   }
   return { applied, skipped, skippedUnregistered, skippedUnchanged, skippedInvalid, errors };
 }
@@ -456,6 +488,20 @@ function normTime(v) {
   return '';
 }
 
+// 現場名の表記ゆれを統一する。「〇〇【△△】」(末尾にセクション名)は
+// 「【△△】〇〇」(先頭にセクション名)に並べ替える。これにより
+// 「アリーナ椅子設営撤去【FANTASTICS】」と「【FANTASTICS】アリーナ椅子設営撤去」のような
+// 表記違いが同一現場として扱われ、重複登録を防げる。
+// 既に先頭が【】で始まる場合はそのまま。
+function normalizeSiteName(site) {
+  const s = String(site || '').trim();
+  if (!s) return s;
+  if (s.startsWith('【')) return s; // 既に正しい並び
+  const m = s.match(/^(.*?)\s*【([^】]+)】\s*$/); // 末尾の「【...】」を検出
+  if (m && m[1].trim()) return `【${m[2]}】${m[1].trim()}`;
+  return s;
+}
+
 // 日付文字列を YYYY-MM-DD に正規化。基準年月(ym='2026-06')を補完に使う
 function normSheetDate(v, ym) {
   const s = String(v == null ? '' : v).trim();
@@ -553,7 +599,7 @@ function parseFormatC(rows, cfg, fileDate) {
       let multi = 0;
       // 業務名に "(2st)" → 2st手当ON、表記を除去
       if (/[（(]\s*2st\s*[)）]/i.test(duty)) { multi = 1; duty = duty.replace(/[（(]\s*2st\s*[)）]/ig, '').trim(); }
-      const site = (cols.saimotsu >= 0 ? String(line[cols.saimotsu] || '').trim() : '') || meta.site || duty;
+      const site = normalizeSiteName((cols.saimotsu >= 0 ? String(line[cols.saimotsu] || '').trim() : '') || meta.site || duty);
       const venueCell = (cols.venueCol >= 0 ? String(line[cols.venueCol] || '').trim() : '') || blockVenue;
       const tin = normTime(line[cols.start]);
       const tout = laterTime(normTime(cols.tout >= 0 ? line[cols.tout] : ''), normTime(cols.tend >= 0 ? line[cols.tend] : ''));
@@ -582,7 +628,7 @@ function parseFormatAB(rows, ym, cfg) {
     const date = normSheetDate(line[dayCol], ym);
     if (!date) continue;
     for (const m of memberCols) {
-      const site = String(line[m.c] || '').trim();
+      const site = normalizeSiteName(String(line[m.c] || '').trim());
       const venue = String(line[m.c + 1] || '').trim();
       const note = String(line[m.c + 2] || '').trim();
       if (!site) continue;
@@ -1171,10 +1217,10 @@ async function api(req, env, url) {
       if (!meta) { results.push({ url: rawUrl, ok: false, error: 'URLの形式が正しくありません' }); continue; }
 
       // まず xlsx 一括取得で全シート(タブ)を読む。失敗したら単一CSVにフォールバック。
-      let sheets = null, fellBack = false, rawXlsx = null, xlsxError = '', fileDate = userDate;
+      let sheets = null, fellBack = false, rawXlsx = null, xlsxError = '', fileDate = userDate, sheetFileTitle = '';
       try {
         const got = await fetchXlsxSheets(meta.id);
-        sheets = got.sheets; rawXlsx = got.raw;
+        sheets = got.sheets; rawXlsx = got.raw; sheetFileTitle = got.fileTitle || '';
         // ファイル名(例:「6/30(火)_BP現場台帳」)から日付を抽出。個々のブロックに日付が無い場合の予備として使う。
         // ユーザーが対象日を明示指定していなければ、これを優先的に使う。
         if (!userDate && got.fileTitle) { const fd = normSheetDate(got.fileTitle, jstDate().slice(0, 7)); if (fd && /^\d{4}-\d{2}-\d{2}$/.test(fd)) fileDate = fd; }
@@ -1222,7 +1268,10 @@ async function api(req, env, url) {
           await env.DAICHO.put(r2key, rawXlsx, {
             httpMetadata: { contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
           });
-          const fname = `台帳_${ts.slice(0, 10)}_${meta.id.slice(0, 8)}.xlsx`;
+          // 実際のスプレッドシート名(例:「6/30(火)_BP現場台帳」)が取れていればそれを使う。
+          // 取れない場合は従来通り日時+ファイルIDで自動生成。
+          const safeTitle = sheetFileTitle ? sheetFileTitle.replace(/[\\/:*?"<>|]/g, '_').trim() : '';
+          const fname = safeTitle ? `${safeTitle}.xlsx` : `台帳_${ts.slice(0, 10)}_${meta.id.slice(0, 8)}.xlsx`;
           await env.DB.prepare(
             'INSERT INTO daicho_archive(ts,importer_id,importer_name,source_url,file_id,r2_key,file_name,size,applied,sheets) VALUES(?,?,?,?,?,?,?,?,?,?)'
           ).bind(ts, me.id, me.name, rawUrl, meta.id, r2key, fname, rawXlsx.length, r.applied, sheetReport.length).run();
