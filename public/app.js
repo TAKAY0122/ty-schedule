@@ -2002,19 +2002,19 @@ async function pageAdmin(app){
     const isHourly = d && d.frequency === 'hourly';
     return sec('sched-'+src, `📅 ${label}の自動取り込み <span class="muted" style="font-weight:400">(${src==='chief'?'チーフスケジュール表':'1課スケジュール表'})</span>`, d ? `
     <div class="muted" style="margin-bottom:10px">スプレッドシート(複数シートで分かれている場合は全シート)を自動で取り込み、各人のスケジュールに反映します。<b>取り込み日から2日後以降の日付のみ</b>反映され、当日・翌日分は対象外です(その期間は台帳の実績取り込みを優先するため)。時刻情報はこの表にはないため、現場名・会場名・×・休暇のみ反映されます。前回取り込み内容と人単位で比較し、変更がない人はスキップされます(変更があった人だけ更新)。</div>
-    <div class="form-grid" style="grid-template-columns:140px 1fr;max-width:640px;gap:10px 12px;align-items:center">
+    <div class="form-grid" style="max-width:640px">
       <label>自動取り込み</label>
       <label style="font-weight:400;display:flex;align-items:center;gap:8px"><input type="checkbox" id="cs-enabled-${src}" ${d.enabled?'checked':''} style="width:auto"> 自動で取り込む</label>
       <label>スプレッドシートURL</label>
-      <input id="cs-url-${src}" value="${h(d.url||'')}" placeholder="https://docs.google.com/spreadsheets/d/..." style="font-family:monospace;font-size:12px">
+      <input id="cs-url-${src}" value="${h(d.url||'')}" placeholder="https://docs.google.com/spreadsheets/d/..." style="font-family:monospace;font-size:12px;width:100%;max-width:100%;box-sizing:border-box">
       <label>取り込み頻度</label>
-      <select id="cs-freq-${src}" class="cs-freq" data-src="${src}" style="width:240px">
+      <select id="cs-freq-${src}" class="cs-freq" data-src="${src}" style="width:100%;max-width:360px">
         <option value="hourly" ${isHourly?'selected':''}>毎時チェック(スプレッドシートの更新をなるべく早く反映)</option>
         <option value="daily" ${!isHourly?'selected':''}>1日1回、決まった時刻のみ</option>
       </select>
       <label class="cs-hour-row" data-src="${src}" style="${isHourly?'display:none':''}">実行時刻</label>
       <span class="cs-hour-row" data-src="${src}" style="${isHourly?'display:none':''}">
-        <select id="cs-hour-${src}" style="width:120px">${Array.from({length:24},(_,i)=>`<option value="${i}" ${d.hour===i?'selected':''}>${String(i).padStart(2,'0')}:00</option>`).join('')}</select>
+        <select id="cs-hour-${src}" style="width:120px;max-width:100%">${Array.from({length:24},(_,i)=>`<option value="${i}" ${d.hour===i?'selected':''}>${String(i).padStart(2,'0')}:00</option>`).join('')}</select>
       </span>
     </div>
     <div class="row" style="margin-top:14px;gap:8px;align-items:center">
