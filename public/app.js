@@ -7,6 +7,15 @@ const WD = ['日','月','火','水','木','金','土'];
 const ROLE_JP = { admin:'チーフ(管理者)', handler:'チーフ(手配者)', chief:'チーフ', member:'メンツ' };
 function roleLabel(u){ if(u && u.suspended) return (u.role==='member'?'メンツ':'チーフ')+'(アカウント停止)'; return ROLE_JP[u.role]||u.role; }
 const LV = { member:0, chief:1, handler:2, admin:3 };
+// 個別追加権限の基準レベル(バックエンドのPERMSと対応)
+const PERM_BASE_LV = { site_pay:2, site_manage:2, import_data:2, handler_tools:2, wage_settings:3, account_manage:3, daicho_manage:3 };
+// has(key): MEがその機能を使えるか(基本権限を満たす、または個別に追加権限がある)
+function has(key){
+  if(!ME) return false;
+  const base = PERM_BASE_LV[key] ?? 99;
+  if((LV[ME.role] ?? 0) >= base) return true;
+  return Array.isArray(ME.extra_perms) && ME.extra_perms.includes(key);
+}
 const yen = n => '¥' + Number(n||0).toLocaleString();
 const jstToday = () => new Date(Date.now()+9*3600e3).toISOString().slice(0,10);
 // 権限不足・存在しないページの共通表示(機能名を一切見せない)
@@ -322,6 +331,8 @@ async function render(){
     else if(hash === '#/handler') await pageHandler(app);
     else if(hash === '#/admin') await pageAdmin(app);
     else if(hash === '#/daicho') await pageDaicho(app);
+    else if(hash.startsWith('#/permissions/')) await pagePermissions(app, hash);
+    else if(hash === '#/role-permissions') await pageRolePermissions(app);
     else if(hash === '#/password') pagePassword(app);
     else { location.hash='#/schedule'; }
   }catch(e){ app.innerHTML = `<div class="msg err">${h(e.message)}</div>`; }
@@ -389,19 +400,20 @@ function renderForcedPassword(){
 
 /* ===== シェル(ヘッダー)===== */
 function renderShell(hash){
-  const isChief = LV[ME.role] >= 1, isHandler = LV[ME.role] >= 2;
+  const isChief = LV[ME.role] >= 1, isHandler = LV[ME.role] >= 2 || has('site_manage') || has('handler_tools') || has('import_data');
+  const canAdmin = ME.role === 'admin' || has('account_manage') || has('wage_settings');
   const links = [
     ['#/schedule','📅 マイスケジュール', true],
     ['#/sites','🏟️ 現場一覧', isChief],
     ['#/summary','📊 稼働サマリー', isChief],
     ['#/members','👥 メンバー', isChief],
     ['#/report','📝 新人報告', true],
-    ['#/reports','📋 報告一覧', isChief],
+    ['#/reports','📋 報告一覧', true],
     ['#/draft','⭐ ドラフト', isChief],
     ['#/blacklist','🚫 ブラックリスト', isChief],
     ['#/edit','✏️ スケジュール入力', ME.handler === 1],
-    ['#/admin','⚙️ アカウント管理', ME.role === 'admin'],
-    ['#/daicho','🗂️ 台帳保管', ME.role === 'admin'],
+    ['#/admin','⚙️ アカウント管理', canAdmin],
+    ['#/daicho','🗂️ 台帳保管', ME.role === 'admin' || has('daicho_manage')],
   ].filter(l => l[2]);
   // 現在ページ名(ヘッダー中央に表示)
   const cur = links.find(l => hash.startsWith(l[0]));
@@ -966,7 +978,7 @@ async function pageMembers(app){
   const cnt1 = users.filter(u=>kaOf(u)==='1課').length;
   const cntX = users.filter(u=>!u.ka).length;
 
-  const isHandler = LV[ME.role] >= 2;
+  const isHandler = has('site_manage') || has('account_manage');
   const skillBtn = u => `<button class="btn ghost sm" data-skill="${u.id}">編集</button>`;
   const editBtn = u => isHandler
     ? `<button class="btn ghost sm" data-edit="${u.id}">✏️ 編集</button>`
@@ -1037,10 +1049,10 @@ async function pageMembers(app){
   });
 }
 
-// メンバー情報の編集(手配者以上)。ランク・課・班・最寄駅・できること・担当手配者(役割は管理者のみ)
+// メンバー情報の編集(手配者以上、または個別権限あり)。ランク・課・班・最寄駅・できること・担当手配者(役割の変更はaccount_manage権限のみ)
 function openMemberEdit(u, users, managers){
-  if(LV[ME.role] < 2){ return; }
-  const isAdmin = ME.role === 'admin';
+  if(!has('site_manage') && !has('account_manage')){ return; }
+  const isAdmin = has('account_manage');
   const ranks = [...new Set(users.map(x=>x.rank).filter(Boolean))].sort();
   modal(`<h3>${h(u.name)} の情報を編集</h3>
     <div class="form-grid" style="grid-template-columns:84px 1fr;gap:8px 10px;align-items:center">
@@ -1472,7 +1484,6 @@ function pageReportForm(app){
 
 /* ===== 報告一覧・2次チェック ===== */
 async function pageReports(app){
-  if(LV[ME.role] < 1){ notFound(app); return; }
   const rows = await api('/reports');
   app.innerHTML = `
   <h2>新人報告一覧</h2>
@@ -1500,6 +1511,7 @@ async function pageReports(app){
 
 function openReport(r){
   const pending = r.status === 'pending';
+  const isChief = LV[ME.role] >= 1; // 2次チェックの記入・修正、ブラックリスト登録はチーフ以上のみ
   modal(`<h3>新人報告 #${r.id} ${pending?'<span class="tag pending">2次未チェック</span>':'<span class="tag checked">チェック済</span>'}</h3>
   <dl class="kv">
     <dt>タイムスタンプ</dt><dd>${h(r.ts)}</dd>
@@ -1517,6 +1529,7 @@ function openReport(r){
     <dt>2次 育成計画</dt><dd>${h(r.plan)}</dd>
     <dt>チーフチェック者</dt><dd>${h(r.checker)}</dd>` : ''}
   </dl>
+  ${isChief ? `
   <h3 style="margin-top:14px">${pending ? '2次チェックを入力' : '2次チェックを修正'}</h3>
   <div class="form-grid">
     <label>やる気・表情(5段階)</label><select id="c-mot">${[1,2,3,4,5].map(n=>`<option ${n===(r.s_motivation??3)?'selected':''}>${n}</option>`).join('')}</select>
@@ -1527,7 +1540,8 @@ function openReport(r){
     <label>チーフチェック者名</label><input id="c-checker" value="${h(r.checker||ME.name)}">
   </div>
   <div class="row" style="margin-top:12px"><button class="btn gold" id="c-save">${pending ? 'チェック完了' : '修正を保存'}</button>${!pending?'<span class="muted" style="font-size:12px">※ ドラフト承認を「OK」にするとドラフト一覧に表示されます</span>':''}</div>
-  <div class="row" style="margin-top:14px"><button class="btn danger sm" id="bl-add">ブラックリストに登録</button></div>`);
+  <div class="row" style="margin-top:14px"><button class="btn danger sm" id="bl-add">ブラックリストに登録</button></div>`
+  : (pending ? `<div class="msg" style="background:#f0efe9;padding:12px;border-radius:8px;margin-top:14px;font-size:13px">2次チェックはまだ行われていません。</div>` : '')}`);
 
   const cs = $('#c-save');
   if(cs) cs.onclick = async () => {
@@ -1542,7 +1556,8 @@ function openReport(r){
       popup((wasPending?'2次チェックを完了しました。':'2次チェックを更新しました。')+draftMsg);
     }catch(e){ popup(e.message, 'error'); }
   };
-  $('#bl-add').onclick = async () => {
+  const blAdd = $('#bl-add');
+  if(blAdd) blAdd.onclick = async () => {
     if(!confirm(`「${r.candidate_name}」をブラックリストに登録しますか?(5段階評価・詳細はブラックリスト画面で追記できます)`)) return;
     try{
       await api('/blacklist', { method:'POST', body:{ name:r.candidate_name, reporter:r.reporter_name, reason:'' } });
@@ -1762,6 +1777,115 @@ async function pageHandler(app){
   </div>`).join('')}</div>` : '<div class="muted">編集履歴はありません</div>';
 }
 
+/* ===== ロール一括権限の編集(管理者のみ・専用ページ) ===== */
+async function pageRolePermissions(app){
+  if(!has('account_manage')){ notFound(app); return; }
+  app.innerHTML = '<h2>権限の一括設定</h2><div class="card"><div class="muted">読み込み中…</div></div>';
+  let defs;
+  try{ defs = await api('/perm-defs'); }
+  catch(e){ app.innerHTML = `<h2>権限の一括設定</h2><div class="card"><div class="msg err">${h(e.message)}</div></div>`; return; }
+
+  const roles = [
+    { key:'member', label:'メンツ全員' },
+    { key:'chief', label:'チーフ全員' },
+    { key:'handler', label:'チーフ(手配者)全員' },
+  ];
+  app.innerHTML = `
+  <div style="margin-bottom:14px"><a href="#/admin" class="btn ghost sm">← アカウント管理に戻る</a></div>
+  <h2 style="margin-bottom:4px">権限の一括設定</h2>
+  <div class="muted" style="margin-bottom:16px">役割ごとに、全員へまとめて追加権限を付与・解除できます。チェックを入れて保存すると、その役割の<b>全員</b>に反映されます(個別に設定した権限とは別に重ねて適用されます)。</div>
+  <div class="adm-nav">
+    ${roles.map(r=>`<button class="adm-chip" data-jump="role-${r.key}">${r.label}</button>`).join('')}
+  </div>
+  ${roles.map(r=>`<details class="adm-sec" id="rsec-${r.key}" data-sec="${r.key}">
+    <summary>${r.label}の追加権限</summary>
+    <div class="adm-body">
+      <div class="muted" style="margin-bottom:10px">対象: <span id="rcount-${r.key}">—</span></div>
+      <div id="rlist-${r.key}"></div>
+      <div class="row" style="margin-top:14px;gap:8px;align-items:center">
+        <button class="btn gold sm" data-save="${r.key}">${r.label}に反映する</button>
+        <span class="muted" id="rmsg-${r.key}"></span>
+      </div>
+    </div>
+  </details>`).join('')}`;
+
+  app.querySelectorAll('.adm-sec').forEach(d => { /* no persisted open-state needed here */ });
+  app.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => {
+    const d = document.getElementById('rsec-'+b.dataset.jump);
+    if(d){ d.open = true; d.scrollIntoView({behavior:'smooth', block:'start'}); }
+  });
+
+  for(const r of roles){
+    let cur;
+    try{ cur = await api(`/role-perms/${r.key}`); }
+    catch(e){ $('#rlist-'+r.key).innerHTML = `<div class="msg err">${h(e.message)}</div>`; continue; }
+    $('#rcount-'+r.key).textContent = `${cur.count}人`;
+    const listEl = $('#rlist-'+r.key);
+    listEl.innerHTML = defs.perms.map(p=>{
+      const already = p.baseLv <= LV[r.key]; // この役割の基本権限で既に使える機能
+      const checked = already || cur.perms.includes(p.key);
+      return `<label style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line);${already?'opacity:.5':''}">
+        <input type="checkbox" class="rperm-cb-${r.key}" value="${p.key}" ${checked?'checked':''} ${already?'disabled':''} style="width:18px;height:18px">
+        <span style="flex:1">${h(p.label)}</span>
+        ${already?'<span class="tag" style="font-size:11px">標準で利用可</span>':''}
+      </label>`;
+    }).join('');
+  }
+
+  app.querySelectorAll('[data-save]').forEach(btn => btn.onclick = async () => {
+    const role = btn.dataset.save;
+    const keys = [...document.querySelectorAll(`.rperm-cb-${role}:not(:disabled)`)].filter(c=>c.checked).map(c=>c.value);
+    const msgEl = $('#rmsg-'+role);
+    msgEl.textContent = '保存中…';
+    try{
+      const r = await api(`/role-perms/${role}`, { method:'PUT', body:{ perms: keys } });
+      msgEl.textContent = `${r.updated}人に反映しました`;
+      popup('一括で権限を反映しました');
+    }catch(e){ msgEl.textContent = e.message; }
+  });
+}
+
+/* ===== 個別権限の編集(管理者のみ・専用ページ) ===== */
+async function pagePermissions(app, hash){
+  if(!has('account_manage')){ notFound(app); return; }
+  const uid = Number(hash.split('/')[2]);
+  if(!uid){ notFound(app); return; }
+  app.innerHTML = '<h2>権限編集</h2><div class="card"><div class="muted">読み込み中…</div></div>';
+  let data, defs;
+  try{
+    [data, defs] = await Promise.all([ api(`/users/${uid}/perms`), api('/perm-defs') ]);
+  }catch(e){ app.innerHTML = `<h2>権限編集</h2><div class="card"><div class="msg err">${h(e.message)}</div></div>`; return; }
+  const baseLvOfMe = LV[data.role] ?? 0;
+  app.innerHTML = `
+  <div style="margin-bottom:14px"><a href="#/admin" class="btn ghost sm">← アカウント管理に戻る</a></div>
+  <h2 style="margin-bottom:4px">権限編集</h2>
+  <div class="muted" style="margin-bottom:16px">${h(data.name)} さん（登録番号 ${h(data.regno)} / ${h(roleLabel({role:data.role}))}）に、基本権限とは別に追加で使える機能を設定します。</div>
+  <div class="card">
+    <div class="muted" style="margin-bottom:14px">この人の基本権限（${h(roleLabel({role:data.role}))}）で既に使える機能にはチェックを入れられません。下記はそれ以外に「追加で」使えるようにする機能です。</div>
+    <div id="perm-list"></div>
+    <div class="row" style="margin-top:18px;gap:8px;align-items:center">
+      <button class="btn gold" id="perm-save">保存する</button>
+      <span id="perm-msg" class="muted"></span>
+    </div>
+  </div>`;
+  const list = $('#perm-list');
+  list.innerHTML = defs.perms.map(p => {
+    const already = baseLvOfMe >= p.baseLv; // 基本権限で既に使える
+    const checked = already || data.extraPerms.includes(p.key);
+    return `<label style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line);${already?'opacity:.5':''}">
+      <input type="checkbox" class="perm-cb" value="${p.key}" ${checked?'checked':''} ${already?'disabled':''} style="width:18px;height:18px">
+      <span style="flex:1">${h(p.label)}</span>
+      ${already?'<span class="tag" style="font-size:11px">標準で利用可</span>':''}
+    </label>`;
+  }).join('');
+  $('#perm-save').onclick = async () => {
+    const keys = [...document.querySelectorAll('.perm-cb:not(:disabled)')].filter(c=>c.checked).map(c=>c.value);
+    $('#perm-msg').textContent = '保存中…';
+    try{ await api(`/users/${uid}/perms`, {method:'PUT', body:{perms:keys}}); $('#perm-msg').textContent='保存しました'; popup('権限を保存しました'); }
+    catch(e){ $('#perm-msg').textContent = e.message; }
+  };
+}
+
 /* ===== 台帳保管(管理者のみ) ===== */
 async function pageDaicho(app){
   if(ME.role !== 'admin'){ notFound(app); return; }
@@ -1809,7 +1933,7 @@ async function pageDaicho(app){
 
 /* ===== アカウント管理(管理者)===== */
 async function pageAdmin(app){
-  if(ME.role !== 'admin'){ notFound(app); return; }
+  if(!has('account_manage') && !has('wage_settings') && !has('daicho_manage')){ notFound(app); return; }
   const users = await getUsers(true);
   const mgrs = await api('/managers');
   const pin = (await api('/settings/handler-pin')).pin;
@@ -1829,6 +1953,7 @@ async function pageAdmin(app){
   <h2 style="margin-bottom:8px">アカウント管理</h2>
   <div class="adm-nav">
     ${[['pin','🔑 PIN'],['link','🔗 連携'],['notify','🔔 通知'],['wage','💴 時給'],['data','📋 全データ'],['create','➕ 新規作成'],['list','👥 アカウント一覧']].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
+    ${has('account_manage') ? `<a href="#/role-permissions" class="adm-chip" style="text-decoration:none;display:inline-block">🛡️ 権限の一括設定</a>` : ''}
   </div>
 
   ${sec('pin','🔑 手配者専用パスワード(PIN)', `
@@ -1945,7 +2070,8 @@ async function pageAdmin(app){
       <td><select data-role="${u.id}">${['member','chief','handler','admin'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${ROLE_JP[r]}</option>`).join('')}</select></td>
       <td><select data-mgr="${u.id}"><option value="">(なし)</option>${mgrs.map(m=>`<option value="${m.id}" ${String(u.manager_id)===String(m.id)?'selected':''}>${h(m.name)}手配</option>`).join('')}</select></td>
       <td class="nowrap">${h(u.rank)}</td><td class="nowrap">${h(u.han)}</td><td class="nowrap">${h(u.station)}</td>
-      <td class="nowrap"><button class="btn ghost sm" data-suspend="${u.id}" data-cur="${u.suspended?1:0}">${u.suspended?'復活':'停止'}</button>
+      <td class="nowrap"><a class="btn ghost sm" href="#/permissions/${u.id}" style="text-decoration:none;display:inline-block">権限</a>
+          <button class="btn ghost sm" data-suspend="${u.id}" data-cur="${u.suspended?1:0}">${u.suspended?'復活':'停止'}</button>
           <button class="btn ghost sm" data-reset="${u.id}">PWリセット</button>
           <button class="btn danger sm" data-del="${u.id}">削除</button></td>
     </tr>`).join('') || '<tr><td colspan="8" class="muted" style="text-align:center;padding:16px">該当するアカウントはありません</td></tr>'}
@@ -1957,10 +2083,10 @@ async function pageAdmin(app){
       <div class="drow"><span class="dk">担当手配</span><span class="dv"><select data-mgr="${u.id}"><option value="">(なし)</option>${mgrs.map(m=>`<option value="${m.id}" ${String(u.manager_id)===String(m.id)?'selected':''}>${h(m.name)}手配</option>`).join('')}</select></span></div>
       <div class="drow"><span class="dk">ランク/班</span><span class="dv">${h(u.rank)||'—'} / ${h(u.han)||'—'}</span></div>
       <div class="drow"><span class="dk">最寄駅</span><span class="dv">${h(u.station)||'—'}</span></div>
-      <div class="dcard-actions"><button class="btn ghost sm" data-suspend="${u.id}" data-cur="${u.suspended?1:0}">${u.suspended?'復活':'停止'}</button><button class="btn ghost sm" data-reset="${u.id}">PWリセット</button><button class="btn danger sm" data-del="${u.id}">削除</button></div>
+      <div class="dcard-actions"><a class="btn ghost sm" href="#/permissions/${u.id}" style="text-decoration:none;display:inline-block">権限</a><button class="btn ghost sm" data-suspend="${u.id}" data-cur="${u.suspended?1:0}">${u.suspended?'復活':'停止'}</button><button class="btn ghost sm" data-reset="${u.id}">PWリセット</button><button class="btn danger sm" data-del="${u.id}">削除</button></div>
     </div>`).join('') || '<div class="muted" style="text-align:center;padding:16px">該当するアカウントはありません</div>'}
     </div>
-    <div class="muted" style="margin-top:8px">権限の階層:管理者 → 手配チーム → チーフ → メンツ。「担当手配者」を設定すると、スケジュール閲覧・入力で担当ごとにメンバーを絞り込めます。手配チームは右上メニューからPIN入力で手配者モードに切り替えられます。</div>`)}`;
+    <div class="muted" style="margin-top:8px">権限の階層:管理者 → 手配チーム → チーフ → メンツ。「担当手配者」を設定すると、スケジュール閲覧・入力で担当ごとにメンバーを絞り込めます。手配チームは右上メニューからPIN入力で手配者モードに切り替えられます。個人ごとの追加権限は「権限」ボタンから、役割全員への一括権限は上部の「🛡️ 権限の一括設定」から設定できます。</div>`)}`;
 
   // 折りたたみの開閉状態を保持 / 目次ジャンプ
   app.querySelectorAll('.adm-sec').forEach(d => d.addEventListener('toggle', () => { app._admOpen[d.dataset.sec] = d.open; }));

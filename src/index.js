@@ -5,6 +5,28 @@ const LV = { member: 0, chief: 1, handler: 2, admin: 3 };
 const lv = u => LV[u.role] ?? 0;
 const HOURLY = 1150; // 基本時給
 
+// ===== 個別追加権限 =====
+// 基本権限(メンツ/チーフ/手配者/管理者)とは別に、ユーザー単位で個別に機能を追加できる。
+// 各キーには「通常この機能を使えるのは誰か(基準レベル)」を持たせ、
+// 基準レベルを満たしていない人でも、追加権限が付与されていればその機能を使える。
+const PERMS = {
+  site_pay:        { label: '現場の給与・業務内容を見る', baseLv: 2 },
+  site_manage:     { label: '現場へのメンバー登録・編集', baseLv: 2 },
+  import_data:     { label: 'スプレッドシートからの取り込み', baseLv: 2 },
+  handler_tools:   { label: 'ログイン中メンバー・編集履歴の閲覧', baseLv: 2 },
+  wage_settings:   { label: '時給・給与確定ロック・通知の設定', baseLv: 3 },
+  account_manage:  { label: 'アカウントの作成・権限変更・停止', baseLv: 3 },
+  daicho_manage:   { label: '台帳保管の閲覧・ダウンロード・削除', baseLv: 3 },
+};
+function getPerms(u) { try { return JSON.parse(u.extra_perms || '[]'); } catch (e) { return []; } }
+// has: その機能を使えるか(基本権限を満たす、または個別に追加権限が付与されている)
+function has(u, key) {
+  const p = PERMS[key];
+  if (!p) return false;
+  if (lv(u) >= p.baseLv) return true;
+  return getPerms(u).includes(key);
+}
+
 async function getSetting(env, key, def) {
   const r = await env.DB.prepare('SELECT value FROM settings WHERE key=?').bind(key).first().catch(() => null);
   return r ? r.value : def;
@@ -22,7 +44,7 @@ async function pbkdf2(pw, salt) {
   return [...new Uint8Array(bits)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0, must_change: u.must_change ? 1 : 0 });
+const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0, must_change: u.must_change ? 1 : 0, extra_perms: getPerms(u) });
 
 // ===== 給与計算 (RB事業2課ルール) =====
 // 業務名 → 計算区分。 g5=案内料金(最低5h) / l3=搬入出料金(最低3h) / lg,gl,lgl=時間帯分割 / skip=対象外
@@ -720,7 +742,7 @@ async function api(req, env, url) {
   const me = await auth(req, env);
   if (!me) return ERR('ログインしてください', 401);
   if (me.suspended) { await env.DB.prepare('DELETE FROM sessions WHERE user_id=?').bind(me.id).run(); return ERR('このアカウントは停止されています', 403); }
-  const handlerMode = me._handler === 1 && lv(me) >= 2;
+  const handlerMode = me._handler === 1 && has(me, 'site_manage');
 
   if (method === 'POST' && path === '/logout') {
     await env.DB.prepare('DELETE FROM sessions WHERE token=?').bind(me._tk).run();
@@ -742,7 +764,7 @@ async function api(req, env, url) {
 
   // ---- 手配者モード ----
   if (method === 'POST' && path === '/handler-mode') {
-    if (lv(me) < 2) return ERR('権限がありません', 403);
+    if (!has(me, 'site_manage')) return ERR('権限がありません', 403);
     const pin = await getSetting(env, 'handler_pin', '111111');
     if (body.pin !== pin) return ERR('パスワードが違います', 403);
     await env.DB.prepare('UPDATE sessions SET handler=1 WHERE token=?').bind(me._tk).run();
@@ -783,6 +805,57 @@ async function api(req, env, url) {
     const rows = (await env.DB.prepare('SELECT * FROM users ORDER BY regno').all()).results;
     return J(rows.map(pub));
   }
+
+  // ---- 個別追加権限(管理者のみ) ----
+  // 利用可能な権限キー一覧(ラベル・基準レベル付き)
+  if (method === 'GET' && path === '/perm-defs') {
+    if (!has(me, 'account_manage')) return ERR('ページが見つかりません', 404);
+    return J({ perms: Object.entries(PERMS).map(([key, p]) => ({ key, label: p.label, baseLv: p.baseLv })) });
+  }
+  // 特定ユーザーの基本権限+追加権限を取得
+  let pum;
+  if (method === 'GET' && (pum = path.match(/^\/users\/(\d+)\/perms$/))) {
+    if (!has(me, 'account_manage')) return ERR('ページが見つかりません', 404);
+    const u = await env.DB.prepare('SELECT id,name,regno,role FROM users WHERE id=?').bind(Number(pum[1])).first();
+    if (!u) return ERR('見つかりません', 404);
+    return J({ id: u.id, name: u.name, regno: u.regno, role: u.role, extraPerms: getPerms(u) });
+  }
+  // 特定ユーザーの追加権限を保存(管理者のみ)
+  if (method === 'PUT' && (pum = path.match(/^\/users\/(\d+)\/perms$/))) {
+    if (!has(me, 'account_manage')) return ERR('権限がありません', 403);
+    const uid = Number(pum[1]);
+    const keys = Array.isArray(body.perms) ? body.perms.filter(k => PERMS[k]) : [];
+    await env.DB.prepare('UPDATE users SET extra_perms=? WHERE id=?').bind(JSON.stringify(keys), uid).run();
+    return J({ ok: 1, extraPerms: keys });
+  }
+
+  // ロール単位の一括権限付与(メンツ全員/チーフ全員などに、まとめてチェックを入れて付与)
+  // 「全員に付与されている権限」だけをON表示する(一部の人だけ個別に持っている権限はここでは反映しない)
+  if (method === 'GET' && (pum = path.match(/^\/role-perms\/(member|chief|handler)$/))) {
+    if (!has(me, 'account_manage')) return ERR('ページが見つかりません', 404);
+    const role = pum[1];
+    const rows = (await env.DB.prepare('SELECT extra_perms FROM users WHERE role=? AND COALESCE(suspended,0)=0').bind(role).all()).results;
+    let common = null;
+    for (const r of rows) {
+      const ps = new Set(getPerms(r));
+      common = common === null ? ps : new Set([...common].filter(k => ps.has(k)));
+    }
+    return J({ role, count: rows.length, perms: common ? [...common] : [] });
+  }
+  if (method === 'PUT' && (pum = path.match(/^\/role-perms\/(member|chief|handler)$/))) {
+    if (!has(me, 'account_manage')) return ERR('権限がありません', 403);
+    const role = pum[1];
+    const keys = Array.isArray(body.perms) ? body.perms.filter(k => PERMS[k]) : [];
+    const rows = (await env.DB.prepare('SELECT id, extra_perms FROM users WHERE role=?').bind(role).all()).results;
+    for (const r of rows) {
+      // 既存の個別権限のうち、定義済みキー以外(将来の拡張用)は維持しつつ、定義済みキーはチェック状態に合わせて入れ替える
+      const cur = getPerms(r).filter(k => !PERMS[k]);
+      const next = [...cur, ...keys];
+      await env.DB.prepare('UPDATE users SET extra_perms=? WHERE id=?').bind(JSON.stringify(next), r.id).run();
+    }
+    return J({ ok: 1, role, updated: rows.length, perms: keys });
+  }
+
   // 手配担当の一覧(担当グループのプルダウン用)
   if (method === 'GET' && path === '/managers') {
     if (lv(me) < 1) return ERR('ページが見つかりません', 404);
@@ -794,7 +867,7 @@ async function api(req, env, url) {
   }
   // 時給テーブル取得(手配担当以上)。effective_fromごとにグルーピングして返す
   if (method === 'GET' && path === '/wage-rates') {
-    if (lv(me) < 2) return ERR('ページが見つかりません', 404);
+    if (!has(me, 'wage_settings')) return ERR('ページが見つかりません', 404);
     const rows = (await env.DB.prepare('SELECT effective_from,rank,kind,amount FROM wage_rates ORDER BY effective_from,rank,kind').all()).results;
     const periods = {};
     for (const r of rows) { (periods[r.effective_from] ||= { effective_from: r.effective_from, rates: {} }); (periods[r.effective_from].rates[r.rank] ||= {})[r.kind] = r.amount; }
@@ -802,7 +875,7 @@ async function api(req, env, url) {
   }
   // 時給テーブル更新(管理者)。body.rates=[{effective_from,rank,kind,amount}]。新規effective_fromの追加も可
   if (method === 'PUT' && path === '/wage-rates') {
-    if (lv(me) < 3) return ERR('管理者のみ変更できます', 403);
+    if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
     const list = Array.isArray(body.rates) ? body.rates : [];
     let n = 0;
     for (const r of list) {
@@ -816,7 +889,7 @@ async function api(req, env, url) {
   }
   // 新しい時給改定(effective_from)を削除(管理者)。確定ロック前提
   if (method === 'POST' && path === '/wage-rates/delete') {
-    if (lv(me) < 3) return ERR('管理者のみ変更できます', 403);
+    if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
     const ef = String(body.effective_from || '').trim();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(ef)) return ERR('不正な日付です');
     await env.DB.prepare('DELETE FROM wage_rates WHERE effective_from=?').bind(ef).run();
@@ -824,7 +897,7 @@ async function api(req, env, url) {
   }
   // 既存スケジュールの給与・残業を新ルールで一括再計算(管理者)。過去データの修正用
   if (method === 'POST' && path === '/recalc') {
-    if (lv(me) < 3) return ERR('管理者のみ実行できます', 403);
+    if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
     const resolve = await loadWageResolver(env);
     const users = (await env.DB.prepare('SELECT id,rank FROM users').all()).results;
     const rankMap = {}; for (const u of users) rankMap[u.id] = u.rank;
@@ -841,7 +914,7 @@ async function api(req, env, url) {
 
   // ---- 通知設定(管理者) ----
   if (method === 'GET' && path === '/notify-settings') {
-    if (lv(me) < 2) return ERR('ページが見つかりません', 404);
+    if (!has(me, 'wage_settings')) return ERR('ページが見つかりません', 404);
     return J({
       enabled: (await getSetting(env, 'notify_enabled', '1')) !== '0',
       hour: parseInt(await getSetting(env, 'notify_hour', '21'), 10),
@@ -849,7 +922,7 @@ async function api(req, env, url) {
     });
   }
   if (method === 'PUT' && path === '/notify-settings') {
-    if (lv(me) < 3) return ERR('管理者のみ変更できます', 403);
+    if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
     const enabled = body.enabled ? '1' : '0';
     let hour = parseInt(body.hour, 10); if (isNaN(hour) || hour < 0 || hour > 23) hour = 21;
     const target = ['handlers', 'chiefs', 'all'].includes(body.target) ? body.target : 'handlers';
@@ -859,29 +932,29 @@ async function api(req, env, url) {
     return J({ ok: 1, enabled: enabled === '1', hour, target });
   }
   if (method === 'POST' && path === '/notify-test') {
-    if (lv(me) < 3) return ERR('管理者のみ実行できます', 403);
+    if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
     await notify(env, [me.id], 'remind', '🔔【テスト通知】通知は正常に動作しています。');
     return J({ ok: 1 });
   }
 
   // ---- 給与確定ロック期間の設定 ----
   if (method === 'GET' && path === '/lock-settings') {
-    if (lv(me) < 2) return ERR('ページが見つかりません', 404);
+    if (!has(me, 'wage_settings')) return ERR('ページが見つかりません', 404);
     const days = await getLockDays(env);
     return J({ days, lockBefore: payLockDate(days) });
   }
   if (method === 'PUT' && path === '/lock-settings') {
-    if (lv(me) < 3) return ERR('管理者のみ変更できます', 403);
+    if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
     let days = parseInt(body.days, 10);
     if (isNaN(days) || days < 0 || days > 3650) return ERR('日数は0〜3650の範囲で指定してください');
     await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('lock_days',?)").bind(String(days)).run();
     return J({ ok: 1, days, lockBefore: payLockDate(days) });
   }
   if (method === 'POST' && path === '/users') {
-    if (lv(me) < 2) return ERR('ページが見つかりません', 404);
+    if (!has(me, 'account_manage') && !has(me, 'site_manage')) return ERR('ページが見つかりません', 404);
     const { regno, name, rank = '', han = '', station = '', role = 'member', manager_id = null } = body;
     if (!regno || !name) return ERR('登録番号と氏名は必須です');
-    const newRole = me.role === 'admin' ? (LV[role] != null ? role : 'member') : 'member';
+    const newRole = has(me, 'account_manage') ? (LV[role] != null ? role : 'member') : 'member';
     try {
       await env.DB.prepare('INSERT INTO users(regno,name,rank,han,station,role,manager_id) VALUES(?,?,?,?,?,?,?)')
         .bind(String(regno).trim(), name, rank, han, station, newRole, manager_id || null).run();
@@ -892,13 +965,13 @@ async function api(req, env, url) {
   if ((mm = path.match(/^\/users\/(\d+)$/))) {
     const uid = Number(mm[1]);
     if (method === 'PATCH') {
-      if (body.role !== undefined) { // 役割変更は管理者のみ
-        if (me.role !== 'admin') return ERR('役割の変更は管理者のみ可能です', 403);
+      if (body.role !== undefined) { // 役割変更
+        if (!has(me, 'account_manage')) return ERR('役割の変更には権限が必要です', 403);
         if (LV[body.role] == null) return ERR('不正な役割です');
         await env.DB.prepare('UPDATE users SET role=? WHERE id=?').bind(body.role, uid).run();
       }
-      if (body.suspended !== undefined) { // アカウント停止/復活は管理者のみ
-        if (me.role !== 'admin') return ERR('アカウント停止は管理者のみ可能です', 403);
+      if (body.suspended !== undefined) { // アカウント停止/復活
+        if (!has(me, 'account_manage')) return ERR('アカウント停止には権限が必要です', 403);
         const sv = body.suspended ? 1 : 0;
         await env.DB.prepare('UPDATE users SET suspended=? WHERE id=?').bind(sv, uid).run();
         if (sv) await env.DB.prepare('DELETE FROM sessions WHERE user_id=?').bind(uid).run(); // ログイン中なら強制ログアウト
@@ -907,15 +980,15 @@ async function api(req, env, url) {
         if (lv(me) < 1) return ERR('権限がありません', 403);
         await env.DB.prepare('UPDATE users SET skills=? WHERE id=?').bind(body.skills, uid).run();
       }
-      if (body.manager_id !== undefined) { // 担当手配者の設定(手配担当以上)
-        if (lv(me) < 2) return ERR('権限がありません', 403);
+      if (body.manager_id !== undefined) { // 担当手配者の設定
+        if (!has(me, 'site_manage') && !has(me, 'account_manage')) return ERR('権限がありません', 403);
         const mid = body.manager_id || null;
         if (mid) { const mgr = await env.DB.prepare('SELECT role FROM users WHERE id=?').bind(mid).first(); if (!mgr || LV[mgr.role] < 2) return ERR('担当手配者は手配担当以上を指定してください'); }
         await env.DB.prepare('UPDATE users SET manager_id=? WHERE id=?').bind(mid, uid).run();
       }
       for (const f of ['name', 'rank', 'han', 'station', 'ka']) {
         if (body[f] !== undefined) {
-          if (lv(me) < 2) return ERR('権限がありません', 403);
+          if (!has(me, 'site_manage') && !has(me, 'account_manage')) return ERR('権限がありません', 403);
           await env.DB.prepare(`UPDATE users SET ${f}=? WHERE id=?`).bind(body[f], uid).run();
         }
       }
@@ -946,7 +1019,7 @@ async function api(req, env, url) {
     const target = uid === me.id ? me : await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(uid).first();
     if (!target) return ERR('ユーザーが見つかりません', 404);
     const rows = (await env.DB.prepare("SELECT * FROM schedule WHERE user_id=? AND date LIKE ? ORDER BY date, slot").bind(uid, month + '%').all()).results;
-    const canSeePay = lv(me) >= 2; // 手配担当以上のみ 時間・給与・IN・OUT を閲覧可
+    const canSeePay = has(me, 'site_pay'); // 時間・給与・IN・OUT を閲覧できるか
     const entries = {};            // entries[date] = [ {現場1}, {現場2}, ... ]
     for (const r of rows) {
       if (!canSeePay) { r.hours = 0; r.overtime = 0; r.pay = 0; r.tin = ''; r.tout = ''; r.duty = ''; r.load_end = ''; r.show_end = ''; r.multi = 0; }
@@ -1166,7 +1239,7 @@ async function api(req, env, url) {
     const rows = (await env.DB.prepare(
       "SELECT u.id as uid,u.name,u.role,u.rank,u.ka,u.han,u.station,s.venue,s.tin,s.tout,s.note FROM schedule s JOIN users u ON u.id=s.user_id WHERE s.date=? AND s.site=? AND s.type='work' ORDER BY CASE u.role WHEN 'admin' THEN 0 WHEN 'handler' THEN 1 WHEN 'chief' THEN 2 ELSE 3 END, u.regno"
     ).bind(date, site).all()).results;
-    if (lv(me) < 2) for (const r of rows) { r.tin = ''; r.tout = ''; } // IN/OUTは手配担当以上のみ
+    if (!has(me, 'site_pay')) for (const r of rows) { r.tin = ''; r.tout = ''; } // IN/OUTを表示できるか
     return J(rows);
   }
 
@@ -1184,7 +1257,7 @@ async function api(req, env, url) {
       const a = agg[r.user_id] ||= { dates: [], shifts: 0, hours: 0, overtime: 0 };
       a.dates.push(r.date); a.shifts++; a.hours += r.hours || 0; a.overtime += r.overtime || 0;
     }
-    const canPay = lv(me) >= 2; // 時間・残業は手配担当以上のみ
+    const canPay = has(me, 'site_pay'); // 時間・残業を閲覧できるか
     // 手配担当未設定はチーフ手配(課)として扱う
     const chiefLabel = u => `チーフ手配(${u.ka || '未設定'})`;
     const items = users.map(u => {
@@ -1214,7 +1287,7 @@ async function api(req, env, url) {
   // ---- スプレッドシートURLから取り込み(手配担当以上)----
   // body: { urls:[...], format:'auto'|'C'|'AB', month:'2026-06'(AB用), add:bool, save:bool }
   if (method === 'POST' && path === '/import-from-url') {
-    if (lv(me) < 2) return ERR('ページが見つかりません', 404);
+    if (!has(me, 'import_data')) return ERR('ページが見つかりません', 404);
     const urls = Array.isArray(body.urls) ? body.urls : (body.url ? [body.url] : []);
     if (!urls.length) return ERR('URLが指定されていません');
     const month = body.month || jstDate().slice(0, 7);
@@ -1301,11 +1374,11 @@ async function api(req, env, url) {
 
   // 保存済み取り込みURL(手配担当以上)
   if (method === 'GET' && path === '/import-urls') {
-    if (lv(me) < 2) return ERR('ページが見つかりません', 404);
+    if (!has(me, 'import_data')) return ERR('ページが見つかりません', 404);
     return J({ urls: JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]') });
   }
   if (method === 'POST' && path === '/import-urls') {
-    if (lv(me) < 2) return ERR('ページが見つかりません', 404);
+    if (!has(me, 'import_data')) return ERR('ページが見つかりません', 404);
     const urls = Array.isArray(body.urls) ? body.urls.filter(u => parseSheetUrl(u)) : [];
     await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('import_urls',?)").bind(JSON.stringify(urls.slice(-50))).run();
     return J({ ok: 1, urls });
@@ -1313,7 +1386,7 @@ async function api(req, env, url) {
 
   // ---- 台帳保管(管理者のみ) ----
   if (method === 'GET' && path === '/daicho') {
-    if (lv(me) < 3) return ERR('管理者のみ閲覧できます', 403);
+    if (!has(me, 'daicho_manage')) return ERR('権限がありません', 403);
     const rows = (await env.DB.prepare(
       'SELECT id,ts,importer_name,source_url,file_id,file_name,size,applied,sheets FROM daicho_archive ORDER BY id DESC LIMIT 500'
     ).all()).results;
@@ -1321,7 +1394,7 @@ async function api(req, env, url) {
   }
   let dm;
   if (method === 'GET' && (dm = path.match(/^\/daicho\/(\d+)\/download$/))) {
-    if (lv(me) < 3) return ERR('管理者のみダウンロードできます', 403);
+    if (!has(me, 'daicho_manage')) return ERR('権限がありません', 403);
     const rec = await env.DB.prepare('SELECT r2_key,file_name FROM daicho_archive WHERE id=?').bind(Number(dm[1])).first();
     if (!rec) return ERR('見つかりません', 404);
     if (!env.DAICHO) return ERR('R2が未設定です', 500);
@@ -1336,7 +1409,7 @@ async function api(req, env, url) {
     });
   }
   if (method === 'POST' && (dm = path.match(/^\/daicho\/(\d+)\/delete$/))) {
-    if (lv(me) < 3) return ERR('管理者のみ削除できます', 403);
+    if (!has(me, 'daicho_manage')) return ERR('権限がありません', 403);
     const rec = await env.DB.prepare('SELECT r2_key FROM daicho_archive WHERE id=?').bind(Number(dm[1])).first();
     if (!rec) return ERR('見つかりません', 404);
     if (env.DAICHO) { try { await env.DAICHO.delete(rec.r2_key); } catch (e) {} }
@@ -1346,7 +1419,7 @@ async function api(req, env, url) {
 
   // 保存済み取り込みURLの削除(手配者以上)
   if (method === 'POST' && path === '/import-urls/delete') {
-    if (lv(me) < 2) return ERR('ページが見つかりません', 404);
+    if (!has(me, 'import_data')) return ERR('ページが見つかりません', 404);
     const saved = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
     let next;
     if (body.all) next = [];
@@ -1359,14 +1432,14 @@ async function api(req, env, url) {
 
   // ---- 手配者専用 ----
   if (method === 'GET' && path === '/online') {
-    if (!handlerMode) return ERR('ページが見つかりません', 404);
+    if (!handlerMode && !has(me, 'handler_tools')) return ERR('ページが見つかりません', 404);
     const rows = (await env.DB.prepare(
       'SELECT u.name,u.role,u.regno,MAX(s.last_seen) AS last_seen,MAX(s.handler) AS handler FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.last_seen>? GROUP BY u.id ORDER BY last_seen DESC'
     ).bind(Date.now() - 120000).all()).results;
     return J(rows);
   }
   if (method === 'GET' && path === '/history') {
-    if (!handlerMode) return ERR('ページが見つかりません', 404);
+    if (!handlerMode && !has(me, 'handler_tools')) return ERR('ページが見つかりません', 404);
     const rows = (await env.DB.prepare(
       "SELECT h.*, COALESCE(e.name, CASE WHEN h.editor_id=0 THEN 'スプレッドシート' ELSE '不明' END) AS editor_name, t.name AS target_name FROM schedule_history h LEFT JOIN users e ON e.id=h.editor_id LEFT JOIN users t ON t.id=h.target_id ORDER BY h.id DESC LIMIT 150"
     ).all()).results;
@@ -1397,13 +1470,13 @@ async function api(req, env, url) {
     await rookieNotify(env, r);
     return J({ ok: 1 });
   }
+  // 新人報告一覧: 1次(報告内容)は全員(メンツ含む)が閲覧可能。2次の編集はチーフ以上のみ(下のPATCHで制限)
   if (method === 'GET' && path === '/reports') {
-    if (lv(me) < 1) return ERR('ページが見つかりません', 404);
     const rows = (await env.DB.prepare('SELECT * FROM reports ORDER BY id DESC').all()).results;
     return J(rows);
   }
   if ((mm = path.match(/^\/reports\/(\d+)$/)) && method === 'PATCH') {
-    if (lv(me) < 1) return ERR('ページが見つかりません', 404);
+    if (lv(me) < 1) return ERR('2次チェックの記入にはチーフ以上の権限が必要です', 403);
     const id = Number(mm[1]);
     const r = await env.DB.prepare('SELECT * FROM reports WHERE id=?').bind(id).first();
     if (!r) return ERR('報告が見つかりません', 404);

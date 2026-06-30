@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS users(
   salt TEXT,
   suspended INTEGER DEFAULT 0,           -- 1 = アカウント停止(ログイン不可・一覧等には表示)
   must_change INTEGER DEFAULT 0,         -- 1 = 次回ログイン時にパスワード変更を強制
+  extra_perms TEXT DEFAULT '[]',         -- 基本権限とは別に個別付与された追加権限(JSON配列)
   created TEXT DEFAULT (datetime('now'))
 );
 
