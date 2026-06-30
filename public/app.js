@@ -1941,7 +1941,9 @@ async function pageAdmin(app){
   const importTok = (await api('/settings/import-token')).token;
   const wageData = await api('/wage-rates').catch(()=>null);
   const notifyData = await api('/notify-settings').catch(()=>null);
-  const chiefSchedData = await api('/chief-sched-settings').catch(()=>null);
+  const SCHED_SOURCES = [['chief','チーフ予定'],['ka1','1課予定']];
+  const schedDataMap = {};
+  for (const [src] of SCHED_SOURCES) schedDataMap[src] = await api(`/sched-settings/${src}`).catch(()=>null);
   const lockData = await api('/lock-settings').catch(()=>null);
   const adq = (app._adq||'').trim(), admgr = app._admgr||'';
   const aList = users.filter(u=>{
@@ -1954,7 +1956,7 @@ async function pageAdmin(app){
   app.innerHTML = `
   <h2 style="margin-bottom:8px">アカウント管理</h2>
   <div class="adm-nav">
-    ${[['pin','🔑 PIN'],['link','🔗 連携'],['notify','🔔 通知'],['chiefsched','📅 チーフ予定取込'],['wage','💴 時給'],['data','📋 全データ'],['create','➕ 新規作成'],['list','👥 アカウント一覧']].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
+    ${[['pin','🔑 PIN'],['link','🔗 連携'],['notify','🔔 通知'],['sched-chief','📅 チーフ予定取込'],['sched-ka1','📅 1課予定取込'],['wage','💴 時給'],['data','📋 全データ'],['create','➕ 新規作成'],['list','👥 アカウント一覧']].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
     ${has('account_manage') ? `<a href="#/role-permissions" class="adm-chip" style="text-decoration:none;display:inline-block">🛡️ 権限の一括設定</a>` : ''}
   </div>
 
@@ -1995,26 +1997,29 @@ async function pageAdmin(app){
     <div class="muted" style="margin-top:8px">※その日に誰かが既に新人報告を提出していれば、催促は送られません。通知はアプリ内のお知らせ（🔔）に届きます。</div>
   ` : '<div class="muted">通知設定を取得できませんでした</div>')}
 
-  ${sec('chiefsched','📅 チーフ予定の自動取り込み <span class="muted" style="font-weight:400">(チーフスケジュール表)</span>', chiefSchedData ? `
-    <div class="muted" style="margin-bottom:10px">チーフ全員分の予定表(スプレッドシート)を毎日自動で取り込み、各チーフのスケジュールに反映します。<b>取り込み日から2日後以降の日付のみ</b>反映され、当日・翌日分は対象外です(その期間は台帳の実績取り込みを優先するため)。時刻情報はこの表にはないため、現場名・会場名・×・休暇のみ反映されます。</div>
+  ${SCHED_SOURCES.map(([src,label])=>{
+    const d = schedDataMap[src];
+    return sec('sched-'+src, `📅 ${label}の自動取り込み <span class="muted" style="font-weight:400">(${src==='chief'?'チーフスケジュール表':'1課スケジュール表'})</span>`, d ? `
+    <div class="muted" style="margin-bottom:10px">スプレッドシート(複数シートで分かれている場合は全シート)を毎日自動で取り込み、各人のスケジュールに反映します。<b>取り込み日から2日後以降の日付のみ</b>反映され、当日・翌日分は対象外です(その期間は台帳の実績取り込みを優先するため)。時刻情報はこの表にはないため、現場名・会場名・×・休暇のみ反映されます。前回取り込み内容と人単位で比較し、変更がない人はスキップされます(変更があった人だけ更新)。</div>
     <div class="form-grid" style="grid-template-columns:140px 1fr;max-width:640px;gap:10px 12px;align-items:center">
       <label>自動取り込み</label>
-      <label style="font-weight:400;display:flex;align-items:center;gap:8px"><input type="checkbox" id="cs-enabled" ${chiefSchedData.enabled?'checked':''} style="width:auto"> 毎日自動で取り込む</label>
+      <label style="font-weight:400;display:flex;align-items:center;gap:8px"><input type="checkbox" id="cs-enabled-${src}" ${d.enabled?'checked':''} style="width:auto"> 毎日自動で取り込む</label>
       <label>スプレッドシートURL</label>
-      <input id="cs-url" value="${h(chiefSchedData.url||'')}" placeholder="https://docs.google.com/spreadsheets/d/..." style="font-family:monospace;font-size:12px">
+      <input id="cs-url-${src}" value="${h(d.url||'')}" placeholder="https://docs.google.com/spreadsheets/d/..." style="font-family:monospace;font-size:12px">
       <label>実行時刻</label>
-      <select id="cs-hour" style="width:120px">${Array.from({length:24},(_,i)=>`<option value="${i}" ${chiefSchedData.hour===i?'selected':''}>${String(i).padStart(2,'0')}:00</option>`).join('')}</select>
+      <select id="cs-hour-${src}" style="width:120px">${Array.from({length:24},(_,i)=>`<option value="${i}" ${d.hour===i?'selected':''}>${String(i).padStart(2,'0')}:00</option>`).join('')}</select>
     </div>
     <div class="row" style="margin-top:14px;gap:8px;align-items:center">
-      <button class="btn gold sm" id="cs-save">設定を保存</button>
-      <button class="btn ghost sm" id="cs-run">今すぐ取り込む</button>
-      <span id="cs-msg" class="muted"></span>
+      <button class="btn gold sm cs-save" data-src="${src}">設定を保存</button>
+      <button class="btn ghost sm cs-run" data-src="${src}">今すぐ取り込む</button>
+      <span class="muted cs-msg" data-src="${src}"></span>
     </div>
     <div class="muted" style="margin-top:10px">
-      ${chiefSchedData.lastRun ? `最終実行日: ${h(chiefSchedData.lastRun)}` : 'まだ実行されていません'}
-      ${chiefSchedData.lastResult ? `<br>結果(${h(chiefSchedData.lastResult.ts)}): 反映 ${chiefSchedData.lastResult.applied}件 / スキップ ${chiefSchedData.lastResult.skipped}件${chiefSchedData.lastResult.error?` <span style="color:#b85042">エラー: ${h(chiefSchedData.lastResult.error)}</span>`:''}` : ''}
+      ${d.lastRun ? `最終実行日: ${h(d.lastRun)}` : 'まだ実行されていません'}
+      ${d.lastResult ? `<br>結果(${h(d.lastResult.ts)}): 反映 ${d.lastResult.applied}件 / スキップ ${d.lastResult.skipped}件${d.lastResult.changedPeople!=null?` / 変更あり ${d.lastResult.changedPeople}人・変更なし ${d.lastResult.unchangedPeople}人`:''}${d.lastResult.error?` <span style="color:#b85042">エラー: ${h(d.lastResult.error)}</span>`:''}` : ''}
     </div>
-  ` : '<div class="muted">設定を取得できませんでした</div>')}
+  ` : '<div class="muted">設定を取得できませんでした</div>');
+  }).join('')}
 
   ${sec('wage','💴 時給設定 <span class="muted" style="font-weight:400">(ランク×時期)</span>', wageData ? `
     <div class="muted" style="margin-bottom:8px">現場日に有効な時給が給与計算に使われます。<b>${h(wageData.lockBefore)}</b> 以前の現場は給与確定済み（時給を変えても再計算されません）。</div>
@@ -2152,28 +2157,33 @@ async function pageAdmin(app){
       try{ await api('/notify-test',{method:'POST'}); $('#nt-msg').textContent='テスト通知を送りました（🔔を確認）'; popup('テスト通知を送信しました。画面上部の🔔を確認してください'); }
       catch(e){ $('#nt-msg').textContent=e.message; }
   }; }
-  { const cs = $('#cs-save'); if(cs) cs.onclick = async () => {
-      const enabled = $('#cs-enabled').checked;
-      const url = $('#cs-url').value.trim();
-      const hour = Number($('#cs-hour').value);
-      $('#cs-msg').textContent='保存中…';
-      try{ await api('/chief-sched-settings',{method:'PUT',body:{enabled,url,hour}});
-        $('#cs-msg').textContent = enabled ? `毎日 ${String(hour).padStart(2,'0')}:00 に自動取り込み` : '自動取り込みオフ';
-        popup('設定を保存しました'); }
-      catch(e){ $('#cs-msg').textContent=e.message; }
-  }; }
-  { const cr = $('#cs-run'); if(cr) cr.onclick = async () => {
-      const url = $('#cs-url').value.trim();
-      if(!url){ $('#cs-msg').textContent='URLを入力してください'; return; }
-      cr.disabled = true; $('#cs-msg').textContent='取り込み中…（少し時間がかかります）';
-      try{
-        const r = await api('/chief-sched-run',{method:'POST',body:{url}});
-        $('#cs-msg').textContent = `対象日 ${r.fromDate} 以降: 反映 ${r.applied}件 / スキップ ${r.skipped}件`;
-        popup(`チーフ予定を取り込みました(反映${r.applied}件)`);
-        pageAdmin(app);
-      }catch(e){ $('#cs-msg').textContent=e.message; }
-      finally{ cr.disabled = false; }
-  }; }
+  document.querySelectorAll('.cs-save').forEach(cs => cs.onclick = async () => {
+    const src = cs.dataset.src;
+    const msgEl = document.querySelector(`.cs-msg[data-src="${src}"]`);
+    const enabled = $('#cs-enabled-'+src).checked;
+    const url = $('#cs-url-'+src).value.trim();
+    const hour = Number($('#cs-hour-'+src).value);
+    msgEl.textContent='保存中…';
+    try{ await api(`/sched-settings/${src}`,{method:'PUT',body:{enabled,url,hour}});
+      msgEl.textContent = enabled ? `毎日 ${String(hour).padStart(2,'0')}:00 に自動取り込み` : '自動取り込みオフ';
+      popup('設定を保存しました'); }
+    catch(e){ msgEl.textContent=e.message; }
+  });
+  document.querySelectorAll('.cs-run').forEach(cr => cr.onclick = async () => {
+    const src = cr.dataset.src;
+    const msgEl = document.querySelector(`.cs-msg[data-src="${src}"]`);
+    const url = $('#cs-url-'+src).value.trim();
+    if(!url){ msgEl.textContent='URLを入力してください'; return; }
+    cr.disabled = true; msgEl.textContent='取り込み中…（少し時間がかかります）';
+    try{
+      const r = await api(`/sched-run/${src}`,{method:'POST',body:{url}});
+      msgEl.textContent = `対象日 ${r.fromDate} 以降: 反映 ${r.applied}件 / スキップ ${r.skipped}件 / 変更あり${r.changedPeople??'-'}人・変更なし${r.unchangedPeople??'-'}人`;
+      popup(`取り込みました(反映${r.applied}件)`);
+      pageAdmin(app);
+    }catch(e){ msgEl.textContent=e.message; }
+    finally{ cr.disabled = false; }
+  });
+
 
   const adS=$('#ad-search');
   if(adS){ adS.oninput=()=>{ app._adq=adS.value; const pos=adS.selectionStart; pageAdmin(app).then(()=>{ const n=document.getElementById('ad-search'); if(n){ n.focus(); try{n.setSelectionRange(pos,pos);}catch(_){} } }); }; }

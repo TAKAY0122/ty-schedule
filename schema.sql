@@ -161,5 +161,15 @@ CREATE TABLE IF NOT EXISTS daicho_archive(
   sheets INTEGER              -- 読み取ったシート数
 );
 
+-- 予定表(チーフ/手配者スケジュール表など)を自動取り込みする際、人単位で「前回取り込んだ内容」を
+-- 保存しておき、変わっていない人はスケジュールDBへの書き込みをスキップするためのテーブル。
+CREATE TABLE IF NOT EXISTS import_snapshots(
+  source TEXT NOT NULL,   -- 取り込み元を識別するキー(例: 'chief_sched', 'ka1_sched')
+  regno TEXT NOT NULL,
+  data TEXT NOT NULL,     -- その人の対象期間分のデータをJSON化したもの
+  updated_at TEXT,
+  PRIMARY KEY(source, regno)
+);
+
 -- 初期管理者(初期パスワードは登録番号と同じ: 323331)
 INSERT OR IGNORE INTO users(regno, name, role) VALUES('323331', '管理者', 'admin');
