@@ -159,17 +159,17 @@ function withAuthor(text, authorName) {
 async function applyImportRows(env, rows, editorId, mode = 'replace-person-day', srcLabel = 'spreadsheet') {
   const ts = jstTs();
   const resolve = await loadWageResolver(env);
-  let applied = 0, skipped = 0; const errors = [];
+  let applied = 0, skipped = 0, skippedUnregistered = 0, skippedUnchanged = 0; const errors = [];
   // (uid,date) ごとにグルーピング
   const groups = {}; const order = [];
   for (const r of rows) {
     const regno = String(r.regno || '').trim();
     const date = String(r.date || '').trim();
     if (!regno || !date) { skipped++; continue; }
-    const u = await env.DB.prepare('SELECT id, rank FROM users WHERE regno=?').bind(regno).first();
-    if (!u) { errors.push(`登録番号 ${regno} は未登録(${date})`); skipped++; continue; }
+    const u = await env.DB.prepare('SELECT id, rank, name FROM users WHERE regno=?').bind(regno).first();
+    if (!u) { errors.push(`登録番号 ${regno} は未登録(${date})`); skipped++; skippedUnregistered++; continue; }
     const key = u.id + '|' + date;
-    if (!groups[key]) { groups[key] = { uid: u.id, rank: u.rank, date, items: [] }; order.push(key); }
+    if (!groups[key]) { groups[key] = { uid: u.id, rank: u.rank, name: u.name, date, items: [] }; order.push(key); }
     groups[key].items.push(r);
   }
   for (const key of order) {
@@ -201,7 +201,7 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
     // 変更判定
     const beforeJson = JSON.stringify(before.map(stripRow));
     const afterJson = JSON.stringify(finalSlots.map(stripRow));
-    if (beforeJson === afterJson) { skipped += items.length; continue; }
+    if (beforeJson === afterJson) { skipped += items.length; skippedUnchanged += items.length; continue; }
     await env.DB.prepare('DELETE FROM schedule WHERE user_id=? AND date=?').bind(uid, date).run();
     let slot = 0;
     for (const s of finalSlots) {
@@ -217,7 +217,7 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
       .bind(ts, editorId, uid, date, beforeJson, JSON.stringify({ slots: afterJson, _src: srcLabel })).run();
     applied += items.length;
   }
-  return { applied, skipped, errors };
+  return { applied, skipped, skippedUnregistered, skippedUnchanged, errors };
 }
 
 // グリッドからフォーマットを推定。Cは勤務表(打刻/退勤/集合などの語)、それ以外はAB(月間表)
@@ -1223,7 +1223,7 @@ async function api(req, env, url) {
         } catch (e) { archiveError = e.message; }
       }
 
-      results.push({ url: rawUrl, ok: true, sheetsRead: sheetReport.length, sheets: sheetReport, applied: r.applied, skipped: r.skipped, errors: r.errors, mode: fellBack ? '単一シート(全タブ取得に失敗)' : '全シート', archived, archiveError });
+      results.push({ url: rawUrl, ok: true, sheetsRead: sheetReport.length, sheets: sheetReport, applied: r.applied, skipped: r.skipped, skippedUnregistered: r.skippedUnregistered, skippedUnchanged: r.skippedUnchanged, errors: r.errors, mode: fellBack ? '単一シート(全タブ取得に失敗)' : '全シート', archived, archiveError });
     }
     if (body.save) {
       const saved = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');

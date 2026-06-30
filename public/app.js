@@ -1709,7 +1709,8 @@ async function pageHandler(app){
         const errs = r.errors&&r.errors.length ? `<br><span class="muted">注意: ${r.errors.slice(0,5).map(h).join(' / ')}${r.errors.length>5?` ほか${r.errors.length-5}件`:''}</span>` : '';
         const arch = r.archived ? '<br><span class="muted">📦 台帳をサーバーに保管しました</span>' : (r.archiveError?`<br><span class="muted">⚠️保管失敗:${h(r.archiveError)}</span>`:'');
         const shList = r.sheets&&r.sheets.length ? `<br><span class="muted">シート: ${r.sheets.map(s=>`${h(s.name)}(${s.count})`).join(' / ')}</span>` : '';
-        return `<tr><td style="font-family:monospace;font-size:11px">${h(short)}</td><td><span class="msg ok">${r.sheetsRead||1}シート読込 / 反映 ${r.applied} / スキップ ${r.skipped}</span>${shList}${errs}${arch}</td></tr>`;
+        const skipDetail = (r.skippedUnregistered||r.skippedUnchanged) ? `<br><span class="muted">内訳: 未登録 ${r.skippedUnregistered||0}件 / 変更なし(既に同内容) ${r.skippedUnchanged||0}件</span>` : '';
+        return `<tr><td style="font-family:monospace;font-size:11px">${h(short)}</td><td><span class="msg ok">${r.sheetsRead||1}シート読込 / 反映 ${r.applied} / スキップ ${r.skipped}</span>${skipDetail}${shList}${errs}${arch}</td></tr>`;
       }).join('') + '</table>';
       showSaved();
     }catch(e){ $('#imp-result').innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
