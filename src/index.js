@@ -108,6 +108,25 @@ function payLockDate(lockDays){ const d = new Date(Date.now() + 9 * 3600e3); d.s
 function isLocked(date, me, lockDays){ if (me && me.role === 'admin') return false; return String(date) <= payLockDate(lockDays); }
 async function getLockDays(env){ const v = parseInt(await getSetting(env, 'lock_days', '14'), 10); return (isNaN(v) || v < 0) ? 14 : v; }
 
+// ===== チーフスケジュール表(予定表)の取り込み =====
+// 月ごとにシートが分かれた「チーフ全員分の予定表」を取得し、fromDate以降の予定のみ
+// users.regnoと突き合わせてスケジュールに反映する。実績(IN/OUT)を伴わない「予定」のみの表のため、
+// 直近(前日まで)は台帳(実績取り込み)を優先し、このシートでは上書きしない。
+async function importChiefSchedule(env, url, editorId, fromDate) {
+  const meta = parseSheetUrl(url);
+  if (!meta) throw new Error('チーフスケジュールURLの形式が正しくありません');
+  const got = await fetchXlsxSheets(meta.id);
+  let allRows = [];
+  const sheetReport = [];
+  for (const sh of got.sheets) {
+    const parsed = parseChiefScheduleSheet(sh.grid, fromDate);
+    if (parsed.length) { allRows = allRows.concat(parsed); sheetReport.push({ name: sh.name, count: parsed.length }); }
+  }
+  if (!allRows.length) return { applied: 0, skipped: 0, sheets: sheetReport, errors: ['対象日以降の予定が見つかりませんでした'] };
+  const r = await applyImportRows(env, allRows, editorId, 'replace-person-day', 'チーフスケジュール表(自動)');
+  return { ...r, sheets: sheetReport };
+}
+
 // ---- コンフリクト検知 ----
 // "H:MM" を分に変換(不正は null)
 function toMin(t) { const m = String(t == null ? '' : t).match(/^(\d{1,2}):(\d{2})$/); return m ? Number(m[1]) * 60 + Number(m[2]) : null; }
@@ -645,6 +664,58 @@ function parseFormatC(rows, cfg, fileDate) {
   return { date: lastDate, venue: lastVenue, rows: out };
 }
 
+// Excelのシリアル日付(1900年始まり、整数または"46143"のような文字列)を YYYY-MM-DD に変換
+function excelSerialToDate(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 1) return '';
+  const ms = Math.round((n - 25569) * 86400000); // 1970-01-01からの経過ms(Excelの1900日付システム基準)
+  const d = new Date(ms);
+  if (isNaN(d.getTime())) return '';
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+}
+
+// 「チーフスケジュール表」(月ごとにシートが分かれ、3列(現場/会場/入力)×チーフ人数が横に並ぶ予定表)を解析。
+// 行2=氏名, 行3=登録番号(1列目)+最寄駅(2列目), 行4=ラベル行("現場"を含む列がブロック先頭), 行5以降=データ(B列=日付シリアル値)。
+// fromDate(YYYY-MM-DD)以降の日付のみを対象に抽出する(それより前は台帳の実績を優先するため取り込まない)。
+function parseChiefScheduleSheet(grid, fromDate) {
+  const out = [];
+  // ラベル行("現場"を含むセルが複数並ぶ行)を探す
+  let labelRow = -1, genbaCols = [];
+  for (let r = 0; r < Math.min(grid.length, 10); r++) {
+    const line = grid[r] || [];
+    const cols = [];
+    for (let c = 0; c < line.length; c++) if (String(line[c]).trim() === '現場') cols.push(c);
+    if (cols.length >= 1) { labelRow = r; genbaCols = cols; break; }
+  }
+  if (labelRow < 0) return [];
+  const nameRow = grid[labelRow - 2] || [];
+  const regnoRow = grid[labelRow - 1] || [];
+  const blocks = genbaCols.map(c => ({
+    col: c,
+    name: String(nameRow[c] || '').trim(),
+    regno: String(regnoRow[c] || '').trim().replace(/\.0+$/, ''),
+  })).filter(b => /^\d{3,}$/.test(b.regno));
+
+  for (let r = labelRow + 1; r < grid.length; r++) {
+    const line = grid[r] || [];
+    const dateRaw = line[1];
+    if (!dateRaw) continue;
+    const date = excelSerialToDate(dateRaw);
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+    if (fromDate && date < fromDate) continue; // 対象日より前はスキップ(台帳の実績を優先)
+    for (const b of blocks) {
+      const site = String(line[b.col] || '').trim();
+      const venue = String(line[b.col + 1] || '').trim();
+      if (!site || site === '未定') continue; // 空欄・未定はスキップ(現状維持)
+      if (site === '×') { out.push({ regno: b.regno, date, type: 'x' }); continue; }
+      if (site === '休暇') { out.push({ regno: b.regno, date, type: 'off' }); continue; }
+      // それ以外(現場名・"手配"含む)は予定ありとして登録。時刻情報はこの表にはない。
+      out.push({ regno: b.regno, date, type: 'work', site, venue, tin: '', tout: '', duty: '' });
+    }
+  }
+  return out;
+}
+
 // フォーマットA/B(個人スケジュール月間表・横長)を解析
 // 3行目(idx2)に登録番号、メンバーごとに3列セット(現場名・会場・備考/入力)
 // 5行目以降(idx4+)に日付(B列)とデータ。ym='2026-06' を日付補完に使う
@@ -937,6 +1008,48 @@ async function api(req, env, url) {
     if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
     await notify(env, [me.id], 'remind', '🔔【テスト通知】通知は正常に動作しています。');
     return J({ ok: 1 });
+  }
+
+  // ---- チーフスケジュール表の自動取り込み設定 ----
+  if (method === 'GET' && path === '/chief-sched-settings') {
+    if (!has(me, 'wage_settings')) return ERR('ページが見つかりません', 404);
+    let lastResult = null;
+    try { lastResult = JSON.parse(await getSetting(env, 'chief_sched_last_result', '') || 'null'); } catch (e) {}
+    return J({
+      enabled: (await getSetting(env, 'chief_sched_enabled', '0')) === '1',
+      url: await getSetting(env, 'chief_sched_url', ''),
+      hour: parseInt(await getSetting(env, 'chief_sched_hour', '6'), 10),
+      lastRun: await getSetting(env, 'chief_sched_last_run', ''),
+      lastResult,
+    });
+  }
+  if (method === 'PUT' && path === '/chief-sched-settings') {
+    if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
+    const enabled = body.enabled ? '1' : '0';
+    let hour = parseInt(body.hour, 10); if (isNaN(hour) || hour < 0 || hour > 23) hour = 6;
+    const url = (body.url || '').trim();
+    await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('chief_sched_enabled',?)").bind(enabled).run();
+    await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('chief_sched_url',?)").bind(url).run();
+    await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('chief_sched_hour',?)").bind(String(hour)).run();
+    return J({ ok: 1, enabled: enabled === '1', url, hour });
+  }
+  // 今すぐ手動実行(対象日=今日+2日以降、固定)
+  if (method === 'POST' && path === '/chief-sched-run') {
+    if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
+    const url = (body.url || await getSetting(env, 'chief_sched_url', '')).trim();
+    if (!url) return ERR('URLが設定されていません');
+    const d = new Date(Date.now() + 9 * 3600e3); d.setDate(d.getDate() + 2);
+    const fromDate = d.toISOString().slice(0, 10);
+    try {
+      const r = await importChiefSchedule(env, url, me.id, fromDate);
+      await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('chief_sched_last_run',?)").bind(jstDate()).run();
+      await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('chief_sched_last_result',?)").bind(
+        JSON.stringify({ ts: jstTs(), applied: r.applied, skipped: r.skipped, error: '' })
+      ).run();
+      return J({ ok: 1, fromDate, ...r });
+    } catch (e) {
+      return ERR('取り込みエラー: ' + e.message);
+    }
   }
 
   // ---- 給与確定ロック期間の設定 ----
@@ -1567,6 +1680,38 @@ async function cronNotify(env) {
   if (ids.length) await notify(env, ids, 'remind', '⏰【リマインド】本日の新人報告がまだ提出されていません。対象者がいる場合は忘れずに提出をお願いします。');
 }
 
+// 毎日1回(JST指定時刻)、チーフスケジュール表(予定表)を自動取り込みする。
+// settings: chief_sched_enabled('1'/'0'), chief_sched_url, chief_sched_hour('6'), chief_sched_last_run(YYYY-MM-DD)
+// 「読み込み日の2日後以降」のみ反映(当日・翌日は台帳の実績取り込みに任せる)
+async function cronChiefSchedule(env) {
+  const enabled = await getSetting(env, 'chief_sched_enabled', '0');
+  if (enabled !== '1') return;
+  const url = await getSetting(env, 'chief_sched_url', '');
+  if (!url) return;
+  const targetHour = parseInt(await getSetting(env, 'chief_sched_hour', '6'), 10);
+  const now = new Date(Date.now() + 9 * 3600e3); // JST
+  if (now.getHours() !== targetHour) return;
+  const today = jstDate();
+  const lastRun = await getSetting(env, 'chief_sched_last_run', '');
+  if (lastRun === today) return; // 1日1回のみ
+  const d = new Date(Date.now() + 9 * 3600e3); d.setDate(d.getDate() + 2);
+  const fromDate = d.toISOString().slice(0, 10); // 読み込み日の2日後
+
+  try {
+    const adminUser = await env.DB.prepare("SELECT id FROM users WHERE role='admin' LIMIT 1").first();
+    const r = await importChiefSchedule(env, url, adminUser ? adminUser.id : 0, fromDate);
+    await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('chief_sched_last_run',?)").bind(today).run();
+    await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('chief_sched_last_result',?)").bind(
+      JSON.stringify({ ts: jstTs(), applied: r.applied, skipped: r.skipped, error: '' })
+    ).run();
+  } catch (e) {
+    await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('chief_sched_last_run',?)").bind(today).run();
+    await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('chief_sched_last_result',?)").bind(
+      JSON.stringify({ ts: jstTs(), applied: 0, skipped: 0, error: e.message })
+    ).run();
+  }
+}
+
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
@@ -1576,5 +1721,5 @@ export default {
     }
     return env.ASSETS.fetch(req);
   },
-  async scheduled(event, env) { await cronNotify(env); }
+  async scheduled(event, env) { await cronNotify(env); await cronChiefSchedule(env); }
 };
