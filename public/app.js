@@ -1999,15 +1999,23 @@ async function pageAdmin(app){
 
   ${SCHED_SOURCES.map(([src,label])=>{
     const d = schedDataMap[src];
+    const isHourly = d && d.frequency === 'hourly';
     return sec('sched-'+src, `📅 ${label}の自動取り込み <span class="muted" style="font-weight:400">(${src==='chief'?'チーフスケジュール表':'1課スケジュール表'})</span>`, d ? `
-    <div class="muted" style="margin-bottom:10px">スプレッドシート(複数シートで分かれている場合は全シート)を毎日自動で取り込み、各人のスケジュールに反映します。<b>取り込み日から2日後以降の日付のみ</b>反映され、当日・翌日分は対象外です(その期間は台帳の実績取り込みを優先するため)。時刻情報はこの表にはないため、現場名・会場名・×・休暇のみ反映されます。前回取り込み内容と人単位で比較し、変更がない人はスキップされます(変更があった人だけ更新)。</div>
+    <div class="muted" style="margin-bottom:10px">スプレッドシート(複数シートで分かれている場合は全シート)を自動で取り込み、各人のスケジュールに反映します。<b>取り込み日から2日後以降の日付のみ</b>反映され、当日・翌日分は対象外です(その期間は台帳の実績取り込みを優先するため)。時刻情報はこの表にはないため、現場名・会場名・×・休暇のみ反映されます。前回取り込み内容と人単位で比較し、変更がない人はスキップされます(変更があった人だけ更新)。</div>
     <div class="form-grid" style="grid-template-columns:140px 1fr;max-width:640px;gap:10px 12px;align-items:center">
       <label>自動取り込み</label>
-      <label style="font-weight:400;display:flex;align-items:center;gap:8px"><input type="checkbox" id="cs-enabled-${src}" ${d.enabled?'checked':''} style="width:auto"> 毎日自動で取り込む</label>
+      <label style="font-weight:400;display:flex;align-items:center;gap:8px"><input type="checkbox" id="cs-enabled-${src}" ${d.enabled?'checked':''} style="width:auto"> 自動で取り込む</label>
       <label>スプレッドシートURL</label>
       <input id="cs-url-${src}" value="${h(d.url||'')}" placeholder="https://docs.google.com/spreadsheets/d/..." style="font-family:monospace;font-size:12px">
-      <label>実行時刻</label>
-      <select id="cs-hour-${src}" style="width:120px">${Array.from({length:24},(_,i)=>`<option value="${i}" ${d.hour===i?'selected':''}>${String(i).padStart(2,'0')}:00</option>`).join('')}</select>
+      <label>取り込み頻度</label>
+      <select id="cs-freq-${src}" class="cs-freq" data-src="${src}" style="width:240px">
+        <option value="hourly" ${isHourly?'selected':''}>毎時チェック(スプレッドシートの更新をなるべく早く反映)</option>
+        <option value="daily" ${!isHourly?'selected':''}>1日1回、決まった時刻のみ</option>
+      </select>
+      <label class="cs-hour-row" data-src="${src}" style="${isHourly?'display:none':''}">実行時刻</label>
+      <span class="cs-hour-row" data-src="${src}" style="${isHourly?'display:none':''}">
+        <select id="cs-hour-${src}" style="width:120px">${Array.from({length:24},(_,i)=>`<option value="${i}" ${d.hour===i?'selected':''}>${String(i).padStart(2,'0')}:00</option>`).join('')}</select>
+      </span>
     </div>
     <div class="row" style="margin-top:14px;gap:8px;align-items:center">
       <button class="btn gold sm cs-save" data-src="${src}">設定を保存</button>
@@ -2015,7 +2023,7 @@ async function pageAdmin(app){
       <span class="muted cs-msg" data-src="${src}"></span>
     </div>
     <div class="muted" style="margin-top:10px">
-      ${d.lastRun ? `最終実行日: ${h(d.lastRun)}` : 'まだ実行されていません'}
+      ${d.lastRun ? `最終実行: ${h(d.lastRun)}` : 'まだ実行されていません'}
       ${d.lastResult ? `<br>結果(${h(d.lastResult.ts)}): 反映 ${d.lastResult.applied}件 / スキップ ${d.lastResult.skipped}件${d.lastResult.changedPeople!=null?` / 変更あり ${d.lastResult.changedPeople}人・変更なし ${d.lastResult.unchangedPeople}人`:''}${d.lastResult.error?` <span style="color:#b85042">エラー: ${h(d.lastResult.error)}</span>`:''}` : ''}
     </div>
   ` : '<div class="muted">設定を取得できませんでした</div>');
@@ -2157,15 +2165,21 @@ async function pageAdmin(app){
       try{ await api('/notify-test',{method:'POST'}); $('#nt-msg').textContent='テスト通知を送りました（🔔を確認）'; popup('テスト通知を送信しました。画面上部の🔔を確認してください'); }
       catch(e){ $('#nt-msg').textContent=e.message; }
   }; }
+  document.querySelectorAll('.cs-freq').forEach(sel => sel.onchange = () => {
+    const src = sel.dataset.src;
+    const show = sel.value !== 'hourly';
+    document.querySelectorAll(`.cs-hour-row[data-src="${src}"]`).forEach(el => el.style.display = show ? '' : 'none');
+  });
   document.querySelectorAll('.cs-save').forEach(cs => cs.onclick = async () => {
     const src = cs.dataset.src;
     const msgEl = document.querySelector(`.cs-msg[data-src="${src}"]`);
     const enabled = $('#cs-enabled-'+src).checked;
     const url = $('#cs-url-'+src).value.trim();
     const hour = Number($('#cs-hour-'+src).value);
+    const frequency = $('#cs-freq-'+src).value;
     msgEl.textContent='保存中…';
-    try{ await api(`/sched-settings/${src}`,{method:'PUT',body:{enabled,url,hour}});
-      msgEl.textContent = enabled ? `毎日 ${String(hour).padStart(2,'0')}:00 に自動取り込み` : '自動取り込みオフ';
+    try{ await api(`/sched-settings/${src}`,{method:'PUT',body:{enabled,url,hour,frequency}});
+      msgEl.textContent = !enabled ? '自動取り込みオフ' : (frequency==='hourly' ? '毎時チェックします' : `毎日 ${String(hour).padStart(2,'0')}:00 に自動取り込み`);
       popup('設定を保存しました'); }
     catch(e){ msgEl.textContent=e.message; }
   });

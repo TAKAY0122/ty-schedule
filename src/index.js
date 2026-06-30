@@ -1104,6 +1104,7 @@ async function api(req, env, url) {
   // ---- 予定表(チーフ/1課等)の自動取り込み設定。:source は 'chief'|'ka1' など ----
   let scm;
   const SCHED_SOURCES = { chief: 'チーフスケジュール表', ka1: '1課スケジュール表' };
+  const SCHED_DEFAULT_FREQ = { chief: 'daily', ka1: 'hourly' }; // 1課はスプレッドシート更新を毎時チェック
   if (method === 'GET' && (scm = path.match(/^\/sched-settings\/(\w+)$/)) && SCHED_SOURCES[scm[1]]) {
     if (!has(me, 'wage_settings')) return ERR('ページが見つかりません', 404);
     const src = scm[1];
@@ -1114,6 +1115,7 @@ async function api(req, env, url) {
       enabled: (await getSetting(env, `sched_${src}_enabled`, '0')) === '1',
       url: await getSetting(env, `sched_${src}_url`, ''),
       hour: parseInt(await getSetting(env, `sched_${src}_hour`, '6'), 10),
+      frequency: await getSetting(env, `sched_${src}_freq`, SCHED_DEFAULT_FREQ[src] || 'daily'),
       lastRun: await getSetting(env, `sched_${src}_last_run`, ''),
       lastResult,
     });
@@ -1124,10 +1126,12 @@ async function api(req, env, url) {
     const enabled = body.enabled ? '1' : '0';
     let hour = parseInt(body.hour, 10); if (isNaN(hour) || hour < 0 || hour > 23) hour = 6;
     const url = (body.url || '').trim();
+    const frequency = body.frequency === 'hourly' ? 'hourly' : 'daily';
     await env.DB.prepare(`REPLACE INTO settings(key,value) VALUES('sched_${src}_enabled',?)`).bind(enabled).run();
     await env.DB.prepare(`REPLACE INTO settings(key,value) VALUES('sched_${src}_url',?)`).bind(url).run();
     await env.DB.prepare(`REPLACE INTO settings(key,value) VALUES('sched_${src}_hour',?)`).bind(String(hour)).run();
-    return J({ ok: 1, enabled: enabled === '1', url, hour });
+    await env.DB.prepare(`REPLACE INTO settings(key,value) VALUES('sched_${src}_freq',?)`).bind(frequency).run();
+    return J({ ok: 1, enabled: enabled === '1', url, hour, frequency });
   }
   // 今すぐ手動実行(対象日=今日+2日以降、固定)
   if (method === 'POST' && (scm = path.match(/^\/sched-run\/(\w+)$/)) && SCHED_SOURCES[scm[1]]) {
@@ -1139,7 +1143,7 @@ async function api(req, env, url) {
     const fromDate = d.toISOString().slice(0, 10);
     try {
       const r = await importScheduleSheet(env, 'sched_' + src, url, me.id, fromDate);
-      await env.DB.prepare(`REPLACE INTO settings(key,value) VALUES('sched_${src}_last_run',?)`).bind(jstDate()).run();
+      await env.DB.prepare(`REPLACE INTO settings(key,value) VALUES('sched_${src}_last_run',?)`).bind(jstTs()).run();
       await env.DB.prepare(`REPLACE INTO settings(key,value) VALUES('sched_${src}_last_result',?)`).bind(
         JSON.stringify({ ts: jstTs(), applied: r.applied, skipped: r.skipped, unchangedPeople: r.unchangedPeople, changedPeople: r.changedPeople, error: '' })
       ).run();
@@ -1779,34 +1783,44 @@ async function cronNotify(env) {
   if (ids.length) await notify(env, ids, 'remind', '⏰【リマインド】本日の新人報告がまだ提出されていません。対象者がいる場合は忘れずに提出をお願いします。');
 }
 
-// 毎日1回(JST指定時刻)、予定表(チーフ/1課など)を自動取り込みする。
-// settings: sched_{source}_enabled('1'/'0'), sched_{source}_url, sched_{source}_hour('6'), sched_{source}_last_run(YYYY-MM-DD)
+// 予定表(チーフ/1課など)を自動取り込みする。毎時0分に呼ばれ、頻度設定に応じて実行する。
+// - daily: 指定時刻(JST)の回のみ、1日1回
+// - hourly: 毎時実行(スプレッドシートの更新をなるべく早く検知して反映したい場合)
+// settings: sched_{source}_enabled('1'/'0'), sched_{source}_url, sched_{source}_hour('6'),
+//           sched_{source}_freq('daily'|'hourly'), sched_{source}_last_run(YYYY-MM-DD HH:MM:SS)
 // 「読み込み日の2日後以降」のみ反映(当日・翌日は台帳の実績取り込みに任せる)
 async function cronChiefSchedule(env) {
   const SOURCES = ['chief', 'ka1'];
+  const DEFAULT_FREQ = { chief: 'daily', ka1: 'hourly' };
   const now = new Date(Date.now() + 9 * 3600e3); // JST
-  const today = jstDate();
+  const nowTs = jstTs();
+  const nowHourKey = nowTs.slice(0, 13); // "YYYY-MM-DD HH"
   for (const src of SOURCES) {
     const enabled = await getSetting(env, `sched_${src}_enabled`, '0');
     if (enabled !== '1') continue;
     const url = await getSetting(env, `sched_${src}_url`, '');
     if (!url) continue;
-    const targetHour = parseInt(await getSetting(env, `sched_${src}_hour`, '6'), 10);
-    if (now.getHours() !== targetHour) continue;
+    const frequency = await getSetting(env, `sched_${src}_freq`, DEFAULT_FREQ[src] || 'daily');
     const lastRun = await getSetting(env, `sched_${src}_last_run`, '');
-    if (lastRun === today) continue; // 1日1回のみ
+    if (frequency === 'hourly') {
+      if (lastRun.slice(0, 13) === nowHourKey) continue; // この時間帯は既に実行済み
+    } else {
+      const targetHour = parseInt(await getSetting(env, `sched_${src}_hour`, '6'), 10);
+      if (now.getHours() !== targetHour) continue;
+      if (lastRun.slice(0, 10) === jstDate()) continue; // 1日1回のみ
+    }
     const d = new Date(Date.now() + 9 * 3600e3); d.setDate(d.getDate() + 2);
     const fromDate = d.toISOString().slice(0, 10); // 読み込み日の2日後
 
     try {
       const adminUser = await env.DB.prepare("SELECT id FROM users WHERE role='admin' LIMIT 1").first();
       const r = await importScheduleSheet(env, 'sched_' + src, url, adminUser ? adminUser.id : 0, fromDate);
-      await env.DB.prepare(`REPLACE INTO settings(key,value) VALUES('sched_${src}_last_run',?)`).bind(today).run();
+      await env.DB.prepare(`REPLACE INTO settings(key,value) VALUES('sched_${src}_last_run',?)`).bind(jstTs()).run();
       await env.DB.prepare(`REPLACE INTO settings(key,value) VALUES('sched_${src}_last_result',?)`).bind(
         JSON.stringify({ ts: jstTs(), applied: r.applied, skipped: r.skipped, unchangedPeople: r.unchangedPeople, changedPeople: r.changedPeople, error: '' })
       ).run();
     } catch (e) {
-      await env.DB.prepare(`REPLACE INTO settings(key,value) VALUES('sched_${src}_last_run',?)`).bind(today).run();
+      await env.DB.prepare(`REPLACE INTO settings(key,value) VALUES('sched_${src}_last_run',?)`).bind(jstTs()).run();
       await env.DB.prepare(`REPLACE INTO settings(key,value) VALUES('sched_${src}_last_result',?)`).bind(
         JSON.stringify({ ts: jstTs(), applied: 0, skipped: 0, error: e.message })
       ).run();
