@@ -1648,6 +1648,7 @@ async function pageHandler(app){
     <textarea id="imp-urls" placeholder="https://docs.google.com/spreadsheets/d/.../edit?gid=...&#10;https://docs.google.com/spreadsheets/d/.../edit?gid=..." style="width:100%;min-height:80px;font-family:monospace;font-size:12px"></textarea>
     <div class="row" style="margin-top:8px;flex-wrap:wrap">
       <label>対象月 <input type="month" id="imp-month" value="${MONTH}"></label>
+      <label>対象日(IN/OUT台帳用・シートの日付欄が空の場合に使用) <input type="date" id="imp-date" value="${jstToday()}"></label>
       <label>フォーマット
         <select id="imp-format">
           <option value="auto">自動判定</option>
@@ -1659,6 +1660,7 @@ async function pageHandler(app){
       <label><input type="checkbox" id="imp-save" checked> URLを保存する</label>
       <button class="btn gold" id="imp-run">取り込み実行</button>
     </div>
+    <div class="muted" style="margin-top:6px">💡 IN/OUT台帳は基本的に「1ファイル=1日分」です。シート内の日付が自動で読み取れない場合、この「対象日」がその日の日付として使われます。1ファイルに複数日が混在する場合は、日付ごとにURLを分けて取り込んでください。</div>
     <div id="imp-result" style="margin-top:10px"></div>
     <div id="imp-saved" class="muted" style="margin-top:8px"></div>`)}
   ${sec('online','🟢 現在ログイン中のメンバー <span class="muted" style="font-weight:400">(10秒ごとに自動更新)</span>', `<div id="hd-online" class="muted">読み込み中…</div>`)}
@@ -1700,7 +1702,7 @@ async function pageHandler(app){
     $('#imp-run').disabled = true; $('#imp-result').innerHTML = '<span class="muted">取り込み中…（全シートを読み込むため少し時間がかかります）</span>';
     try{
       const d = await api('/import-from-url', { method:'POST', body:{
-        urls, month: $('#imp-month').value, format: $('#imp-format').value,
+        urls, month: $('#imp-month').value, date: $('#imp-date').value, format: $('#imp-format').value,
         add: $('#imp-add').checked, save: $('#imp-save').checked
       }});
       $('#imp-result').innerHTML = '<table class="list"><tr><th>URL</th><th>結果</th></tr>' + d.results.map(r=>{

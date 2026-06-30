@@ -1162,6 +1162,8 @@ async function api(req, env, url) {
     const urls = Array.isArray(body.urls) ? body.urls : (body.url ? [body.url] : []);
     if (!urls.length) return ERR('URLが指定されていません');
     const month = body.month || jstDate().slice(0, 7);
+    // 自動検出(数式キャッシュ等)に失敗した場合の最終フォールバック日付。ユーザーが画面で指定できる。
+    const userDate = body.date && /^\d{4}-\d{2}-\d{2}$/.test(body.date) ? body.date : '';
     const mode = body.add ? 'add' : 'replace-person-day';
     const results = [];
     for (const rawUrl of urls) {
@@ -1169,12 +1171,13 @@ async function api(req, env, url) {
       if (!meta) { results.push({ url: rawUrl, ok: false, error: 'URLの形式が正しくありません' }); continue; }
 
       // まず xlsx 一括取得で全シート(タブ)を読む。失敗したら単一CSVにフォールバック。
-      let sheets = null, fellBack = false, rawXlsx = null, xlsxError = '', fileDate = '';
+      let sheets = null, fellBack = false, rawXlsx = null, xlsxError = '', fileDate = userDate;
       try {
         const got = await fetchXlsxSheets(meta.id);
         sheets = got.sheets; rawXlsx = got.raw;
         // ファイル名(例:「6/30(火)_BP現場台帳」)から日付を抽出。個々のブロックに日付が無い場合の予備として使う。
-        if (got.fileTitle) { const fd = normSheetDate(got.fileTitle, jstDate().slice(0, 7)); if (fd && /^\d{4}-\d{2}-\d{2}$/.test(fd)) fileDate = fd; }
+        // ユーザーが対象日を明示指定していなければ、これを優先的に使う。
+        if (!userDate && got.fileTitle) { const fd = normSheetDate(got.fileTitle, jstDate().slice(0, 7)); if (fd && /^\d{4}-\d{2}-\d{2}$/.test(fd)) fileDate = fd; }
       } catch (e) {
         fellBack = true; xlsxError = e.message;
         try {
