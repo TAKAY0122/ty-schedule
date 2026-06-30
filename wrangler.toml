@@ -10,7 +10,7 @@ run_worker_first = true
 [[d1_databases]]
 binding = "DB"
 database_name = "schedule-db"
-database_id = "あなたの実際のID"
+database_id = "2806d7f0-3096-4e9a-a2cc-f45f7a1cc6f7"
 
 [[r2_buckets]]
 binding = "DAICHO"

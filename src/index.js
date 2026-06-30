@@ -262,6 +262,13 @@ function parseSheetUrl(url) {
 }
 
 // CSVエクスポートURLを組み立て(「リンクを知る全員が閲覧可」のシートのみ取得可能)
+// Cloudflare WorkersのデフォルトUAだとGoogle側がbot対策ページ(HTML)を返すことがあるため、
+// 通常のブラウザに近いヘッダーを付けてリクエストする。
+const GSHEET_FETCH_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Accept': '*/*',
+};
+
 function csvExportUrl(id, gid) {
   return `https://docs.google.com/spreadsheets/d/${id}/export?format=csv&gid=${gid}`;
 }
@@ -278,10 +285,14 @@ function gvizCsvUrl(id, gid) {
 // xlsx は zip なので、ZIP(ストア/Deflate)を自前展開し、sheetN.xml を簡易パースする。
 async function fetchXlsxSheets(id) {
   const url = `https://docs.google.com/spreadsheets/d/${id}/export?format=xlsx`;
-  const resp = await fetch(url, { redirect: 'follow' });
+  const resp = await fetch(url, { redirect: 'follow', headers: GSHEET_FETCH_HEADERS });
   if (!resp.ok) throw new Error(`xlsx取得失敗(HTTP ${resp.status})`);
   const buf = new Uint8Array(await resp.arrayBuffer());
-  if (buf[0] !== 0x50 || buf[1] !== 0x4b) throw new Error('xlsxではない応答(共有設定を確認してください)');
+  if (buf[0] !== 0x50 || buf[1] !== 0x4b) {
+    // xlsxではなくHTML等が返ってきた場合(共有設定 or bot対策ページの可能性)。先頭を少し見せてデバッグしやすくする。
+    const head = new TextDecoder().decode(buf.slice(0, 120)).replace(/\s+/g, ' ').trim();
+    throw new Error(`xlsxではない応答が返りました(共有設定を「リンクを知る全員が閲覧可」にしてください) [${head.slice(0, 60)}]`);
+  }
   const files = await unzip(buf);
   // 共有文字列
   const sstXml = files['xl/sharedStrings.xml'] ? new TextDecoder().decode(files['xl/sharedStrings.xml']) : '';
@@ -312,7 +323,12 @@ async function fetchXlsxSheets(id) {
     const xml = files[key];
     if (xml) sheets.push({ name: unescapeXml(name), grid: parseSheetXml(new TextDecoder().decode(xml), sst) });
   }
-  return { sheets, raw: buf };   // raw = 元xlsxバイト列(R2保管用)
+  // ファイルタイトル(Driveのファイル名がそのまま入る。例:「6/30(火)_BP現場台帳」)から日付を拾う。
+  // 個々のイベントブロックに日付メタが無い場合のフォールバックに使う。
+  const coreXml = files['docProps/core.xml'] ? new TextDecoder().decode(files['docProps/core.xml']) : '';
+  const titleMatch = coreXml.match(/<dc:title[^>]*>([\s\S]*?)<\/dc:title>/);
+  const fileTitle = titleMatch ? unescapeXml(titleMatch[1]) : '';
+  return { sheets, raw: buf, fileTitle };   // raw = 元xlsxバイト列(R2保管用)
 }
 
 function parseSharedStrings(xml) {
@@ -385,7 +401,7 @@ async function unzip(buf) {
     const lhExtraLen = dv.getUint16(lhOffset + 28, true);
     const dataStart = lhOffset + 30 + lhNameLen + lhExtraLen;
     const comp = buf.subarray(dataStart, dataStart + compSize);
-    if (/(sharedStrings|workbook)\.xml$|worksheets\/sheet\d+\.xml$|workbook\.xml\.rels$/.test(name)) {
+    if (/(sharedStrings|workbook)\.xml$|worksheets\/sheet\d+\.xml$|workbook\.xml\.rels$|docProps\/core\.xml$/.test(name)) {
       files[name] = method === 0 ? comp : await inflateRaw(comp);
     }
     p += 46 + nameLen + extraLen + commentLen;
@@ -444,7 +460,7 @@ function normSheetDate(v, ym) {
 //   「日付/受注番号」「催物名/会場名」「搬入終了」「終演時間」を含むメタ行群 →
 //   「出勤…登録番号…業務名…」ヘッダ行 → 人数分のデータ行(FALSE埋めで終端)
 // の構造。ヘッダ行(登録番号を含む行)を見つけるたびに直前メタから日付/会場/搬入終了/終演/2stを拾う。
-function parseFormatC(rows, cfg) {
+function parseFormatC(rows, cfg, fileDate) {
   const curYear = new Date(Date.now() + 9 * 3600e3).getFullYear();
   const ym0 = String(curYear) + '-01';
 
@@ -493,10 +509,13 @@ function parseFormatC(rows, cfg) {
   };
 
   const out = [];
-  let lastDate = '', lastVenue = '';
+  let lastDate = fileDate || '', lastVenue = '';
   for (let r = 0; r < rows.length; r++) {
     const cols = findHeaderCols(rows[r] || []);
     if (!cols) continue;                  // ヘッダ行(登録番号を含む)を探す
+    // 「総数,◯◯,受注番号,...」のような全イベント集計(台帳まとめ)表のヘッダーはスキップ。
+    // これは既に各イベント単位で数えた人を再度まとめているだけなので、取り込むと二重計上になる。
+    if (String((rows[r] || [])[0] || '').trim() === '総数') continue;
     // このブロックのメタを直前から取得
     const meta = scanMeta(Math.max(0, r - 12), r);
     if (meta.date) lastDate = meta.date;
@@ -1136,14 +1155,16 @@ async function api(req, env, url) {
       if (!meta) { results.push({ url: rawUrl, ok: false, error: 'URLの形式が正しくありません' }); continue; }
 
       // まず xlsx 一括取得で全シート(タブ)を読む。失敗したら単一CSVにフォールバック。
-      let sheets = null, fellBack = false, rawXlsx = null;
+      let sheets = null, fellBack = false, rawXlsx = null, xlsxError = '', fileDate = '';
       try {
         const got = await fetchXlsxSheets(meta.id);
         sheets = got.sheets; rawXlsx = got.raw;
+        // ファイル名(例:「6/30(火)_BP現場台帳」)から日付を抽出。個々のブロックに日付が無い場合の予備として使う。
+        if (got.fileTitle) { const fd = normSheetDate(got.fileTitle, jstDate().slice(0, 7)); if (fd && /^\d{4}-\d{2}-\d{2}$/.test(fd)) fileDate = fd; }
       } catch (e) {
-        fellBack = true;
+        fellBack = true; xlsxError = e.message;
         try {
-          const resp = await fetch(csvExportUrl(meta.id, meta.gid), { redirect: 'follow' });
+          const resp = await fetch(csvExportUrl(meta.id, meta.gid), { redirect: 'follow', headers: GSHEET_FETCH_HEADERS });
           if (!resp.ok) { results.push({ url: rawUrl, ok: false, error: `取得失敗(HTTP ${resp.status})。シートを「リンクを知る全員が閲覧可」にしてください` }); continue; }
           const csv = await resp.text();
           if (/<html/i.test(csv.slice(0, 200))) { results.push({ url: rawUrl, ok: false, error: 'シートが非公開の可能性があります(「リンクを知る全員が閲覧可」に設定してください)' }); continue; }
@@ -1151,22 +1172,28 @@ async function api(req, env, url) {
         } catch (e2) { results.push({ url: rawUrl, ok: false, error: '取得エラー: ' + e2.message }); continue; }
       }
 
-      // 各シートを解析して1つにまとめる。台帳/シート名/料金タブ等の不要シートは自動スキップ。
+      // 各シートを解析して1つにまとめる。シート名では判定せず、実際に登録番号の列を持つ
+      // (=社員データの表である)シートだけが結果的に件数を持つので、それ以外は自動的に0件になる。
       let allRows = [];
       const sheetReport = [];
       for (const sh of sheets) {
         const nm = sh.name || '';
-        if (/^(シート名|台帳|会場リスト|料金|集計|Sheet\d*|フォーマット)/.test(nm)) continue; // 集計系は除外
         const grid = sh.grid;
-        if (!grid || !grid.length) continue;
+        if (!grid || !grid.length) { sheetReport.push({ name: nm, count: 0, note: '空シート' }); continue; }
         const fmt = body.format && body.format !== 'auto' ? body.format : detectFormat(grid);
         let parsed;
-        if (fmt === 'C') parsed = parseFormatC(grid, body.cfg).rows;
+        if (fmt === 'C') parsed = parseFormatC(grid, body.cfg, fileDate).rows;
         else parsed = parseFormatAB(grid, month, body.cfg).rows;
         if (parsed && parsed.length) { allRows = allRows.concat(parsed); sheetReport.push({ name: nm, count: parsed.length }); }
+        else sheetReport.push({ name: nm, count: 0 });
       }
 
-      if (!allRows.length) { results.push({ url: rawUrl, ok: false, error: '取り込めるデータが見つかりませんでした(対象月やフォーマットを確認してください)', sheets: sheetReport }); continue; }
+      if (!allRows.length) {
+        const detail = sheetReport.length ? `(読み込んだシート: ${sheetReport.map(s => `${s.name}=${s.count}件`).join(', ')})` : '(シートが1枚も読めませんでした)';
+        const xerr = fellBack && xlsxError ? ` / 全シート取得エラー: ${xlsxError}` : '';
+        results.push({ url: rawUrl, ok: false, error: `取り込めるデータが見つかりませんでした ${detail}${xerr}`, sheets: sheetReport, mode: fellBack ? '単一シート(全タブ取得に失敗)' : '全シート' });
+        continue;
+      }
       const r = await applyImportRows(env, allRows, me.id, mode, 'スプレッドシートURL');
 
       // 監査・証拠用に、取り込んだ元Excel(xlsx)をR2へ保管しインデックスを記録する。
