@@ -159,13 +159,17 @@ function withAuthor(text, authorName) {
 async function applyImportRows(env, rows, editorId, mode = 'replace-person-day', srcLabel = 'spreadsheet') {
   const ts = jstTs();
   const resolve = await loadWageResolver(env);
-  let applied = 0, skipped = 0, skippedUnregistered = 0, skippedUnchanged = 0; const errors = [];
+  let applied = 0, skipped = 0, skippedUnregistered = 0, skippedUnchanged = 0, skippedInvalid = 0; const errors = [];
   // (uid,date) ごとにグルーピング
   const groups = {}; const order = [];
   for (const r of rows) {
     const regno = String(r.regno || '').trim();
     const date = String(r.date || '').trim();
-    if (!regno || !date) { skipped++; continue; }
+    if (!regno || !date) {
+      skipped++; skippedInvalid++;
+      if (skippedInvalid <= 3) errors.push(`不正な行をスキップ: regno="${regno}" date="${date}" site="${r.site || ''}" duty="${r.duty || ''}"`);
+      continue;
+    }
     const u = await env.DB.prepare('SELECT id, rank, name FROM users WHERE regno=?').bind(regno).first();
     if (!u) { errors.push(`登録番号 ${regno} は未登録(${date})`); skipped++; skippedUnregistered++; continue; }
     const key = u.id + '|' + date;
@@ -217,7 +221,7 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
       .bind(ts, editorId, uid, date, beforeJson, JSON.stringify({ slots: afterJson, _src: srcLabel })).run();
     applied += items.length;
   }
-  return { applied, skipped, skippedUnregistered, skippedUnchanged, errors };
+  return { applied, skipped, skippedUnregistered, skippedUnchanged, skippedInvalid, errors };
 }
 
 // グリッドからフォーマットを推定。Cは勤務表(打刻/退勤/集合などの語)、それ以外はAB(月間表)
@@ -1223,7 +1227,7 @@ async function api(req, env, url) {
         } catch (e) { archiveError = e.message; }
       }
 
-      results.push({ url: rawUrl, ok: true, sheetsRead: sheetReport.length, sheets: sheetReport, applied: r.applied, skipped: r.skipped, skippedUnregistered: r.skippedUnregistered, skippedUnchanged: r.skippedUnchanged, errors: r.errors, mode: fellBack ? '単一シート(全タブ取得に失敗)' : '全シート', archived, archiveError });
+      results.push({ url: rawUrl, ok: true, sheetsRead: sheetReport.length, sheets: sheetReport, applied: r.applied, skipped: r.skipped, skippedUnregistered: r.skippedUnregistered, skippedUnchanged: r.skippedUnchanged, skippedInvalid: r.skippedInvalid, errors: r.errors, mode: fellBack ? '単一シート(全タブ取得に失敗)' : '全シート', archived, archiveError });
     }
     if (body.save) {
       const saved = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
