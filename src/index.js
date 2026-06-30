@@ -212,6 +212,9 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
   const ts = jstTs();
   const resolve = await loadWageResolver(env);
   let applied = 0, skipped = 0, skippedUnregistered = 0, skippedUnchanged = 0, skippedInvalid = 0; const errors = [];
+  // 登録番号→ユーザーの対応を1回のクエリで取得しておく(行ごとにSELECTするとAPIリクエスト数上限に達するため)
+  const allUsers = (await env.DB.prepare('SELECT id, regno, rank, name FROM users').all()).results;
+  const userByRegno = {}; for (const u of allUsers) userByRegno[String(u.regno).trim()] = u;
   // (uid,date) ごとにグルーピング
   const groups = {}; const order = [];
   for (const r of rows) {
@@ -222,15 +225,34 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
       if (skippedInvalid <= 3) errors.push(`不正な行をスキップ: regno="${regno}" date="${date}" site="${r.site || ''}" duty="${r.duty || ''}"`);
       continue;
     }
-    const u = await env.DB.prepare('SELECT id, rank, name FROM users WHERE regno=?').bind(regno).first();
+    const u = userByRegno[regno];
     if (!u) { errors.push(`登録番号 ${regno} は未登録(${date})`); skipped++; skippedUnregistered++; continue; }
     const key = u.id + '|' + date;
     if (!groups[key]) { groups[key] = { uid: u.id, rank: u.rank, name: u.name, date, items: [] }; order.push(key); }
     groups[key].items.push(r);
   }
+  // 対象となりうる(user_id,date)の既存スケジュールをまとめて1回で取得しておく
+  const uidsAll = [...new Set(order.map(k => groups[k].uid))];
+  const datesAll = [...new Set(order.map(k => groups[k].date))];
+  const beforeMap = {}; // key "uid|date" -> rows[]
+  if (uidsAll.length && datesAll.length) {
+    // SQLiteのプレースホルダ上限を考慮し、必要なら複数回に分けて取得する
+    const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
+    for (const uidChunk of chunk(uidsAll, 200)) {
+      const ph1 = uidChunk.map(() => '?').join(',');
+      const ph2 = datesAll.map(() => '?').join(',');
+      const rs = (await env.DB.prepare(
+        `SELECT * FROM schedule WHERE user_id IN (${ph1}) AND date IN (${ph2}) ORDER BY user_id, date, slot`
+      ).bind(...uidChunk, ...datesAll).all()).results;
+      for (const r of rs) (beforeMap[r.user_id + '|' + r.date] ||= []).push(r);
+    }
+  }
+  // DELETE/INSERTをまとめて1回のバッチ実行で送るためのstatement配列
+  const batch = [];
+  const rookieCheck = []; // 新人配属通知の判定対象({uid,date,site})。後でまとめてreportsと突き合わせる
   for (const key of order) {
     const { uid, rank, name, date, items } = groups[key];
-    const before = (await env.DB.prepare('SELECT * FROM schedule WHERE user_id=? AND date=? ORDER BY slot').bind(uid, date).all()).results;
+    const before = beforeMap[key] || [];
     let baseSlots = [];
     if (mode === 'add') baseSlots = before.map(stripRow);
     // 同一(現場名)の行が複数ある場合は1つにマージする(台帳側で準備/搬入/本番などが
@@ -280,21 +302,33 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
     const beforeJson = JSON.stringify(before.map(stripRow));
     const afterJson = JSON.stringify(finalSlots.map(stripRow));
     if (beforeJson === afterJson) { skipped += items.length; skippedUnchanged += items.length; continue; }
-    await env.DB.prepare('DELETE FROM schedule WHERE user_id=? AND date=?').bind(uid, date).run();
+    batch.push(env.DB.prepare('DELETE FROM schedule WHERE user_id=? AND date=?').bind(uid, date));
     let slot = 0;
     for (const s of finalSlots) {
-      await env.DB.prepare('INSERT INTO schedule(user_id,date,slot,type,site,venue,tin,tout,hours,overtime,pay,note,duty,load_end,show_end,multi) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-        .bind(uid, date, slot, s.type, s.site, s.venue, s.tin, s.tout, s.hours || 0, s.overtime || 0, s.pay || 0, s.note, s.duty || '', s.load_end || '', s.show_end || '', s.multi ? 1 : 0).run();
+      batch.push(env.DB.prepare('INSERT INTO schedule(user_id,date,slot,type,site,venue,tin,tout,hours,overtime,pay,note,duty,load_end,show_end,multi) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+        .bind(uid, date, slot, s.type, s.site, s.venue, s.tin, s.tout, s.hours || 0, s.overtime || 0, s.pay || 0, s.note, s.duty || '', s.load_end || '', s.show_end || '', s.multi ? 1 : 0));
       slot++;
-      if (s.type === 'work' && s.site) {
-        const rs = (await env.DB.prepare("SELECT * FROM reports WHERE next_date=? AND next_site=?").bind(date, s.site).all()).results;
-        for (const rr of rs) await notify(env, [uid], 'rookie', `🔰 ${rr.next_date} ${rr.next_site} に新人「${rr.candidate_name}」が入る予定です`);
-      }
+      if (s.type === 'work' && s.site) rookieCheck.push({ uid, date, site: s.site });
     }
-    await env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
-      .bind(ts, editorId, uid, date, beforeJson, JSON.stringify({ slots: afterJson, _src: srcLabel })).run();
+    batch.push(env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
+      .bind(ts, editorId, uid, date, beforeJson, JSON.stringify({ slots: afterJson, _src: srcLabel })));
     applied += items.length;
     if (mergeNote) errors.push(`${name || uid}さん ${date}: 同一現場の重複行を統合しました ${mergeNote}`);
+  }
+  // DELETE/INSERT/履歴記録をまとめて送信(D1のbatchは1回のAPIリクエストとして扱われる)
+  if (batch.length) {
+    const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
+    for (const part of chunk(batch, 200)) await env.DB.batch(part);
+  }
+  // 新人配属通知をまとめて判定(対象のnext_date×next_siteの組み合わせだけ取得して突き合わせる)
+  if (rookieCheck.length) {
+    const dates = [...new Set(rookieCheck.map(x => x.date))];
+    const ph = dates.map(() => '?').join(',');
+    const allReports = (await env.DB.prepare(`SELECT * FROM reports WHERE next_date IN (${ph}) AND next_site!=''`).bind(...dates).all()).results;
+    for (const rc of rookieCheck) {
+      const matches = allReports.filter(rr => rr.next_date === rc.date && rr.next_site === rc.site);
+      for (const rr of matches) await notify(env, [rc.uid], 'rookie', `🔰 ${rr.next_date} ${rr.next_site} に新人「${rr.candidate_name}」が入る予定です`);
+    }
   }
   return { applied, skipped, skippedUnregistered, skippedUnchanged, skippedInvalid, errors };
 }
