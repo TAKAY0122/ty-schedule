@@ -1779,8 +1779,9 @@ async function pageDaicho(app){
     <div class="muted" style="margin-bottom:8px">保管件数: ${items.length}件</div>
     <div class="list-scroll">
       <table class="list">
-        <tr><th>取り込み日時</th><th>取り込んだ人</th><th>反映件数</th><th>シート数</th><th>サイズ</th><th>ファイル</th><th></th></tr>
+        <tr><th>ファイル名</th><th>取り込み日時</th><th>取り込んだ人</th><th>反映件数</th><th>シート数</th><th>サイズ</th><th></th><th></th></tr>
         ${items.map(it=>`<tr>
+          <td style="white-space:nowrap;font-weight:600">${h(it.file_name||'(名称不明)')}</td>
           <td style="white-space:nowrap">${h(it.ts)}</td>
           <td style="white-space:nowrap">${h(it.importer_name||'—')}</td>
           <td>${it.applied!=null?it.applied+'件':'—'}</td>

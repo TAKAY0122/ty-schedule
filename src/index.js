@@ -323,6 +323,14 @@ async function fetchXlsxSheets(id) {
   const url = `https://docs.google.com/spreadsheets/d/${id}/export?format=xlsx`;
   const resp = await fetch(url, { redirect: 'follow', headers: GSHEET_FETCH_HEADERS });
   if (!resp.ok) throw new Error(`xlsx取得失敗(HTTP ${resp.status})`);
+  // ダウンロード時のファイル名はレスポンスヘッダーにも入っていることが多く、
+  // docProps/core.xml の dc:title より確実に取れるので優先的にこちらを使う。
+  let headerTitle = '';
+  const cd = resp.headers.get('content-disposition') || '';
+  const cdm = cd.match(/filename\*=UTF-8''([^;]+)/i) || cd.match(/filename="?([^";]+)"?/i);
+  if (cdm) {
+    try { headerTitle = decodeURIComponent(cdm[1]).replace(/\.xlsx$/i, '').trim(); } catch (e) { headerTitle = cdm[1].replace(/\.xlsx$/i, '').trim(); }
+  }
   const buf = new Uint8Array(await resp.arrayBuffer());
   if (buf[0] !== 0x50 || buf[1] !== 0x4b) {
     // xlsxではなくHTML等が返ってきた場合(共有設定 or bot対策ページの可能性)。先頭を少し見せてデバッグしやすくする。
@@ -359,11 +367,13 @@ async function fetchXlsxSheets(id) {
     const xml = files[key];
     if (xml) sheets.push({ name: unescapeXml(name), grid: parseSheetXml(new TextDecoder().decode(xml), sst) });
   }
-  // ファイルタイトル(Driveのファイル名がそのまま入る。例:「6/30(火)_BP現場台帳」)から日付を拾う。
-  // 個々のイベントブロックに日付メタが無い場合のフォールバックに使う。
+  // ファイルタイトル(Driveのファイル名がそのまま入る。例:「6/30(火)_BP現場台帳」)。
+  // レスポンスヘッダー(Content-Disposition)から取れればそれを優先し、
+  // 取れなければ docProps/core.xml の dc:title を予備として使う。
   const coreXml = files['docProps/core.xml'] ? new TextDecoder().decode(files['docProps/core.xml']) : '';
   const titleMatch = coreXml.match(/<dc:title[^>]*>([\s\S]*?)<\/dc:title>/);
-  const fileTitle = titleMatch ? unescapeXml(titleMatch[1]) : '';
+  const coreTitle = titleMatch ? unescapeXml(titleMatch[1]) : '';
+  const fileTitle = headerTitle || coreTitle || '';
   return { sheets, raw: buf, fileTitle };   // raw = 元xlsxバイト列(R2保管用)
 }
 
