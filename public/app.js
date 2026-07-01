@@ -1956,7 +1956,7 @@ async function pageAdmin(app){
   app.innerHTML = `
   <h2 style="margin-bottom:8px">アカウント管理</h2>
   <div class="adm-nav">
-    ${[['pin','🔑 PIN'],['link','🔗 連携'],['notify','🔔 通知'],['sched-chief','📅 チーフ予定取込'],['sched-ka1','📅 1課予定取込'],['wage','💴 時給'],['data','📋 全データ'],['create','➕ 新規作成'],['list','👥 アカウント一覧']].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
+    ${[['pin','🔑 PIN'],['link','🔗 連携'],['daicho-reload','🌙 台帳夜間再取込'],['notify','🔔 通知'],['sched-chief','📅 チーフ予定取込'],['sched-ka1','📅 1課予定取込'],['wage','💴 時給'],['data','📋 全データ'],['create','➕ 新規作成'],['list','👥 アカウント一覧']].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
     ${has('account_manage') ? `<a href="#/role-permissions" class="adm-chip" style="text-decoration:none;display:inline-block">🛡️ 権限の一括設定</a>` : ''}
   </div>
 
@@ -1975,6 +1975,14 @@ async function pageAdmin(app){
       <button class="btn danger" id="imp-regen">再発行</button><span id="imp-msg"></span>
     </div>
     <div class="muted" style="margin-top:6px">このトークンをGoogleスプレッドシート側のスクリプト(同梱の gas-連携.gs)に貼り付けると、シートの内容がアプリのスケジュールに自動反映されます。再発行すると古いトークンは無効になります。</div>`)}
+
+  ${sec('daicho-reload','🌙 台帳の深夜自動再取り込み', (() => {
+    const lr = chiefSchedData ? null : null; // 後でdaichoReloadDataから表示
+    return `
+    <div class="muted" style="margin-bottom:10px">手動で取り込んだ台帳URLを、<b>毎日JST 0:00に自動で再取り込み</b>します。手動取り込みが「事前の仮確認」、この自動処理が「その日の夜に確定版で上書き」という運用です。</div>
+    <div class="muted">実行後、保存済みURLは自動的に削除されます。またR2台帳は<b>同じファイルの古いバージョンが削除され、最新版1件だけが残ります</b>。</div>
+    <div id="daicho-reload-status" class="muted" style="margin-top:12px">読み込み中…</div>`;
+  })())}
 
   ${sec('notify','🔔 通知設定 <span class="muted" style="font-weight:400">(新人報告の催促)</span>', notifyData ? `
     <div class="muted" style="margin-bottom:10px">毎日決まった時刻に「新人報告がまだ提出されていません」というお知らせ（🔔）を対象者へ送ります。</div>
@@ -2198,6 +2206,17 @@ async function pageAdmin(app){
     finally{ cr.disabled = false; }
   });
 
+
+  // 台帳自動再取り込みの最終実行結果と保存済みURLの件数を表示
+  api('/import-urls').then(d => {
+    const el = $('#daicho-reload-status'); if(!el) return;
+    api('/settings/daicho-reload-result').then(res => {
+      const savedCount = d.urls.length;
+      const r = res && res.result;
+      el.innerHTML = `<div style="margin-bottom:6px">現在の保存済みURL: <b>${savedCount}件</b>${savedCount?` <span class="muted">(次回0:00に自動再取り込み後、削除されます)</span>`:' <span class="muted">(再取り込み対象なし)</span>'}</div>`
+        + (r ? `<div class="muted">最終実行: ${h(r.ts)} / ${r.count}件のURLを再取り込み<br>${r.results.map(x=>`${x.ok?'✓':'✗'} ${h((x.url||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>')}</div>` : '<div class="muted">まだ自動実行されていません</div>');
+    }).catch(()=>{ el.textContent='設定を取得できませんでした'; });
+  }).catch(()=>{});
 
   const adS=$('#ad-search');
   if(adS){ adS.oninput=()=>{ app._adq=adS.value; const pos=adS.selectionStart; pageAdmin(app).then(()=>{ const n=document.getElementById('ad-search'); if(n){ n.focus(); try{n.setSelectionRange(pos,pos);}catch(_){} } }); }; }

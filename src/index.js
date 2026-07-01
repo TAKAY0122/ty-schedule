@@ -1602,6 +1602,13 @@ async function api(req, env, url) {
     return J({ ok: 1, urls });
   }
 
+  // 台帳自動再取り込みの最終実行結果(管理者ページ表示用)
+  if (method === 'GET' && path === '/settings/daicho-reload-result') {
+    if (!has(me, 'import_data')) return ERR('ページが見つかりません', 404);
+    try { return J({ result: JSON.parse(await getSetting(env, 'daicho_reload_last_result', '') || 'null') }); }
+    catch (e) { return J({ result: null }); }
+  }
+
   // ---- 台帳保管(管理者のみ) ----
   if (method === 'GET' && path === '/daicho') {
     if (!has(me, 'daicho_manage')) return ERR('権限がありません', 403);
@@ -1758,6 +1765,85 @@ async function api(req, env, url) {
 // 毎日21:00(JST)= 12:00 UTC: 現場入りしているチーフへ新人報告の催促
 // 毎時実行され、設定時刻(JST)に一致する場合のみ新人報告の催促通知を送る。
 // settings: notify_enabled('1'/'0'), notify_hour('21'), notify_target('handlers'|'chiefs'|'all')
+// ===== 台帳の深夜自動再取り込み =====
+// 保存済みURLを毎日JST 0:00 に自動で再取り込みする。
+// 手動取り込みは「事前確認・仮登録」、このcronが「その日の夜に確定版で上書き」という運用。
+// 実行後:
+//   - 取り込んだURLを保存済みリストから削除する
+//   - R2台帳は同じfile_idの古いバージョンを削除し、最新版だけ残す
+async function cronDaichoReload(env) {
+  const now = new Date(Date.now() + 9 * 3600e3); // JST
+  if (now.getHours() !== 0) return; // JST 0:00 のみ実行
+  const today = jstDate();
+  const lastRun = await getSetting(env, 'daicho_reload_last_run', '');
+  if (lastRun === today) return; // 1日1回のみ
+  await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_run',?)").bind(today).run();
+
+  const urls = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
+  if (!urls.length) return;
+
+  const adminUser = await env.DB.prepare("SELECT id, name FROM users WHERE role='admin' LIMIT 1").first();
+  const editorId = adminUser ? adminUser.id : 0;
+  const editorName = adminUser ? adminUser.name : '自動';
+  const results = [];
+
+  for (const rawUrl of urls) {
+    const meta = parseSheetUrl(rawUrl);
+    if (!meta) { results.push({ url: rawUrl, ok: false, error: 'URL不正' }); continue; }
+    try {
+      // 日付制限なし(fromDate=null)で再取り込み → 当日含む全日付を確定版として上書き
+      const got = await fetchXlsxSheets(meta.id);
+      let allRows = [], sheetReport = [], fileDate = '';
+      if (got.fileTitle) { const fd = normSheetDate(got.fileTitle, jstDate().slice(0, 7)); if (fd) fileDate = fd; }
+      for (const sh of got.sheets) {
+        const grid = sh.grid;
+        if (!grid || !grid.length) continue;
+        const fmt = detectFormat(grid);
+        let parsed;
+        if (fmt === 'C') parsed = parseFormatC(grid, null, fileDate).rows;
+        else parsed = parseFormatAB(grid, jstDate().slice(0, 7)).rows;
+        if (parsed && parsed.length) { allRows = allRows.concat(parsed); sheetReport.push({ name: sh.name, count: parsed.length }); }
+      }
+      if (!allRows.length) { results.push({ url: rawUrl, ok: false, error: 'データなし' }); continue; }
+      const r = await applyImportRows(env, allRows, editorId, 'replace-person-day', '台帳自動再取り込み');
+
+      // R2台帳を保管(同じfile_idの古いバージョンを削除して最新版だけ残す)
+      if (got.raw && env.DAICHO) {
+        const ts = jstTs();
+        const r2key = `daicho/${ts.replace(/[: ]/g, '-')}_${meta.id}.xlsx`;
+        await env.DAICHO.put(r2key, got.raw, {
+          httpMetadata: { contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
+        });
+        const safeTitle = got.fileTitle ? got.fileTitle.replace(/[\\/:*?"<>|]/g, '_').trim() : '';
+        const fname = safeTitle ? `${safeTitle}.xlsx` : `台帳_${ts.slice(0, 10)}_${meta.id.slice(0, 8)}.xlsx`;
+        await env.DB.prepare(
+          'INSERT INTO daicho_archive(ts,importer_id,importer_name,source_url,file_id,r2_key,file_name,size,applied,sheets) VALUES(?,?,?,?,?,?,?,?,?,?)'
+        ).bind(ts, editorId, editorName + '(自動)', rawUrl, meta.id, r2key, fname, got.raw.length, r.applied, sheetReport.length).run();
+
+        // 同じfile_idの古いバージョンを削除(最新版=今追加した1件だけ残す)
+        const oldRecs = (await env.DB.prepare(
+          'SELECT id, r2_key FROM daicho_archive WHERE file_id=? AND r2_key!=? ORDER BY id DESC'
+        ).bind(meta.id, r2key).all()).results;
+        for (const old of oldRecs) {
+          try { await env.DAICHO.delete(old.r2_key); } catch (e) {}
+          await env.DB.prepare('DELETE FROM daicho_archive WHERE id=?').bind(old.id).run();
+        }
+      }
+      results.push({ url: rawUrl, ok: true, applied: r.applied });
+    } catch (e) {
+      results.push({ url: rawUrl, ok: false, error: e.message });
+    }
+  }
+
+  // 取り込んだURLを保存済みリストから削除
+  await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('import_urls','[]')").run();
+
+  // 実行結果を記録(管理者ページで確認できるように)
+  await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_result',?)").bind(
+    JSON.stringify({ ts: jstTs(), count: urls.length, results })
+  ).run();
+}
+
 async function cronNotify(env) {
   const enabled = await getSetting(env, 'notify_enabled', '1');
   if (enabled === '0') return;
@@ -1837,5 +1923,5 @@ export default {
     }
     return env.ASSETS.fetch(req);
   },
-  async scheduled(event, env) { await cronNotify(env); await cronChiefSchedule(env); }
+  async scheduled(event, env) { await cronNotify(env); await cronChiefSchedule(env); await cronDaichoReload(env); }
 };
