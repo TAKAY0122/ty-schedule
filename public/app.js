@@ -1976,13 +1976,10 @@ async function pageAdmin(app){
     </div>
     <div class="muted" style="margin-top:6px">このトークンをGoogleスプレッドシート側のスクリプト(同梱の gas-連携.gs)に貼り付けると、シートの内容がアプリのスケジュールに自動反映されます。再発行すると古いトークンは無効になります。</div>`)}
 
-  ${sec('daicho-reload','🌙 台帳の深夜自動再取り込み', (() => {
-    const lr = chiefSchedData ? null : null; // 後でdaichoReloadDataから表示
-    return `
+  ${sec('daicho-reload','🌙 台帳の深夜自動再取り込み', `
     <div class="muted" style="margin-bottom:10px">手動で取り込んだ台帳URLを、<b>毎日JST 0:00に自動で再取り込み</b>します。手動取り込みが「事前の仮確認」、この自動処理が「その日の夜に確定版で上書き」という運用です。</div>
     <div class="muted">実行後、保存済みURLは自動的に削除されます。またR2台帳は<b>同じファイルの古いバージョンが削除され、最新版1件だけが残ります</b>。</div>
-    <div id="daicho-reload-status" class="muted" style="margin-top:12px">読み込み中…</div>`;
-  })())}
+    <div id="daicho-reload-status" class="muted" style="margin-top:12px">読み込み中…</div>`)}
 
   ${sec('notify','🔔 通知設定 <span class="muted" style="font-weight:400">(新人報告の催促)</span>', notifyData ? `
     <div class="muted" style="margin-bottom:10px">毎日決まった時刻に「新人報告がまだ提出されていません」というお知らせ（🔔）を対象者へ送ります。</div>
