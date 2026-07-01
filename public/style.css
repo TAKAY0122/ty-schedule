@@ -493,3 +493,8 @@ td.sm-edit-cell{text-align:center;color:var(--gold);font-size:15px}
 .dcard.sm-edit{cursor:pointer;position:relative}
 .dcard.sm-edit:active{transform:scale(.99)}
 .sm-edit-hint{margin-top:8px;font-size:12px;color:var(--gold);font-weight:600;text-align:right}
+
+/* ===== 取り込み結果カード(URL取り込み結果・スマホでも横崩れしない) ===== */
+.imp-card{background:#fff;border:1px solid #ccc;border-radius:6px;padding:10px 12px;margin-bottom:10px;font-size:13px;overflow-wrap:break-word;word-break:break-all}
+.imp-card-err{border-color:#d99;background:#fff6f6}
+.imp-card-url{font-family:monospace;font-size:11px;color:#555;overflow-wrap:break-word;word-break:break-all}

@@ -1721,15 +1721,22 @@ async function pageHandler(app){
         urls, month: $('#imp-month').value, date: $('#imp-date').value, format: $('#imp-format').value,
         add: $('#imp-add').checked, save: $('#imp-save').checked
       }});
-      $('#imp-result').innerHTML = '<table class="list"><tr><th>URL</th><th>結果</th></tr>' + d.results.map(r=>{
-        const short = r.url.length>50 ? r.url.slice(0,50)+'…' : r.url;
-        if(!r.ok) return `<tr><td style="font-family:monospace;font-size:11px">${h(short)}</td><td><span class="msg err">${h(r.error)}</span></td></tr>`;
-        const errs = r.errors&&r.errors.length ? `<br><span class="muted">注意: ${r.errors.slice(0,5).map(h).join(' / ')}${r.errors.length>5?` ほか${r.errors.length-5}件`:''}</span>` : '';
-        const arch = r.archived ? '<br><span class="muted">📦 台帳をサーバーに保管しました</span>' : (r.archiveError?`<br><span class="muted">⚠️保管失敗:${h(r.archiveError)}</span>`:'');
-        const shList = r.sheets&&r.sheets.length ? `<br><span class="muted">シート: ${r.sheets.map(s=>`${h(s.name)}(${s.count})`).join(' / ')}</span>` : '';
-        const skipDetail = (r.skippedUnregistered||r.skippedUnchanged||r.skippedInvalid) ? `<br><span class="muted">内訳: 未登録 ${r.skippedUnregistered||0}件 / 変更なし(既に同内容) ${r.skippedUnchanged||0}件 / 不正な行 ${r.skippedInvalid||0}件</span>` : '';
-        return `<tr><td style="font-family:monospace;font-size:11px">${h(short)}</td><td><span class="msg ok">${r.sheetsRead||1}シート読込 / 反映 ${r.applied} / スキップ ${r.skipped}</span>${skipDetail}${shList}${errs}${arch}</td></tr>`;
-      }).join('') + '</table>';
+      $('#imp-result').innerHTML = d.results.map(r=>{
+        const short = r.url.length>60 ? r.url.slice(0,60)+'…' : r.url;
+        if(!r.ok) return `<div class="imp-card imp-card-err">
+          <div class="imp-card-url">${h(short)}</div>
+          <div class="msg err" style="margin-top:4px">${h(r.error)}</div>
+        </div>`;
+        const errs = r.errors&&r.errors.length ? `<div class="muted" style="margin-top:4px">注意: ${r.errors.slice(0,5).map(h).join(' / ')}${r.errors.length>5?` ほか${r.errors.length-5}件`:''}</div>` : '';
+        const arch = r.archived ? '<div class="muted" style="margin-top:4px">📦 台帳をサーバーに保管しました</div>' : (r.archiveError?`<div class="muted" style="margin-top:4px">⚠️保管失敗:${h(r.archiveError)}</div>`:'');
+        const shList = r.sheets&&r.sheets.length ? `<div class="muted" style="margin-top:4px">シート: ${r.sheets.map(s=>`${h(s.name)}(${s.count})`).join(' / ')}</div>` : '';
+        const skipDetail = (r.skippedUnregistered||r.skippedUnchanged||r.skippedInvalid) ? `<div class="muted" style="margin-top:4px">内訳: 未登録 ${r.skippedUnregistered||0}件 / 変更なし ${r.skippedUnchanged||0}件 / 不正な行 ${r.skippedInvalid||0}件</div>` : '';
+        return `<div class="imp-card">
+          <div class="imp-card-url">${h(short)}</div>
+          <div class="msg ok" style="margin-top:4px">${r.sheetsRead||1}シート読込 / 反映 ${r.applied} / スキップ ${r.skipped}</div>
+          ${skipDetail}${shList}${errs}${arch}
+        </div>`;
+      }).join('');
       showSaved();
     }catch(e){ $('#imp-result').innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
     $('#imp-run').disabled = false;
