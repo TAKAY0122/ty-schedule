@@ -330,6 +330,7 @@ async function render(){
     else if(hash === '#/blacklist') await pageBlacklist(app);
     else if(hash === '#/handler') await pageHandler(app);
     else if(hash === '#/admin') await pageAdmin(app);
+    else if(hash === '#/admin-settings') await pageAdminSettings(app);
     else if(hash === '#/daicho') await pageDaicho(app);
     else if(hash === '#/sched-sources') await pageSchedSources(app);
     else if(hash.startsWith('#/permissions/')) await pagePermissions(app, hash);
@@ -402,24 +403,45 @@ function renderForcedPassword(){
 /* ===== シェル(ヘッダー)===== */
 function renderShell(hash){
   const isChief = LV[ME.role] >= 1, isHandler = LV[ME.role] >= 2 || has('site_manage') || has('handler_tools') || has('import_data');
-  const canAdmin = ME.role === 'admin' || has('account_manage') || has('wage_settings');
-  const links = [
-    ['#/schedule','📅 マイスケジュール', true],
-    ['#/sites','🏟️ 現場一覧', isChief],
-    ['#/summary','📊 稼働サマリー', isChief],
-    ['#/members','👥 メンバー', isChief],
-    ['#/report','📝 新人報告', true],
-    ['#/reports','📋 報告一覧', true],
-    ['#/draft','⭐ ドラフト', has('report_check')],
-    ['#/blacklist','🚫 ブラックリスト', has('blacklist_manage')],
-    ['#/edit','✏️ スケジュール入力', ME.handler === 1],
-    ['#/admin','⚙️ アカウント管理', canAdmin],
-    ['#/daicho','🗂️ 台帳保管', ME.role === 'admin' || has('daicho_manage')],
-    ['#/sched-sources','📥 予定表ソース管理', has('wage_settings')],
-  ].filter(l => l[2]);
-  // 現在ページ名(ヘッダー中央に表示)
-  const cur = links.find(l => hash.startsWith(l[0]));
-  const curName = cur ? cur[1].replace(/^[^\s]+\s/, '') : '';
+  const canAccountAdmin = has('account_manage');
+  const canSystemSettings = has('wage_settings');
+  const canDaicho = ME.role === 'admin' || has('daicho_manage');
+  const canSchedSrc = has('wage_settings');
+  const canRolePerm = has('account_manage');
+
+  // ナビゲーション構造。children を持つ項目はグループ(タップでサブメニューに切り替わる)、
+  // 持たない項目は単独ページへのリンク。
+  const nav = [
+    { path:'#/schedule', label:'📅 マイスケジュール', show:true },
+    { label:'🏟️ 現場管理', show:isChief, children:[
+      ['#/sites','🏟️ 現場一覧'],
+      ['#/summary','📊 稼働サマリー'],
+      ['#/members','👥 メンバー'],
+    ]},
+    { label:'🆕 新人管理', show:true, children:[
+      ['#/report','📝 新人報告'],
+      ['#/reports','📋 報告一覧'],
+      ...(has('report_check') ? [['#/draft','⭐ ドラフト']] : []),
+      ...(has('blacklist_manage') ? [['#/blacklist','🚫 ブラックリスト']] : []),
+    ]},
+    { path:'#/edit', label:'✏️ スケジュール入力', show: ME.handler === 1 },
+    { label:'⚙️ 管理者メニュー', show: canAccountAdmin || canSystemSettings || canDaicho || canSchedSrc, children:[
+      ...(canAccountAdmin ? [['#/admin','👥 アカウント管理']] : []),
+      ...(canSystemSettings ? [['#/admin-settings','🔧 システム設定']] : []),
+      ...(canRolePerm ? [['#/role-permissions','🛡️ 権限の一括設定']] : []),
+      ...(canDaicho ? [['#/daicho','🗂️ 台帳保管']] : []),
+      ...(canSchedSrc ? [['#/sched-sources','📥 予定表ソース管理']] : []),
+    ]},
+  ].filter(n => n.show);
+
+  // 現在ページ名(ヘッダー中央に表示)。グループ内の子ページも探索する。
+  let curName = '';
+  outer: for(const item of nav){
+    if(item.path && hash.startsWith(item.path)){ curName = item.label.replace(/^\S+\s/,''); break; }
+    if(item.children){
+      for(const [p,l] of item.children){ if(hash.startsWith(p)){ curName = l.replace(/^\S+\s/,''); break outer; } }
+    }
+  }
   document.getElementById('root').innerHTML = `
   <header>
     <button class="menu-btn" id="menu-btn" aria-label="メニュー">☰</button>
@@ -434,36 +456,66 @@ function renderShell(hash){
   <div id="dd"></div>
   <div id="menu-drawer"></div>`;
 
-  $('#menu-btn').onclick = () => {
-    const dr = $('#menu-drawer');
-    if(dr.innerHTML){ dr.innerHTML=''; return; }
-    dr.innerHTML = `<div class="drawer-bg" id="drawer-bg"></div>
-      <nav class="drawer">
-        <div class="drawer-head">メニュー</div>
-        ${links.map(l=>`<button type="button" class="drawer-link ${hash.startsWith(l[0])?'active':''}" data-go="${l[0]}">${l[1]}</button>`).join('')}
-        <div class="drawer-sep"></div>
-        <button type="button" class="drawer-link" data-go="#/password">🔑 パスワード変更</button>
-        ${isHandler ? `<button type="button" class="drawer-link" id="dd-handler">🛠️ 手配者専用ページ</button>` : ''}
-        ${ME.handler===1 ? `<button type="button" class="drawer-link" id="dd-exit">🔓 手配者モードを終了</button>` : ''}
-        <button type="button" class="drawer-link danger" id="dd-logout">↩️ ログアウト</button>
-      </nav>`;
-    const close = () => dr.innerHTML='';
-    $('#drawer-bg').onclick = close;
-    // 画面移動:hashを変える。同じhashのときだけ明示render(hashchangeが出ないため)
+  const footerLinks = `
+    <div class="drawer-sep"></div>
+    <button type="button" class="drawer-link" data-go="#/password">🔑 パスワード変更</button>
+    ${isHandler ? `<button type="button" class="drawer-link" id="dd-handler">🛠️ 手配者専用ページ</button>` : ''}
+    ${ME.handler===1 ? `<button type="button" class="drawer-link" id="dd-exit">🔓 手配者モードを終了</button>` : ''}
+    <button type="button" class="drawer-link danger" id="dd-logout">↩️ ログアウト</button>`;
+
+  const wireFooter = (dr, close) => {
     dr.querySelectorAll('.drawer-link[data-go]').forEach(btn => btn.onclick = () => {
       const to = btn.dataset.go;
       close();
       if(location.hash === to){ render(); } else { location.hash = to; }
     });
-    const dh = $('#dd-handler');
+    const dh = dr.querySelector('#dd-handler');
     if(dh) dh.onclick = () => {
       close();
       if(ME.handler===1){ location.hash='#/handler'; render(); return; }
       openHandlerPin();
     };
-    const de = $('#dd-exit');
+    const de = dr.querySelector('#dd-exit');
     if(de) de.onclick = async () => { await api('/handler-mode',{method:'DELETE'}); ME.handler=0; close(); location.hash='#/schedule'; render(); };
-    $('#dd-logout').onclick = async () => { try{ await api('/logout',{method:'POST'}); }catch(_){} logoutLocal(); };
+    const dl = dr.querySelector('#dd-logout');
+    if(dl) dl.onclick = async () => { try{ await api('/logout',{method:'POST'}); }catch(_){} logoutLocal(); };
+  };
+
+  const renderDrawerTop = () => {
+    const dr = $('#menu-drawer');
+    const close = () => dr.innerHTML='';
+    dr.innerHTML = `<div class="drawer-bg" id="drawer-bg"></div>
+      <nav class="drawer">
+        <div class="drawer-head">メニュー</div>
+        ${nav.map((item,i) => item.children
+          ? `<button type="button" class="drawer-link drawer-group" data-group="${i}">${item.label}<span class="drawer-arrow">›</span></button>`
+          : `<button type="button" class="drawer-link ${hash.startsWith(item.path)?'active':''}" data-go="${item.path}">${item.label}</button>`
+        ).join('')}
+        ${footerLinks}
+      </nav>`;
+    dr.querySelector('#drawer-bg').onclick = close;
+    dr.querySelectorAll('.drawer-group').forEach(btn => btn.onclick = () => renderDrawerSub(nav[Number(btn.dataset.group)]));
+    wireFooter(dr, close);
+  };
+
+  const renderDrawerSub = (item) => {
+    const dr = $('#menu-drawer');
+    const close = () => dr.innerHTML='';
+    dr.innerHTML = `<div class="drawer-bg" id="drawer-bg"></div>
+      <nav class="drawer">
+        <div class="drawer-head drawer-head-sub"><button type="button" class="drawer-back" id="drawer-back">‹</button><span>${item.label.replace(/^\S+\s/,'')}</span></div>
+        ${item.children.map(([p,l]) => `<button type="button" class="drawer-link ${hash.startsWith(p)?'active':''}" data-go="${p}">${l}</button>`).join('')}
+        ${footerLinks}
+      </nav>`;
+    dr.querySelector('#drawer-bg').onclick = close;
+    dr.querySelector('#drawer-back').onclick = renderDrawerTop;
+    wireFooter(dr, close);
+  };
+
+  $('#menu-btn').onclick = () => {
+    const dr = $('#menu-drawer');
+    if(dr.innerHTML){ dr.innerHTML=''; return; }
+    renderDrawerTop();
   };
 
   $('#bell').onclick = async () => {
@@ -1954,7 +2006,6 @@ async function pageSchedSources(app){
   const freqLabel = s => s.freqType==='daily' ? `毎日 ${String(s.hour).padStart(2,'0')}:00` : `${s.intervalHours}時間ごと`;
 
   app.innerHTML = `
-  <div style="margin-bottom:14px"><a href="#/admin" class="btn ghost sm">← アカウント管理に戻る</a></div>
   <h2 style="margin-bottom:4px">📥 予定表ソース管理</h2>
   <div class="muted" style="margin-bottom:16px">チーフ予定・1課予定など、自動で取り込む予定表を何個でも登録できます。取り込み日から<b>2日後以降の日付のみ</b>反映され(当日・翌日は台帳の実績取り込みを優先)、時刻情報のない表のため現場名・会場名・×・休暇のみ反映されます。反映があった場合、管理者へ通知が届きます。</div>
 
@@ -2167,15 +2218,9 @@ async function pageDaicho(app){
 
 /* ===== アカウント管理(管理者)===== */
 async function pageAdmin(app){
-  if(!has('account_manage') && !has('wage_settings') && !has('daicho_manage')){ notFound(app); return; }
+  if(!has('account_manage')){ notFound(app); return; }
   const users = await getUsers(true);
   const mgrs = await api('/managers');
-  const pin = (await api('/settings/handler-pin')).pin;
-  const importTok = (await api('/settings/import-token')).token;
-  const wageData = await api('/wage-rates').catch(()=>null);
-  const notifyData = await api('/notify-settings').catch(()=>null);
-  const daichoReloadSettings = await api('/daicho-reload-settings').catch(()=>null);
-  const lockData = await api('/lock-settings').catch(()=>null);
   const adq = (app._adq||'').trim(), admgr = app._admgr||'';
   const aList = users.filter(u=>{
     const mq = !adq || (u.name||'').includes(adq) || (u.regno||'').includes(adq);
@@ -2187,100 +2232,10 @@ async function pageAdmin(app){
   app.innerHTML = `
   <h2 style="margin-bottom:8px">アカウント管理</h2>
   <div class="adm-nav">
-    ${[['pin','🔑 PIN'],['link','🔗 連携'],['daicho-reload','🌙 台帳夜間再取込'],['notify','🔔 通知'],['sched-link','📥 予定表取込'],['wage','💴 時給'],['data','📋 全データ'],['create','➕ 新規作成'],['list','👥 アカウント一覧']].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
-    ${has('account_manage') ? `<a href="#/role-permissions" class="adm-chip" style="text-decoration:none;display:inline-block">🛡️ 権限の一括設定</a>` : ''}
+    ${[['data','📋 全データ'],['create','➕ 新規作成'],['list','👥 アカウント一覧']].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
+    <a href="#/role-permissions" class="adm-chip" style="text-decoration:none;display:inline-block">🛡️ 権限の一括設定</a>
+    <a href="#/admin-settings" class="adm-chip" style="text-decoration:none;display:inline-block">🔧 システム設定</a>
   </div>
-
-  ${sec('pin','🔑 手配者専用パスワード(PIN)', `
-    <div class="row">
-      <span>現在:<b id="pin-now">${h(pin)}</b></span>
-      <input id="pin-new" placeholder="新しいPIN(4〜20文字)" style="width:180px">
-      <button class="btn" id="pin-save">変更する</button><span id="pin-msg"></span>
-    </div>
-    <div class="muted" style="margin-top:6px">変更すると、手配モード中のメンバーは全員解除され、新しいPINの再入力が必要になります。</div>`)}
-
-  ${sec('link','🔗 スプレッドシート連携(取り込みトークン)', `
-    <div class="row">
-      <input id="imp-tok" value="${h(importTok)}" readonly style="flex:1;min-width:240px;font-family:monospace;font-size:12px">
-      <button class="btn ghost" id="imp-copy">コピー</button>
-      <button class="btn danger" id="imp-regen">再発行</button><span id="imp-msg"></span>
-    </div>
-    <div class="muted" style="margin-top:6px">このトークンをGoogleスプレッドシート側のスクリプト(同梱の gas-連携.gs)に貼り付けると、シートの内容がアプリのスケジュールに自動反映されます。再発行すると古いトークンは無効になります。</div>`)}
-
-  ${sec('daicho-reload','🌙 台帳の深夜自動再取り込み', `
-    <div class="muted" style="margin-bottom:10px">手動で取り込んだ台帳URLを、<b>設定した時刻に毎日自動で再取り込み</b>します。手動取り込みが「事前の仮確認」、この自動処理が「その日の夜に確定版で上書き」という運用です。</div>
-    <div class="muted" style="margin-bottom:12px">実行後、保存済みURLは自動的に削除されます。またR2台帳は<b>同じファイルの古いバージョンが削除され、最新版1件だけが残ります</b>。</div>
-    <div class="form-grid" style="max-width:420px">
-      <label>実行時刻</label>
-      <select id="dr-hour" style="width:120px;max-width:100%">${Array.from({length:24},(_,i)=>`<option value="${i}" ${daichoReloadSettings&&daichoReloadSettings.hour===i?'selected':''}>${String(i).padStart(2,'0')}:00</option>`).join('')}</select>
-    </div>
-    <div class="row" style="margin-top:10px;gap:8px;align-items:center">
-      <button class="btn gold sm" id="dr-save">保存</button>
-      <span class="muted" id="dr-msg"></span>
-    </div>
-    <div id="daicho-reload-status" class="muted" style="margin-top:16px">読み込み中…</div>`)}
-
-  ${sec('notify','🔔 通知設定 <span class="muted" style="font-weight:400">(新人報告リマインド)</span>', notifyData ? `
-    <div class="muted" style="margin-bottom:10px">その日<b>現場に入っている人</b>のうち、下記の対象条件に当てはまり、かつ<b>まだ本人が新人報告を提出していない人</b>にだけ、決まった時刻にリマインドのお知らせ（🔔）を送ります。役割に関わらず、個人ごとの追加・除外は各アカウントの「権限編集」ページから設定できます。</div>
-    <div class="form-grid" style="grid-template-columns:120px 1fr;max-width:440px;gap:10px 12px;align-items:center">
-      <label>通知</label>
-      <label style="font-weight:400;display:flex;align-items:center;gap:8px"><input type="checkbox" id="nt-enabled" ${notifyData.enabled?'checked':''} style="width:auto"> 通知をオンにする</label>
-      <label>送信時刻</label>
-      <select id="nt-hour" style="width:120px">${Array.from({length:24},(_,i)=>`<option value="${i}" ${notifyData.hour===i?'selected':''}>${String(i).padStart(2,'0')}:00</option>`).join('')}</select>
-      <label>送信対象</label>
-      <select id="nt-target" style="width:auto">
-        <option value="chiefs" ${notifyData.target==='chiefs'?'selected':''}>チーフ以上（チーフ・手配者・管理者）</option>
-        <option value="handlers" ${notifyData.target==='handlers'?'selected':''}>手配者・管理者のみ</option>
-        <option value="all" ${notifyData.target==='all'?'selected':''}>メンツを含む全員</option>
-      </select>
-    </div>
-    <div class="row" style="margin-top:14px;gap:8px;align-items:center">
-      <button class="btn gold sm" id="nt-save">通知設定を保存</button>
-      <button class="btn ghost sm" id="nt-test">今すぐテスト送信</button>
-      <span id="nt-msg" class="muted"></span>
-    </div>
-    <div class="muted" style="margin-top:8px">※現場に入っていない人には送られません。既に本人が新人報告を提出済みの場合も送られません。通知はアプリ内のお知らせ（🔔）に届きます。</div>
-  ` : '<div class="muted">通知設定を取得できませんでした</div>')}
-
-  ${sec('sched-link','📥 予定表の自動取り込み', `
-    <div class="muted" style="margin-bottom:12px">チーフ予定・1課予定など、予定表の自動取り込み設定は専用ページに移動しました。ソースを何個でも追加でき、取り込み頻度も細かく設定できます。</div>
-    <a href="#/sched-sources" class="btn gold" style="text-decoration:none;display:inline-block">📥 予定表ソース管理を開く</a>
-  `)}
-
-  ${sec('wage','💴 時給設定 <span class="muted" style="font-weight:400">(ランク×時期)</span>', wageData ? `
-    <div class="muted" style="margin-bottom:8px">現場日に有効な時給が給与計算に使われます。<b>${h(wageData.lockBefore)}</b> 以前の現場は給与確定済み（時給を変えても再計算されません）。</div>
-    ${lockData ? `
-    <div style="background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:12px">
-      <div style="font-weight:700;margin-bottom:6px">🔒 給与確定ロック期間</div>
-      <div class="muted" style="margin-bottom:8px">現場日からこの日数を過ぎると、チーフ・手配者は編集できなくなります（管理者は常に編集可）。</div>
-      <div class="row" style="align-items:center;gap:8px;flex-wrap:wrap">
-        <span>現場日から</span>
-        <input type="number" id="lock-days" value="${lockData.days}" min="0" max="3650" style="width:90px">
-        <span>日後に確定</span>
-        <button class="btn gold sm" id="lock-save">保存</button>
-        <span id="lock-msg" class="muted"></span>
-      </div>
-      <div class="muted" style="margin-top:6px;font-size:12px">現在の設定では <b>${h(lockData.lockBefore)}</b> 以前が確定済みです。0にすると当日以降すべて編集可、長くすると過去まで編集可になります。</div>
-    </div>` : ''}
-    ${wageData.periods.map(p=>`
-      <div style="font-weight:700;margin:10px 0 4px">${p.effective_from==='1900-01-01'?'旧時給（〜2025/9）':h(p.effective_from)+' 〜（改定）'}</div>
-      <table class="wage-tbl">
-        <tr><th>ランク</th><th>案内料金</th><th>搬入出料金</th></tr>
-        ${['A','B','C','D','E'].map(rk=>{const g=(p.rates[rk]||{}).guide||0,l=(p.rates[rk]||{}).load||0;return `<tr><td>${rk}</td>
-          <td><input type="number" class="wage-in" data-ef="${h(p.effective_from)}" data-rank="${rk}" data-kind="guide" value="${g}"></td>
-          <td><input type="number" class="wage-in" data-ef="${h(p.effective_from)}" data-rank="${rk}" data-kind="load" value="${l}"></td></tr>`;}).join('')}
-      </table>`).join('')}
-    <div class="row" style="margin-top:12px;gap:8px;align-items:center">
-      <button class="btn gold sm" id="wage-save">時給を保存</button>
-      <span id="wage-msg" class="muted"></span>
-    </div>
-    <div class="muted" style="margin-top:8px">深夜手当・超過手当は案内料金×0.25、2st手当は+¥500。対象はA〜Eランクのみ（ケータリング・物品販売・その他ランクは対象外）。</div>
-    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
-      <button class="btn ghost sm" id="recalc-btn">過去データの給与・残業を再計算</button>
-      <span id="recalc-msg" class="muted"></span>
-      <div class="muted" style="margin-top:6px">取り込み済みの全現場を、現在の時給・新ルール（残業9h／業務名）で計算し直します。確定ロックに関わらず再計算し、手動入力した給与も上書きされます。</div>
-    </div>
-  ` : '<div class="muted">時給データを取得できませんでした</div>')}
 
   ${sec('data','📋 全データ閲覧', `
     <div class="row" style="margin-bottom:10px">
@@ -2348,6 +2303,163 @@ async function pageAdmin(app){
     const d = document.getElementById('sec-'+b.dataset.jump);
     if(d){ d.open = true; app._admOpen[b.dataset.jump] = true; d.scrollIntoView({behavior:'smooth', block:'start'}); }
   });
+
+  $('#dv-load').onclick = async () => {
+    $('#dv-out').innerHTML = '読み込み中…';
+    try{
+      const rows = await api('/admin/data?table=' + $('#dv-table').value);
+      if(!rows.length){ $('#dv-out').innerHTML = '<div class="muted">データはありません</div>'; return; }
+      const cols = Object.keys(rows[0]);
+      $('#dv-out').innerHTML = `<div class="sched-wrap"><table class="list">
+        <tr>${cols.map(c=>`<th>${h(c)}</th>`).join('')}</tr>
+        ${rows.map(r=>`<tr>${cols.map(c=>`<td>${h(r[c])}</td>`).join('')}</tr>`).join('')}
+      </table></div><div class="muted" style="margin-top:6px">${rows.length}件</div>`;
+    }catch(e){ $('#dv-out').innerHTML = `<div class="msg err">${h(e.message)}</div>`; }
+  };
+  $('#a-add').onclick = async () => {
+    try{
+      await api('/users',{method:'POST',body:{ regno:$('#a-regno').value, name:$('#a-name').value, rank:$('#a-rank').value, han:$('#a-han').value, station:$('#a-station').value, role:$('#a-role').value }});
+      USERS_CACHE=null; render();
+    }catch(e){ $('#a-msg').innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
+  };
+  const adS=$('#ad-search');
+  if(adS){ adS.oninput=()=>{ app._adq=adS.value; const pos=adS.selectionStart; pageAdmin(app).then(()=>{ const n=document.getElementById('ad-search'); if(n){ n.focus(); try{n.setSelectionRange(pos,pos);}catch(_){} } }); }; }
+  const adM=$('#ad-mgr'); if(adM) adM.onchange=()=>{ app._admgr=adM.value; pageAdmin(app); };
+  const adC=$('#ad-clear'); if(adC) adC.onclick=()=>{ app._adq=''; app._admgr=''; pageAdmin(app); };
+  app.querySelectorAll('[data-role]').forEach(s => s.onchange = async () => {
+    try{ await api('/users/'+s.dataset.role, { method:'PATCH', body:{ role:s.value } }); USERS_CACHE=null; }
+    catch(e){ alert(e.message); render(); }
+  });
+  app.querySelectorAll('[data-mgr]').forEach(s => s.onchange = async () => {
+    try{ await api('/users/'+s.dataset.mgr, { method:'PATCH', body:{ manager_id: s.value?Number(s.value):null } }); USERS_CACHE=null; }
+    catch(e){ alert(e.message); render(); }
+  });
+  app.querySelectorAll('[data-suspend]').forEach(b => b.onclick = async () => {
+    const id = b.dataset.suspend, cur = b.dataset.cur === '1';
+    if(!confirm(cur ? 'このアカウントを復活します(ログイン可)。よろしいですか?' : 'このアカウントを停止します(ログイン不可。一覧・スケジュール入力・現場一覧には引き続き表示)。よろしいですか?')) return;
+    try{ await api(`/users/${id}`,{method:'PATCH',body:{suspended:cur?0:1}}); USERS_CACHE=null; popup(cur?'復活しました':'停止しました'); pageAdmin(app); }
+    catch(e){ popup(e.message,'error'); }
+  });
+  app.querySelectorAll('[data-reset]').forEach(b => b.onclick = async () => {
+    if(!confirm('パスワードを初期化しますか?(登録番号でログインできるようになります)')) return;
+    await api(`/users/${b.dataset.reset}/resetpw`, { method:'POST' }); alert('初期化しました');
+  });
+  app.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+    if(!confirm('このアカウントを削除しますか?スケジュールも削除されます。')) return;
+    try{ await api('/users/'+b.dataset.del, { method:'DELETE' }); USERS_CACHE=null; render(); }
+    catch(e){ alert(e.message); }
+  });
+}
+
+/* ===== システム設定(PIN・連携・通知・台帳夜間再取込・時給。wage_settings権限のみ・専用ページ) ===== */
+async function pageAdminSettings(app){
+  if(!has('wage_settings')){ notFound(app); return; }
+  const pin = (await api('/settings/handler-pin')).pin;
+  const importTok = (await api('/settings/import-token')).token;
+  const wageData = await api('/wage-rates').catch(()=>null);
+  const notifyData = await api('/notify-settings').catch(()=>null);
+  const daichoReloadSettings = await api('/daicho-reload-settings').catch(()=>null);
+  const lockData = await api('/lock-settings').catch(()=>null);
+  const openSet = app._asOpen || (app._asOpen = { pin:true });
+  const sec = (id,title,body)=>`<details class="adm-sec" id="asec-${id}" data-sec="${id}" ${openSet[id]?'open':''}><summary>${title}</summary><div class="adm-body">${body}</div></details>`;
+  app.innerHTML = `
+  <h2 style="margin-bottom:8px">🔧 システム設定</h2>
+  <div class="adm-nav">
+    ${[['pin','🔑 PIN'],['link','🔗 連携'],['daicho-reload','🌙 台帳夜間再取込'],['notify','🔔 通知'],['wage','💴 時給']].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
+  </div>
+
+  ${sec('pin','🔑 手配者専用パスワード(PIN)', `
+    <div class="row">
+      <span>現在:<b id="pin-now">${h(pin)}</b></span>
+      <input id="pin-new" placeholder="新しいPIN(4〜20文字)" style="width:180px">
+      <button class="btn" id="pin-save">変更する</button><span id="pin-msg"></span>
+    </div>
+    <div class="muted" style="margin-top:6px">変更すると、手配モード中のメンバーは全員解除され、新しいPINの再入力が必要になります。</div>`)}
+
+  ${sec('link','🔗 スプレッドシート連携(取り込みトークン)', `
+    <div class="row">
+      <input id="imp-tok" value="${h(importTok)}" readonly style="flex:1;min-width:240px;font-family:monospace;font-size:12px">
+      <button class="btn ghost" id="imp-copy">コピー</button>
+      <button class="btn danger" id="imp-regen">再発行</button><span id="imp-msg"></span>
+    </div>
+    <div class="muted" style="margin-top:6px">このトークンをGoogleスプレッドシート側のスクリプト(同梱の gas-連携.gs)に貼り付けると、シートの内容がアプリのスケジュールに自動反映されます。再発行すると古いトークンは無効になります。</div>`)}
+
+  ${sec('daicho-reload','🌙 台帳の深夜自動再取り込み', `
+    <div class="muted" style="margin-bottom:10px">手動で取り込んだ台帳URLを、<b>設定した時刻に毎日自動で再取り込み</b>します。手動取り込みが「事前の仮確認」、この自動処理が「その日の夜に確定版で上書き」という運用です。</div>
+    <div class="muted" style="margin-bottom:12px">実行後、保存済みURLは自動的に削除されます。またR2台帳は<b>同じファイルの古いバージョンが削除され、最新版1件だけが残ります</b>。</div>
+    <div class="form-grid" style="max-width:420px">
+      <label>実行時刻</label>
+      <select id="dr-hour" style="width:120px;max-width:100%">${Array.from({length:24},(_,i)=>`<option value="${i}" ${daichoReloadSettings&&daichoReloadSettings.hour===i?'selected':''}>${String(i).padStart(2,'0')}:00</option>`).join('')}</select>
+    </div>
+    <div class="row" style="margin-top:10px;gap:8px;align-items:center">
+      <button class="btn gold sm" id="dr-save">保存</button>
+      <span class="muted" id="dr-msg"></span>
+    </div>
+    <div id="daicho-reload-status" class="muted" style="margin-top:16px">読み込み中…</div>`)}
+
+  ${sec('notify','🔔 通知設定 <span class="muted" style="font-weight:400">(新人報告リマインド)</span>', notifyData ? `
+    <div class="muted" style="margin-bottom:10px">その日<b>現場に入っている人</b>のうち、下記の対象条件に当てはまり、かつ<b>まだ本人が新人報告を提出していない人</b>にだけ、決まった時刻にリマインドのお知らせ（🔔）を送ります。役割に関わらず、個人ごとの追加・除外は各アカウントの「権限編集」ページから設定できます。</div>
+    <div class="form-grid" style="grid-template-columns:120px 1fr;max-width:440px;gap:10px 12px;align-items:center">
+      <label>通知</label>
+      <label style="font-weight:400;display:flex;align-items:center;gap:8px"><input type="checkbox" id="nt-enabled" ${notifyData.enabled?'checked':''} style="width:auto"> 通知をオンにする</label>
+      <label>送信時刻</label>
+      <select id="nt-hour" style="width:120px">${Array.from({length:24},(_,i)=>`<option value="${i}" ${notifyData.hour===i?'selected':''}>${String(i).padStart(2,'0')}:00</option>`).join('')}</select>
+      <label>送信対象</label>
+      <select id="nt-target" style="width:auto">
+        <option value="chiefs" ${notifyData.target==='chiefs'?'selected':''}>チーフ以上（チーフ・手配者・管理者）</option>
+        <option value="handlers" ${notifyData.target==='handlers'?'selected':''}>手配者・管理者のみ</option>
+        <option value="all" ${notifyData.target==='all'?'selected':''}>メンツを含む全員</option>
+      </select>
+    </div>
+    <div class="row" style="margin-top:14px;gap:8px;align-items:center">
+      <button class="btn gold sm" id="nt-save">通知設定を保存</button>
+      <button class="btn ghost sm" id="nt-test">今すぐテスト送信</button>
+      <span id="nt-msg" class="muted"></span>
+    </div>
+    <div class="muted" style="margin-top:8px">※現場に入っていない人には送られません。既に本人が新人報告を提出済みの場合も送られません。通知はアプリ内のお知らせ（🔔）に届きます。</div>
+  ` : '<div class="muted">通知設定を取得できませんでした</div>')}
+
+  ${sec('wage','💴 時給設定 <span class="muted" style="font-weight:400">(ランク×時期)</span>', wageData ? `
+    <div class="muted" style="margin-bottom:8px">現場日に有効な時給が給与計算に使われます。<b>${h(wageData.lockBefore)}</b> 以前の現場は給与確定済み（時給を変えても再計算されません）。</div>
+    ${lockData ? `
+    <div style="background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:12px">
+      <div style="font-weight:700;margin-bottom:6px">🔒 給与確定ロック期間</div>
+      <div class="muted" style="margin-bottom:8px">現場日からこの日数を過ぎると、チーフ・手配者は編集できなくなります（管理者は常に編集可）。</div>
+      <div class="row" style="align-items:center;gap:8px;flex-wrap:wrap">
+        <span>現場日から</span>
+        <input type="number" id="lock-days" value="${lockData.days}" min="0" max="3650" style="width:90px">
+        <span>日後に確定</span>
+        <button class="btn gold sm" id="lock-save">保存</button>
+        <span id="lock-msg" class="muted"></span>
+      </div>
+      <div class="muted" style="margin-top:6px;font-size:12px">現在の設定では <b>${h(lockData.lockBefore)}</b> 以前が確定済みです。0にすると当日以降すべて編集可、長くすると過去まで編集可になります。</div>
+    </div>` : ''}
+    ${wageData.periods.map(p=>`
+      <div style="font-weight:700;margin:10px 0 4px">${p.effective_from==='1900-01-01'?'旧時給（〜2025/9）':h(p.effective_from)+' 〜（改定）'}</div>
+      <table class="wage-tbl">
+        <tr><th>ランク</th><th>案内料金</th><th>搬入出料金</th></tr>
+        ${['A','B','C','D','E'].map(rk=>{const g=(p.rates[rk]||{}).guide||0,l=(p.rates[rk]||{}).load||0;return `<tr><td>${rk}</td>
+          <td><input type="number" class="wage-in" data-ef="${h(p.effective_from)}" data-rank="${rk}" data-kind="guide" value="${g}"></td>
+          <td><input type="number" class="wage-in" data-ef="${h(p.effective_from)}" data-rank="${rk}" data-kind="load" value="${l}"></td></tr>`;}).join('')}
+      </table>`).join('')}
+    <div class="row" style="margin-top:12px;gap:8px;align-items:center">
+      <button class="btn gold sm" id="wage-save">時給を保存</button>
+      <span id="wage-msg" class="muted"></span>
+    </div>
+    <div class="muted" style="margin-top:8px">深夜手当・超過手当は案内料金×0.25、2st手当は+¥500。対象はA〜Eランクのみ（ケータリング・物品販売・その他ランクは対象外）。</div>
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
+      <button class="btn ghost sm" id="recalc-btn">過去データの給与・残業を再計算</button>
+      <span id="recalc-msg" class="muted"></span>
+      <div class="muted" style="margin-top:6px">取り込み済みの全現場を、現在の時給・新ルール（残業9h／業務名）で計算し直します。確定ロックに関わらず再計算し、手動入力した給与も上書きされます。</div>
+    </div>
+  ` : '<div class="muted">時給データを取得できませんでした</div>')}`;
+
+  app.querySelectorAll('.adm-sec').forEach(d => d.addEventListener('toggle', () => { app._asOpen[d.dataset.sec] = d.open; }));
+  app.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => {
+    const d = document.getElementById('asec-'+b.dataset.jump);
+    if(d){ d.open = true; app._asOpen[b.dataset.jump] = true; d.scrollIntoView({behavior:'smooth', block:'start'}); }
+  });
+
   { const ws = $('#wage-save'); if(ws) ws.onclick = async () => {
       const rates = [...document.querySelectorAll('.wage-in')].map(i=>({effective_from:i.dataset.ef,rank:i.dataset.rank,kind:i.dataset.kind,amount:Number(i.value)})).filter(r=>Number.isFinite(r.amount)&&r.amount>=0);
       $('#wage-msg').textContent='保存中…';
@@ -2358,7 +2470,7 @@ async function pageAdmin(app){
       const days = Number($('#lock-days').value);
       $('#lock-msg').textContent='保存中…';
       try{ const r=await api('/lock-settings',{method:'PUT',body:{days}});
-        $('#lock-msg').textContent=`${r.lockBefore} 以前を確定`; popup('ロック期間を保存しました'); pageAdmin(app); }
+        $('#lock-msg').textContent=`${r.lockBefore} 以前を確定`; popup('ロック期間を保存しました'); pageAdminSettings(app); }
       catch(e){ $('#lock-msg').textContent=e.message; }
   }; }
   { const rb = $('#recalc-btn'); if(rb) rb.onclick = async () => {
@@ -2383,7 +2495,6 @@ async function pageAdmin(app){
       try{ await api('/notify-test',{method:'POST'}); $('#nt-msg').textContent='テスト通知を送りました（🔔を確認）'; popup('テスト通知を送信しました。画面上部の🔔を確認してください'); }
       catch(e){ $('#nt-msg').textContent=e.message; }
   }; }
-
   { const dr = $('#dr-save'); if(dr) dr.onclick = async () => {
       const hour = Number($('#dr-hour').value);
       $('#dr-msg').textContent='保存中…';
@@ -2403,11 +2514,6 @@ async function pageAdmin(app){
         + (r ? `<div class="muted">最終実行: ${h(r.ts)} / ${r.count}件のURLを再取り込み<br>${r.results.map(x=>`${x.ok?'✓':'✗'} ${h((x.url||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>')}</div>` : '<div class="muted">まだ自動実行されていません</div>');
     }).catch(()=>{ el.textContent='設定を取得できませんでした'; });
   }).catch(()=>{});
-
-  const adS=$('#ad-search');
-  if(adS){ adS.oninput=()=>{ app._adq=adS.value; const pos=adS.selectionStart; pageAdmin(app).then(()=>{ const n=document.getElementById('ad-search'); if(n){ n.focus(); try{n.setSelectionRange(pos,pos);}catch(_){} } }); }; }
-  const adM=$('#ad-mgr'); if(adM) adM.onchange=()=>{ app._admgr=adM.value; pageAdmin(app); };
-  const adC=$('#ad-clear'); if(adC) adC.onclick=()=>{ app._adq=''; app._admgr=''; pageAdmin(app); };
 
   $('#pin-save').onclick = async () => {
     const v = $('#pin-new').value.trim();
@@ -2433,47 +2539,6 @@ async function pageAdmin(app){
       $('#imp-msg').innerHTML = '<span class="msg ok">再発行しました</span>';
     }catch(e){ $('#imp-msg').innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
   };
-  $('#dv-load').onclick = async () => {
-    $('#dv-out').innerHTML = '読み込み中…';
-    try{
-      const rows = await api('/admin/data?table=' + $('#dv-table').value);
-      if(!rows.length){ $('#dv-out').innerHTML = '<div class="muted">データはありません</div>'; return; }
-      const cols = Object.keys(rows[0]);
-      $('#dv-out').innerHTML = `<div class="sched-wrap"><table class="list">
-        <tr>${cols.map(c=>`<th>${h(c)}</th>`).join('')}</tr>
-        ${rows.map(r=>`<tr>${cols.map(c=>`<td>${h(r[c])}</td>`).join('')}</tr>`).join('')}
-      </table></div><div class="muted" style="margin-top:6px">${rows.length}件</div>`;
-    }catch(e){ $('#dv-out').innerHTML = `<div class="msg err">${h(e.message)}</div>`; }
-  };
-  $('#a-add').onclick = async () => {
-    try{
-      await api('/users',{method:'POST',body:{ regno:$('#a-regno').value, name:$('#a-name').value, rank:$('#a-rank').value, han:$('#a-han').value, station:$('#a-station').value, role:$('#a-role').value }});
-      USERS_CACHE=null; render();
-    }catch(e){ $('#a-msg').innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
-  };
-  app.querySelectorAll('[data-role]').forEach(s => s.onchange = async () => {
-    try{ await api('/users/'+s.dataset.role, { method:'PATCH', body:{ role:s.value } }); USERS_CACHE=null; }
-    catch(e){ alert(e.message); render(); }
-  });
-  app.querySelectorAll('[data-mgr]').forEach(s => s.onchange = async () => {
-    try{ await api('/users/'+s.dataset.mgr, { method:'PATCH', body:{ manager_id: s.value?Number(s.value):null } }); USERS_CACHE=null; }
-    catch(e){ alert(e.message); render(); }
-  });
-  app.querySelectorAll('[data-suspend]').forEach(b => b.onclick = async () => {
-    const id = b.dataset.suspend, cur = b.dataset.cur === '1';
-    if(!confirm(cur ? 'このアカウントを復活します(ログイン可)。よろしいですか?' : 'このアカウントを停止します(ログイン不可。一覧・スケジュール入力・現場一覧には引き続き表示)。よろしいですか?')) return;
-    try{ await api(`/users/${id}`,{method:'PATCH',body:{suspended:cur?0:1}}); USERS_CACHE=null; popup(cur?'復活しました':'停止しました'); pageAdmin(app); }
-    catch(e){ popup(e.message,'error'); }
-  });
-  app.querySelectorAll('[data-reset]').forEach(b => b.onclick = async () => {
-    if(!confirm('パスワードを初期化しますか?(登録番号でログインできるようになります)')) return;
-    await api(`/users/${b.dataset.reset}/resetpw`, { method:'POST' }); alert('初期化しました');
-  });
-  app.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
-    if(!confirm('このアカウントを削除しますか?スケジュールも削除されます。')) return;
-    try{ await api('/users/'+b.dataset.del, { method:'DELETE' }); USERS_CACHE=null; render(); }
-    catch(e){ alert(e.message); }
-  });
 }
 
 /* ===== パスワード変更 ===== */
