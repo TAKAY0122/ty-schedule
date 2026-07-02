@@ -24,6 +24,78 @@ function notFound(app){ app.innerHTML = '<div class="card" style="text-align:cen
 let TOKEN = localStorage.getItem('tk') || '';
 let ME = null;
 let MONTH = new Date(Date.now()+9*3600e3).toISOString().slice(0,7);
+// ページ遷移をまたいで保持したいフィルタ・タブ・検索語などの状態。
+// #app要素はページ遷移のたびに作り直されるため、そこに状態を持たせると戻った時に消えてしまう。
+// このオブジェクトはセッション中ずっと保持されるので、ここに保存する。
+const PAGE_STATE = {};
+// 検索欄などで、入力のたびに画面を再描画すると(内容によっては入力欄ごと作り直されるため)
+// スマホでソフトウェアキーボードが閉じてしまう。入力が止まってから実行することでこれを防ぐ。
+function debounce(fn, wait=350){
+  let t;
+  return (...args) => { clearTimeout(t); t = setTimeout(()=>fn(...args), wait); };
+}
+// setIntervalなどで動的に再描画される領域は、renderのグローバル自動ワイヤリングの対象外になるため、
+// 個別にこの関数を呼んでname-linkを有効化する。
+function wireNameLinks(container){
+  if(!container) return;
+  container.querySelectorAll('.name-link[data-goto-uid]').forEach(el => {
+    el.onclick = (e) => { e.stopPropagation(); location.hash = '#/schedule/' + el.dataset.gotoUid; };
+  });
+}
+// 全データ閲覧(システム設定): テーブル表示・ソート・フィルタ・CSVダウンロードの状態
+const DV_STATE = { rows:[], cols:[], sortCol:null, sortDir:1, filters:{}, tableName:'' };
+function renderDvTable(){
+  const { rows, cols, sortCol, sortDir, filters, tableName } = DV_STATE;
+  let filtered = rows.filter(r => cols.every(c => !filters[c] || String(r[c]??'').toLowerCase().includes(filters[c].toLowerCase())));
+  if(sortCol){
+    filtered = [...filtered].sort((a,b) => {
+      const av = a[sortCol], bv = b[sortCol];
+      if(av == null && bv == null) return 0;
+      if(av == null) return -1*sortDir; if(bv == null) return 1*sortDir;
+      if(av!=='' && bv!=='' && !isNaN(av) && !isNaN(bv)) return (Number(av)-Number(bv))*sortDir;
+      return String(av).localeCompare(String(bv), 'ja') * sortDir;
+    });
+  }
+  const out = $('#dv-out'); if(!out) return;
+  out.innerHTML = `
+    <div class="row" style="margin-bottom:8px;gap:8px;align-items:center">
+      <span class="muted">${filtered.length}件 / 全${rows.length}件${Object.values(filters).some(v=>v) ? ' (絞り込み中)' : ''}</span>
+      ${Object.values(filters).some(v=>v) ? '<button class="btn ghost xs" id="dv-clear-filter">絞り込み解除</button>' : ''}
+      <button class="btn ghost xs" id="dv-export">📥 Excel(CSV)でダウンロード</button>
+    </div>
+    <div class="sched-wrap"><table class="list dv-table">
+      <tr>${cols.map(c=>`<th class="dv-th" data-col="${h(c)}" style="cursor:pointer;white-space:nowrap">${h(c)} ${sortCol===c?(sortDir===1?'▲':'▼'):'<span class="muted">⇅</span>'}</th>`).join('')}</tr>
+      <tr class="dv-filter-row">${cols.map(c=>`<td><input class="dv-filter" data-col="${h(c)}" value="${h(filters[c]||'')}" placeholder="絞り込み" style="width:100%;font-size:11px;box-sizing:border-box"></td>`).join('')}</tr>
+      ${filtered.map(r=>`<tr>${cols.map(c=>`<td>${h(r[c])}</td>`).join('')}</tr>`).join('')}
+    </table></div>`;
+  out.querySelectorAll('.dv-th').forEach(th => th.onclick = () => {
+    const c = th.dataset.col;
+    if(DV_STATE.sortCol === c) DV_STATE.sortDir *= -1;
+    else { DV_STATE.sortCol = c; DV_STATE.sortDir = 1; }
+    renderDvTable();
+  });
+  out.querySelectorAll('.dv-filter').forEach(inp => inp.oninput = debounce(() => {
+    const col = inp.dataset.col, pos = inp.selectionStart;
+    DV_STATE.filters[col] = inp.value;
+    renderDvTable();
+    const n = $('#dv-out') && $('#dv-out').querySelector(`.dv-filter[data-col="${col}"]`);
+    if(n){ n.focus(); try{n.setSelectionRange(pos,pos);}catch(_){} }
+  }, 300));
+  const cf = $('#dv-clear-filter'); if(cf) cf.onclick = () => { DV_STATE.filters={}; renderDvTable(); };
+  const exp = $('#dv-export'); if(exp) exp.onclick = () => exportRowsToCsv(filtered, cols, tableName);
+}
+// テーブルデータをCSV(Excelで直接開ける形式)としてダウンロードする
+function exportRowsToCsv(rows, cols, tableName){
+  const esc = v => { const s = String(v??''); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
+  const lines = [cols.map(esc).join(',')].concat(rows.map(r => cols.map(c=>esc(r[c])).join(',')));
+  const csv = '\uFEFF' + lines.join('\r\n'); // BOM付きでExcelでの文字化けを防ぐ
+  const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `${tableName || 'data'}_${jstToday()}.csv`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
 let USERS_CACHE = null;
 let LOCK_DAYS = 14;   // 給与確定ロック日数(管理者設定。render時にサーバーから取得)
 let timers = [];
@@ -144,21 +216,34 @@ function openHandlerPin(){
 async function openSiteModal(date, site){
   const canPay = LV[ME.role] >= 2;
   const canAdd = ME.handler === 1; // 手配者モードのときメンバー追加・編集可
+  const canViewSched = LV[ME.role] >= 1; // 名前タップでスケジュールへ遷移できるか(チーフ以上)
   const list = await api(`/site-members?date=${date}&site=${encodeURIComponent(site)}`);
+  // 休憩時間の合計(チーフ以上に公開。6h超45分/8h超60分の目安に届いていない場合だけ軽く表示)
+  const breaksArr = canViewSched ? await api(`/site-record-breaks?date=${date}&site=${encodeURIComponent(site)}`).catch(()=>[]) : [];
+  const breakByUid = {}; breaksArr.forEach(b => breakByUid[b.uid] = b);
   const venue = (list.find(p => p.venue) || {}).venue || '';
   const chiefs = list.filter(p => p.role !== 'member');
   const members = list.filter(p => p.role === 'member');
   const kaTag = p => p.ka ? `<span class="ka-pill ka-${p.ka==='1課'?'1':'2'}">${p.ka}</span>` : '';
   const editable = canAdd; // 手配者モードなら個人編集可
+  const nameHtml = p => canViewSched ? `<span class="name-link" data-goto-uid="${p.uid}">${h(p.name)}</span>` : h(p.name);
+  const breakHtml = p => {
+    const b = breakByUid[p.uid];
+    if(!b || b.workMinutes <= 0) return '';
+    const cls = b.short ? 'break-short' : 'break-ok';
+    const label = b.short ? `休憩${b.breakMinutes}分(目安${b.requiredMinutes}分未満)` : `休憩${b.breakMinutes}分`;
+    return `<span class="break-tag ${cls}">${b.short?'⚠️ ':''}${label}</span>`;
+  };
   const card = p => `<div class="dcard ka-${p.ka==='1課'?'1':'2'} ${editable?'sm-edit':''}" ${editable?`data-uid="${p.uid}"`:''}>
-    <div class="dcard-head"><span class="dcard-title">${h(p.name)} ${kaTag(p)}</span><span class="tag ${p.role}">${roleLabel(p)}</span></div>
+    <div class="dcard-head"><span class="dcard-title">${nameHtml(p)} ${kaTag(p)}</span><span class="tag ${p.role}">${roleLabel(p)}</span></div>
     <div class="drow"><span class="dk">ランク/班</span><span class="dv">${h(p.rank)||'—'} / ${h(p.han)||'—'}</span></div>
     ${canPay&&(p.tin||p.tout)?`<div class="drow"><span class="dk">IN/OUT</span><span class="dv">${h(p.tin)}〜${h(p.tout)}</span></div>`:''}
+    ${breakHtml(p)?`<div class="drow"><span class="dk">休憩</span><span class="dv">${breakHtml(p)}</span></div>`:''}
     ${p.note?`<div class="drow"><span class="dk">備考</span><span class="dv">${h(p.note)}</span></div>`:''}
     ${editable?'<div class="sm-edit-hint">タップして編集 ✏️</div>':''}
   </div>`;
-  const row = p => `<tr class="ka-row-${p.ka==='1課'?'1':'2'} ${editable?'sm-edit':''}" ${editable?`data-uid="${p.uid}"`:''}><td>${h(p.name)} ${kaTag(p)}</td><td><span class="tag ${p.role}">${roleLabel(p)}</span></td><td>${h(p.rank)}</td><td>${h(p.han)}</td>${canPay?`<td>${h(p.tin)}</td><td>${h(p.tout)}</td>`:''}<td>${h(p.note)}</td>${editable?'<td class="sm-edit-cell">✏️</td>':''}</tr>`;
-  const tbl = arr => `<table class="list pc-only"><tr><th>氏名</th><th>役割</th><th>ランク</th><th>班</th>${canPay?'<th>IN</th><th>OUT</th>':''}<th>備考</th>${editable?'<th></th>':''}</tr>${arr.map(row).join('')}</table>
+  const row = p => `<tr class="ka-row-${p.ka==='1課'?'1':'2'} ${editable?'sm-edit':''}" ${editable?`data-uid="${p.uid}"`:''}><td>${nameHtml(p)} ${kaTag(p)}</td><td><span class="tag ${p.role}">${roleLabel(p)}</span></td><td>${h(p.rank)}</td><td>${h(p.han)}</td>${canPay?`<td>${h(p.tin)}</td><td>${h(p.tout)}</td>`:''}<td>${breakHtml(p)||''}</td><td>${h(p.note)}</td>${editable?'<td class="sm-edit-cell">✏️</td>':''}</tr>`;
+  const tbl = arr => `<table class="list pc-only"><tr><th>氏名</th><th>役割</th><th>ランク</th><th>班</th>${canPay?'<th>IN</th><th>OUT</th>':''}<th>休憩</th><th>備考</th>${editable?'<th></th>':''}</tr>${arr.map(row).join('')}</table>
     <div class="cards sp-only">${arr.map(card).join('')}</div>`;
   modal(`<h3>現場情報</h3>
     <dl class="kv">
@@ -173,16 +258,26 @@ async function openSiteModal(date, site){
       <div class="section-label" style="margin-top:12px">メンツ</div>
       ${members.length ? tbl(members) : '<div class="muted" style="padding:4px 2px">登録されていません</div>'}
     ` : '<div class="muted">この日・この現場に入っているメンバーはいません</div>'}
-    ${canAdd && list.length ? `<div class="muted" style="margin-top:8px;font-size:12px">💡 メンバーを1人タップすると、その人だけIN/OUT・業務名・搬入終了・終演を編集できます。</div>` : ''}
+    ${canAdd && list.length ? `<div class="muted" style="margin-top:8px;font-size:12px">💡 氏名をタップするとスケジュールに移動、それ以外の部分をタップするとIN/OUT・業務名などを編集できます。</div>` : (canViewSched && list.length ? `<div class="muted" style="margin-top:8px;font-size:12px">💡 氏名をタップすると、その人のスケジュールに移動します。</div>` : '')}
     ${canAdd ? `<div id="site-add-wrap" style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px;display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn gold" id="site-add-btn">＋ メンバーを追加</button>
       ${list.length?`<button class="btn ghost" id="site-edit-btn">✏️ 全員まとめて一括編集</button>`:''}
     </div>` : ''}`);
+  // 氏名タップ → スケジュールへ遷移(編集モーダルより優先。行/カード全体のクリックとは独立させる)
+  if(canViewSched){
+    document.querySelectorAll('#modal-layer .name-link[data-goto-uid]').forEach(el => {
+      el.onclick = (e) => {
+        e.stopPropagation();
+        closeModal();
+        location.hash = '#/schedule/' + el.dataset.gotoUid;
+      };
+    });
+  }
   if(canAdd){
     $('#site-add-btn').onclick = () => openSiteAdd(date, site, venue, (list.find(p=>p.tin)||{}).tin || '', (list.find(p=>p.tout)||{}).tout || '');
     const eb = $('#site-edit-btn');
     if(eb) eb.onclick = () => openSiteBulkEdit(date, site, venue, list);
-    // 各メンバー行/カードをタップ → 個人のその日の編集モーダルへ
+    // 各メンバー行/カードをタップ → 個人のその日の編集モーダルへ(氏名タップ時は上のハンドラでstopPropagation済み)
     const byUid = {}; list.forEach(p => byUid[p.uid] = p);
     document.querySelectorAll('.sm-edit[data-uid]').forEach(el => {
       el.style.cursor = 'pointer';
@@ -194,6 +289,86 @@ async function openSiteModal(date, site){
       };
     });
   }
+}
+
+// 現場記録(配置・休憩時間・自由記入欄)。本人と管理者のみ閲覧・編集可。育成計画・備考もあわせて表示。
+async function openSiteRecord(uid, uname, date, site){
+  let data;
+  try{ data = await api(`/site-record?uid=${uid}&date=${date}&site=${encodeURIComponent(site)}`); }
+  catch(e){ popup(e.message,'error'); return; }
+
+  const breakRow = (b={}, i=0) => `<div class="sr-break" data-i="${i}">
+    <input type="time" class="sr-break-start" value="${h(b.start||'')}">
+    <span>〜</span>
+    <input type="time" class="sr-break-end" value="${h(b.end||'')}">
+    <button class="btn ghost xs sr-break-del" type="button">✕</button>
+  </div>`;
+
+  modal(`<h3>現場記録</h3>
+    <div class="muted" style="margin-bottom:10px">${h(uname)} さん / ${h(date)} / ${h(site)}</div>
+    ${data.plan ? `<div class="sr-info"><b>育成計画</b><div>${h(data.plan)}</div></div>` : ''}
+    ${data.note ? `<div class="sr-info"><b>備考</b><div>${h(data.note)}</div></div>` : ''}
+    <div class="form-grid" style="grid-template-columns:80px 1fr;margin-top:10px">
+      <label>配置</label><input id="sr-placement" value="${h(data.placement)}" placeholder="例:入口案内">
+    </div>
+    <div style="margin-top:12px">
+      <label style="font-weight:700;font-size:13px">休憩時間 <span class="muted" id="sr-break-total">(合計 ${data.breakMinutes}分)</span></label>
+      <div id="sr-breaks" style="margin-top:6px">${(data.breaks.length?data.breaks:[{}]).map((b,i)=>breakRow(b,i)).join('')}</div>
+      <button class="btn ghost xs" id="sr-break-add" type="button" style="margin-top:6px">＋ 休憩を追加</button>
+    </div>
+    <div style="margin-top:12px">
+      <label style="font-weight:700;font-size:13px">自由記入欄</label>
+      <textarea id="sr-memo" style="width:100%;min-height:110px;margin-top:6px;box-sizing:border-box">${h(data.memo)}</textarea>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button class="btn gold" id="sr-save" style="flex:1">保存する</button>
+    </div>
+    <div class="muted" style="margin-top:8px">この記録は本人と管理者だけが閲覧できます。休憩時間の合計は現場一覧でチーフ以上に表示されます(勤務時間に対して不足がないかの目安として)。</div>`);
+
+  let idx = data.breaks.length || 1;
+  const recalcTotal = () => {
+    let total = 0;
+    document.querySelectorAll('.sr-break').forEach(row => {
+      const s = row.querySelector('.sr-break-start').value;
+      const e = row.querySelector('.sr-break-end').value;
+      if(s && e){
+        const [sh,sm] = s.split(':').map(Number), [eh,em] = e.split(':').map(Number);
+        let diff = (eh*60+em) - (sh*60+sm);
+        if(diff < 0) diff += 1440;
+        total += diff;
+      }
+    });
+    const el = $('#sr-break-total');
+    if(el) el.textContent = `(合計 ${total}分)`;
+  };
+  const bind = () => {
+    document.querySelectorAll('.sr-break-del').forEach(b => b.onclick = () => {
+      const rows = document.querySelectorAll('.sr-break');
+      if(rows.length<=1){ b.closest('.sr-break').querySelectorAll('input').forEach(i=>i.value=''); recalcTotal(); return; }
+      b.closest('.sr-break').remove();
+      recalcTotal();
+    });
+    document.querySelectorAll('.sr-break-start, .sr-break-end').forEach(i => i.oninput = recalcTotal);
+  };
+  bind();
+  $('#sr-break-add').onclick = () => {
+    const div = document.createElement('div');
+    div.innerHTML = breakRow({}, idx++);
+    $('#sr-breaks').appendChild(div.firstElementChild);
+    bind();
+  };
+  $('#sr-save').onclick = async () => {
+    const breaks = [];
+    document.querySelectorAll('.sr-break').forEach(row => {
+      const s = row.querySelector('.sr-break-start').value;
+      const e = row.querySelector('.sr-break-end').value;
+      if(s || e) breaks.push({start:s, end:e});
+    });
+    try{
+      await api('/site-record', { method:'PUT', body:{ uid, date, site, placement: $('#sr-placement').value, breaks, memo: $('#sr-memo').value } });
+      closeModal(); popup('現場記録を保存しました');
+    }catch(e){ popup(e.message,'error'); }
+  };
 }
 
 // 現場の既存メンバーを一括編集(IN/OUT/会場/備考をまとめて変更、個別に外す)
@@ -248,7 +423,7 @@ async function openSiteAdd(date, site, venue, tin, tout){
       <div class="row" style="gap:6px;margin:6px 0">
         <select id="sa-mgr" class="nowrap" style="flex:1"><option value="">▼ 担当手配者</option>
           ${managers.map(m=>`<option value="${m.id}">${h(m.name)}手配(${m.count}名)</option>`).join('')}
-          <option value="__none">担当未設定</option></select>
+          <option value="__none">チーフ手配</option></select>
         <select id="sa-memsel" class="nowrap" style="flex:1"><option value="">担当を選択</option></select>
         <button class="btn ghost sm" id="sa-mem-add">＋追加</button>
       </div>
@@ -339,6 +514,11 @@ async function render(){
     else if(hash === '#/password') pagePassword(app);
     else { location.hash='#/schedule'; }
   }catch(e){ app.innerHTML = `<div class="msg err">${h(e.message)}</div>`; }
+  // 「氏名をタップ→スケジュールへ」を全ページ共通で有効化(各ページが個別にワイヤリングする必要はない)
+  app.querySelectorAll('.name-link[data-goto-uid]').forEach(el => {
+    if(el.dataset.wired) return; el.dataset.wired = '1';
+    el.onclick = (e) => { e.stopPropagation(); location.hash = '#/schedule/' + el.dataset.gotoUid; };
+  });
   pollBell();
 }
 
@@ -500,40 +680,43 @@ function renderShell(hash){
     if(dl) dl.onclick = async () => { try{ await api('/logout',{method:'POST'}); }catch(_){} logoutLocal(); };
   };
 
-  const renderDrawerTop = () => {
+  const stMenu = PAGE_STATE.menu || (PAGE_STATE.menu = { open:{} });
+  // 現在地が属するグループは、初回だけ自動的に開いておく(以降はユーザーの開閉操作を優先)
+  nav.forEach((item,i) => {
+    if(item.children && item.children.some(([p]) => hashIs(hash,p)) && stMenu.open[i]===undefined) stMenu.open[i] = true;
+  });
+
+  const renderDrawer = () => {
     const dr = $('#menu-drawer');
     const close = () => dr.innerHTML='';
     dr.innerHTML = `<div class="drawer-bg" id="drawer-bg"></div>
       <nav class="drawer">
         <div class="drawer-head">メニュー</div>
-        ${nav.map((item,i) => item.children
-          ? `<button type="button" class="drawer-link drawer-group" data-group="${i}">${item.label}<span class="drawer-arrow">›</span></button>`
-          : `<button type="button" class="drawer-link ${hashIs(hash, item.path)?'active':''}" data-go="${item.path}">${item.label}</button>`
-        ).join('')}
+        ${nav.map((item,i) => {
+          if(!item.children){
+            return `<button type="button" class="drawer-link ${hashIs(hash, item.path)?'active':''}" data-go="${item.path}">${item.label}</button>`;
+          }
+          const isOpen = !!stMenu.open[i];
+          return `<button type="button" class="drawer-link drawer-group" data-toggle="${i}">${item.label}<span class="drawer-arrow ${isOpen?'open':''}">›</span></button>
+            <div class="drawer-sub ${isOpen?'':'collapsed'}">
+              ${item.children.map(([p,l]) => `<button type="button" class="drawer-link drawer-sublink ${hashIs(hash,p)?'active':''}" data-go="${p}">${l}</button>`).join('')}
+            </div>`;
+        }).join('')}
         ${footerLinks}
       </nav>`;
     dr.querySelector('#drawer-bg').onclick = close;
-    dr.querySelectorAll('.drawer-group').forEach(btn => btn.onclick = () => renderDrawerSub(nav[Number(btn.dataset.group)]));
-    wireFooter(dr, close);
-  };
-
-  const renderDrawerSub = (item) => {
-    const dr = $('#menu-drawer');
-    const close = () => dr.innerHTML='';
-    dr.innerHTML = `<div class="drawer-bg" id="drawer-bg"></div>
-      <nav class="drawer">
-        <div class="drawer-head drawer-head-sub"><button type="button" class="drawer-back" id="drawer-back">‹</button><span>${item.label.replace(/^\S+\s/,'')}</span></div>
-        ${item.children.map(([p,l]) => `<button type="button" class="drawer-link ${hashIs(hash, p)?'active':''}" data-go="${p}">${l}</button>`).join('')}
-      </nav>`;
-    dr.querySelector('#drawer-bg').onclick = close;
-    dr.querySelector('#drawer-back').onclick = renderDrawerTop;
+    dr.querySelectorAll('.drawer-group').forEach(btn => btn.onclick = () => {
+      const i = Number(btn.dataset.toggle);
+      stMenu.open[i] = !stMenu.open[i];
+      renderDrawer();
+    });
     wireFooter(dr, close);
   };
 
   $('#menu-btn').onclick = () => {
     const dr = $('#menu-drawer');
     if(dr.innerHTML){ dr.innerHTML=''; return; }
-    renderDrawerTop();
+    renderDrawer();
   };
 
   $('#bell').onclick = async () => {
@@ -541,11 +724,20 @@ function renderShell(hash){
     const d = await api('/notifications');
     $('#dd').innerHTML = `<div class="dropdown" style="min-width:300px">
       <div class="notif-list">${d.items.length ? d.items.map(n=>`
-        <div class="notif-item ${n.read?'':'unread'}"><time>${h(n.ts)}</time>${h(n.message)}</div>`).join('') : '<div class="notif-item muted">通知はありません</div>'}</div>
+        <div class="notif-item ${n.read?'':'unread'} ${n.link?'notif-clickable':''}" data-id="${n.id}" ${n.link?`data-link="${h(n.link)}"`:''}><time>${h(n.ts)}</time>${h(n.message)}</div>`).join('') : '<div class="notif-item muted">通知はありません</div>'}</div>
       ${d.unread ? '<button id="dd-read" class="sep">すべて既読にする</button>' : ''}
     </div>`;
     const dr2 = $('#dd-read');
     if(dr2) dr2.onclick = async () => { await api('/notifications/read',{method:'POST'}); $('#dd').innerHTML=''; pollBell(); };
+    $('#dd').querySelectorAll('.notif-clickable').forEach(el => el.onclick = async () => {
+      const link = el.dataset.link;
+      if(!link) return;
+      try{ await api(`/notifications/${el.dataset.id}/read`,{method:'POST'}); }catch(_){}
+      $('#dd').innerHTML = ''; pollBell();
+      const [hashPart, query] = link.split('?');
+      if(query){ const m = new URLSearchParams(query).get('month'); if(m) MONTH = m; }
+      if(location.hash === hashPart){ render(); } else { location.hash = hashPart; }
+    });
   };
 }
 
@@ -575,6 +767,7 @@ async function pageSchedule(app, hash){
   const today = jstToday(); // 今日(YYYY-MM-DD)。該当日を強調表示する
   const canPlan = LV[ME.role] >= 1; // チーフ以上は育成計画を編集可
   const canPay = d.canSeePay;       // 手配担当以上のみ 時間・給与・IN・OUT を閲覧可
+  const canRecord = (uid === ME.id) || ME.role === 'admin'; // 現場記録は本人と管理者のみ閲覧・編集可
   const plans = d.plans || {};
   const multi = arr => arr.map(x=>h(x||'')||'&nbsp;').join('<br>'); // 複数現場を改行で重ねる
   // 育成計画セル(日単位)
@@ -601,7 +794,7 @@ async function pageSchedule(app, hash){
       for(const e of list){
         sumH+=e.hours; sumOT+=e.overtime; sumPay+=e.pay;
         const rk = (LV[ME.role]>=1 ? (rookieMap[date+'|'+e.site]||[]) : []).map(n=>`<span class="rookie-badge">🔰${h(n)}</span>`).join('');
-        sites.push(`<span class="site-cell" data-date="${date}" data-site="${h(e.site)}" title="タップで同じ現場のメンバーを表示">${h(e.site)}${rk}</span>`);
+        sites.push(`<span class="site-cell" data-date="${date}" data-site="${h(e.site)}" title="タップで同じ現場のメンバーを表示">${h(e.site)}${rk}</span>${canRecord?` <span class="rec-btn" data-date="${date}" data-site="${h(e.site)}" title="現場記録を記入${e.breakShort?'(休憩時間が目安に届いていません)':''}">📝${e.breakShort?'⚠️':''}</span>`:''}`);
         venues.push(`<span class="venue-cell" data-venue="${h(e.venue)}" title="タップでGoogleマップ">${h(e.venue)}</span>`);
         dutys.push(e.duty?h(e.duty):'<span class="muted">—</span>');
         tins.push(h(e.tin)); touts.push(h(e.tout));
@@ -613,7 +806,7 @@ async function pageSchedule(app, hash){
         const payPart = canPay && e.pay ? `<div class="m-line"><span class="m-k">給与</span><span class="m-v">${yen(e.pay)}${e.overtime?` / 残業${e.overtime.toFixed(2)}h`:''}</span></div>` : '';
         const notePart = e.note ? `<div class="m-line"><span class="m-k">備考</span><span class="m-v">${h(e.note)}</span></div>` : '';
         mSites.push(`<div class="m-site">
-          <div class="m-sitename"><span class="site-cell" data-date="${date}" data-site="${h(e.site)}">${h(e.site)}</span>${rk}</div>
+          <div class="m-sitename"><span class="site-cell" data-date="${date}" data-site="${h(e.site)}">${h(e.site)}</span>${rk}${canRecord?` <span class="rec-btn" data-date="${date}" data-site="${h(e.site)}">📝記録${e.breakShort?' ⚠️':''}</span>`:''}</div>
           ${e.venue?`<div class="m-line"><span class="m-k">会場</span><span class="m-v"><span class="venue-cell" data-venue="${h(e.venue)}">${h(e.venue)}</span></span></div>`:''}
           ${dutyPart}${timePart}${payPart}${notePart}
         </div>`);
@@ -694,7 +887,7 @@ async function pageSchedule(app, hash){
         <label>担当手配者</label>
         <select id="mp-mgr"><option value="">▼ 選択してください</option>
           ${managers.map(m=>`<option value="${m.id}">${h(m.name)}手配(${m.count}名)</option>`).join('')}
-          <option value="__none">担当未設定</option>
+          <option value="__none">チーフ手配</option>
           <option value="__all">全員から選ぶ</option>
         </select>
         <label>メンバー</label>
@@ -731,6 +924,9 @@ async function pageSchedule(app, hash){
     });
   }
   app.querySelectorAll('.site-cell').forEach(td => td.onclick = (ev) => { ev.stopPropagation(); openSiteModal(td.dataset.date, td.dataset.site); });
+  if(canRecord){
+    app.querySelectorAll('.rec-btn').forEach(td => td.onclick = (ev) => { ev.stopPropagation(); openSiteRecord(uid, u.name, td.dataset.date, td.dataset.site); });
+  }
 
   // 手配者モード中:日付(行)タップで、このメンバーのその日に現場を追加/編集
   if(ME.handler === 1){
@@ -853,8 +1049,8 @@ async function openMemberDayEdit(uid, u, date){
 /* ===== 現場一覧(チーフ以上)===== */
 async function pageSites(app){
   if(LV[ME.role] < 1){ notFound(app); return; }
-  if(!app._month) app._month = MONTH;
-  const month = app._month;
+  const stSites = PAGE_STATE.sites || (PAGE_STATE.sites = { month: MONTH });
+  const month = stSites.month;
   const sites = await api(`/sites?month=${month}`);
   // 日付ごとにグループ化
   const byDate = {};
@@ -884,8 +1080,8 @@ async function pageSites(app){
       </div>`;
     }).join('') : '<div class="muted" style="padding:20px 0;text-align:center">この月に登録された現場はありません</div>'}
   </div>`;
-  $('#st-prev').onclick = () => { app._month = shiftMonth(month,-1); pageSites(app); };
-  $('#st-next').onclick = () => { app._month = shiftMonth(month, 1); pageSites(app); };
+  $('#st-prev').onclick = () => { stSites.month = shiftMonth(month,-1); pageSites(app); };
+  $('#st-next').onclick = () => { stSites.month = shiftMonth(month, 1); pageSites(app); };
   app.querySelectorAll('.st-site').forEach(b => b.onclick = () => openSiteModal(b.dataset.date, b.dataset.site));
 }
 function shiftMonth(m, d){
@@ -902,8 +1098,8 @@ let SUMMARY_MEMBERS_ONLY = false;
 let SUMMARY_MGR = null; // 選択中の手配担当(絞り込み)。null=全体
 async function pageSummary(app){
   if(LV[ME.role] < 1){ notFound(app); return; }
-  const month = app._smonth || jstToday().slice(0,7);
-  app._smonth = month;
+  const stSummary = PAGE_STATE.summary || (PAGE_STATE.summary = { month: jstToday().slice(0,7) });
+  const month = stSummary.month;
   app.innerHTML = `<div class="muted">集計中…</div>`;
   let data;
   try{ data = await api(`/summary?month=${month}`); }
@@ -1017,8 +1213,8 @@ async function pageSummary(app){
     <div class="muted" style="font-size:11px;margin-top:8px">※ 出勤日=現場のあった日数 / 現場数=のべ割当数(同日2現場は2) / 最長連勤=連続して現場が入った最大日数(当月内)</div>
   </div>`;
 
-  $('#sm-prev').onclick = () => { app._smonth = shiftMonth(month,-1); pageSummary(app); };
-  $('#sm-next').onclick = () => { app._smonth = shiftMonth(month, 1); pageSummary(app); };
+  $('#sm-prev').onclick = () => { stSummary.month = shiftMonth(month,-1); pageSummary(app); };
+  $('#sm-next').onclick = () => { stSummary.month = shiftMonth(month, 1); pageSummary(app); };
   $('#sm-mem').onchange = e => { SUMMARY_MEMBERS_ONLY = e.target.checked; pageSummary(app); };
   const clr = $('#sm-clear'); if(clr) clr.onclick = () => { SUMMARY_MGR = null; pageSummary(app); };
   app.querySelectorAll('.sm-sort').forEach(b => b.onclick = () => { SUMMARY_SORT = b.dataset.s; pageSummary(app); });
@@ -1033,16 +1229,14 @@ async function pageMembers(app){
   if(LV[ME.role] < 1){ notFound(app); return; }
   const users = await getUsers(true);
   const managers = await api('/managers');
-  if(app._mtab == null) app._mtab = '2課';   // 既定は2課(主に2課が使うため)
-  if(app._mq == null) app._mq = '';
-  if(app._mmgr == null) app._mmgr = '';
-  const tab = app._mtab, q = app._mq.trim(), fmgr = app._mmgr;
+  const st = PAGE_STATE.members || (PAGE_STATE.members = { tab:'2課', q:'', mgr:'' }); // 既定は2課(主に2課が使うため)
+  const tab = st.tab, q = st.q.trim(), fmgr = st.mgr;
   const kaOf = u => u.ka || '未設定';
   const inTab = u => tab==='未設定' ? !u.ka : kaOf(u)===tab;
   const matchQ = u => !q || (u.name||'').includes(q) || (u.regno||'').includes(q) || (u.han||'').includes(q) || (u.station||'').includes(q);
   const matchMgr = u => {
     if(!fmgr) return true;
-    if(fmgr==='__chief') return !u.manager_id;     // チーフ手配(担当未設定)
+    if(fmgr==='__chief') return !u.manager_id;     // チーフ手配
     return String(u.manager_id)===String(fmgr);
   };
   const list = users.filter(u=>inTab(u)&&matchQ(u)&&matchMgr(u));
@@ -1066,11 +1260,11 @@ async function pageMembers(app){
       ${cntX?`<button class="ka-tab ${tab==='未設定'?'on':''}" data-tab="未設定">未設定 (${cntX}名)</button>`:''}
     </div>
     <div class="filter-bar">
-      <input id="m-search" class="search-input" placeholder="🔍 氏名・登録番号・班・駅で検索" value="${h(app._mq)}">
+      <input id="m-search" class="search-input" placeholder="🔍 氏名・登録番号・班・駅で検索" value="${h(st.q)}">
       <select id="m-mgr" class="filter-select">
         <option value="">手配担当:すべて</option>
         ${managers.map(m=>`<option value="${m.id}" ${String(fmgr)===String(m.id)?'selected':''}>${h(m.name)}手配</option>`).join('')}
-        <option value="__chief" ${fmgr==='__chief'?'selected':''}>チーフ手配(担当未設定)</option>
+        <option value="__chief" ${fmgr==='__chief'?'selected':''}>チーフ手配</option>
       </select>
       ${(q||fmgr)?`<button class="btn ghost sm" id="m-clear">クリア</button>`:''}
     </div>
@@ -1079,7 +1273,7 @@ async function pageMembers(app){
     <table class="list ka-table ka-${tab==='1課'?'1':'2'}">
     <tr><th>登録番号</th><th>氏名</th><th>役割</th><th>ランク</th><th>班</th><th>手配担当</th><th>最寄駅</th><th>できること</th><th></th></tr>
     ${list.map(u=>`<tr>
-      <td>${h(u.regno)}</td><td><b>${h(u.name)}</b></td>
+      <td>${h(u.regno)}</td><td><b class="name-link" data-goto-uid="${u.id}">${h(u.name)}</b></td>
       <td><span class="tag ${u.role}">${roleLabel(u)}</span></td>
       <td>${h(u.rank)}</td><td>${h(u.han)}</td><td>${h(managerName(u,users))}</td><td>${h(u.station)}</td>
       <td class="wrapcell">${h(u.skills)}</td>
@@ -1089,7 +1283,7 @@ async function pageMembers(app){
     </div>
     <div class="cards sp-only">
     ${list.map(u=>`<div class="dcard ka-${kaOf(u)==='1課'?'1':'2'}">
-      <div class="dcard-head"><span class="dcard-title">${h(u.name)}</span><span class="tag ${u.role}">${roleLabel(u)}</span></div>
+      <div class="dcard-head"><span class="dcard-title name-link" data-goto-uid="${u.id}">${h(u.name)}</span><span class="tag ${u.role}">${roleLabel(u)}</span></div>
       <div class="drow"><span class="dk">登録番号</span><span class="dv">${h(u.regno)}</span></div>
       <div class="drow"><span class="dk">ランク / 班</span><span class="dv">${h(u.rank)||'—'} / ${h(u.han)||'—'}</span></div>
       <div class="drow"><span class="dk">手配担当</span><span class="dv">${h(managerName(u,users))}</span></div>
@@ -1103,12 +1297,12 @@ async function pageMembers(app){
     </div>
   <div class="muted" style="margin-top:8px">「できること」= 配置以外にできる業務(進行、買い出し など)</div></div>`;
 
-  app.querySelectorAll('.ka-tab').forEach(b=>b.onclick=()=>{ app._mtab=b.dataset.tab; pageMembers(app); });
+  app.querySelectorAll('.ka-tab').forEach(b=>b.onclick=()=>{ st.tab=b.dataset.tab; pageMembers(app); });
   app.querySelectorAll('.go-sched').forEach(b=>b.onclick=()=>{ location.hash='#/schedule/'+b.dataset.uid; });
   const si = $('#m-search');
-  if(si){ si.oninput = () => { app._mq = si.value; const pos=si.selectionStart; pageMembers(app).then(()=>{ const n=document.getElementById('m-search'); if(n){ n.focus(); try{n.setSelectionRange(pos,pos);}catch(_){} } }); }; }
-  const mm = $('#m-mgr'); if(mm) mm.onchange = () => { app._mmgr = mm.value; pageMembers(app); };
-  const mc = $('#m-clear'); if(mc) mc.onclick = () => { app._mq=''; app._mmgr=''; pageMembers(app); };
+  if(si){ si.oninput = debounce(() => { st.q = si.value; const pos=si.selectionStart; pageMembers(app).then(()=>{ const n=document.getElementById('m-search'); if(n){ n.focus(); try{n.setSelectionRange(pos,pos);}catch(_){} } }); }); }
+  const mm = $('#m-mgr'); if(mm) mm.onchange = () => { st.mgr = mm.value; pageMembers(app); };
+  const mc = $('#m-clear'); if(mc) mc.onclick = () => { st.q=''; st.mgr=''; pageMembers(app); };
   app.querySelectorAll('[data-skill]').forEach(b => b.onclick = async () => {
     const u = users.find(x=>x.id==b.dataset.skill);
     const v = prompt(`${u.name} のできることリスト(カンマ区切り)`, u.skills||'');
@@ -1199,7 +1393,7 @@ async function pageEdit(app){
           <select id="bk-mgr" class="nowrap" style="flex:1">
             <option value="">▼ 担当手配者を選択</option>
             ${managers.map(m=>`<option value="${m.id}">${h(m.name)}手配(${m.count}名)</option>`).join('')}
-            <option value="__none">担当未設定</option>
+            <option value="__none">チーフ手配</option>
           </select>
           <select id="bk-memsel" class="nowrap" style="flex:1"><option value="">担当手配者を選択</option></select>
           <button class="btn ghost sm" id="bk-mem-add">＋追加</button>
@@ -1221,7 +1415,7 @@ async function pageEdit(app){
       <select id="e-mgr" class="nowrap">
         <option value="__all">全員</option>
         ${managers.map(m=>`<option value="${m.id}">${h(m.name)}手配(${m.count}名)</option>`).join('')}
-        <option value="__none">担当未設定</option>
+        <option value="__none">チーフ手配</option>
       </select>
       <label>メンバー</label>
       <select id="e-user" class="nowrap">${users.map(u=>`<option value="${u.id}">${h(u.name)}(${h(u.regno)})</option>`).join('')}</select>
@@ -1806,7 +2000,8 @@ async function pageImport(app){
 /* ===== ログイン中メンバー・編集履歴(handler_tools権限・専用ページ) ===== */
 async function pageHandlerStatus(app){
   if(!has('handler_tools')){ notFound(app); return; }
-  const openSet = app._hsOpen || (app._hsOpen = { online:true });
+  const stHs = PAGE_STATE.handlerStatus || (PAGE_STATE.handlerStatus = { open:{ online:true } });
+  const openSet = stHs.open;
   const sec = (id,title,body)=>`<details class="adm-sec" id="hssec-${id}" data-sec="${id}" ${openSet[id]?'open':''}><summary>${title}</summary><div class="adm-body">${body}</div></details>`;
   app.innerHTML = `
   <h2 style="margin-bottom:8px">ログイン中メンバー・編集履歴</h2>
@@ -1816,23 +2011,37 @@ async function pageHandlerStatus(app){
   ${sec('online','🟢 現在ログイン中のメンバー <span class="muted" style="font-weight:400">(10秒ごとに自動更新)</span>', `<div id="hd-online" class="muted">読み込み中…</div>`)}
   ${sec('hist','📝 スケジュール編集履歴 <span class="muted" style="font-weight:400">(直近150件)</span>', `<div id="hd-history" class="muted">読み込み中…</div>`)}`;
 
-  app.querySelectorAll('.adm-sec').forEach(d => d.addEventListener('toggle', () => { app._hsOpen[d.dataset.sec] = d.open; }));
+  app.querySelectorAll('.adm-sec').forEach(d => d.addEventListener('toggle', () => { stHs.open[d.dataset.sec] = d.open; }));
   app.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => {
     const d = document.getElementById('hssec-'+b.dataset.jump);
-    if(d){ d.open = true; app._hsOpen[b.dataset.jump] = true; d.scrollIntoView({behavior:'smooth', block:'start'}); }
+    if(d){ d.open = true; stHs.open[b.dataset.jump] = true; d.scrollIntoView({behavior:'smooth', block:'start'}); }
   });
 
   const fmtAgo = ms => { const s = Math.floor((Date.now()-ms)/1000); return s<60?'たった今':Math.floor(s/60)+'分前'; };
   const summarize = (b, a) => {
-    const p = j => { try{ return JSON.parse(j||'{}'); }catch(_){ return {}; } };
+    // 想定外の形式が来ても、生のJSON文字列やコードをそのまま表示しないよう、常に安全な文言にフォールバックする
+    const p = j => {
+      if (j == null) return {};
+      if (typeof j === 'object') return j; // 既にオブジェクトならそのまま
+      try{ const v = JSON.parse(j); return (v && typeof v === 'object') ? v : {}; }catch(_){ return {}; }
+    };
+    const typeLabel = { off:'休暇', paid:'有給', ok:'1日OK', x:'×' };
+    const descSlot = s => {
+      if(!s || typeof s !== 'object') return '(空)';
+      if(!s.type) return '(空)';
+      if(s.type === 'work') return `現場「${String(s.site||'')}」${String(s.tin||'')}-${String(s.tout||'')}`;
+      return typeLabel[s.type] || '(その他)';
+    };
     const desc = o => {
-      if(o && o.plan!==undefined && o.type===undefined) return `育成計画「${o.plan||'(空)'}」`;
-      const slots = Array.isArray(o) ? o : (o && o.slots ? (typeof o.slots==='string'?p(o.slots):o.slots) : (o&&o.type?[o]:[]));
-      if(!slots || !slots.length) return '(空)';
-      return slots.map(s => !s.type ? '(空)' : s.type==='work' ? `現場「${s.site}」${s.tin||''}-${s.tout||''}` : ({off:'休暇',paid:'有給',ok:'1日OK',x:'×'}[s.type]||s.type)).join(' / ');
+      if(!o || typeof o !== 'object') return '(空)';
+      if(o.plan!==undefined && o.type===undefined) return `育成計画「${String(o.plan||'(空)').slice(0,200)}」`;
+      let slots = Array.isArray(o) ? o : (o.slots !== undefined ? (typeof o.slots==='string'?p(o.slots):o.slots) : (o.type?[o]:[]));
+      if(!Array.isArray(slots)) slots = [];
+      if(!slots.length) return '(空)';
+      return slots.map(descSlot).join(' / ');
     };
     const ao = p(a);
-    const src = (ao && ao._src) ? `[${ao._src}] ` : '';
+    const src = (ao && typeof ao==='object' && ao._src) ? `[${String(ao._src).slice(0,60)}] ` : '';
     return src + `${desc(p(b))} → ${desc(ao)}`;
   };
   const loadOnline = async () => {
@@ -1840,14 +2049,15 @@ async function pageHandlerStatus(app){
       const rows = await api('/online');
       const el = $('#hd-online'); if(!el) return;
       el.innerHTML = rows.length ? `<table class="list pc-only"><tr><th></th><th>氏名</th><th>役割</th><th>登録番号</th><th>最終アクセス</th></tr>
-        ${rows.map(r=>`<tr><td class="c"><span class="online-dot pulse"></span></td><td>${h(r.name)}</td>
+        ${rows.map(r=>`<tr><td class="c"><span class="online-dot pulse"></span></td><td>${r.uid?`<span class="name-link" data-goto-uid="${r.uid}">${h(r.name)}</span>`:h(r.name)}</td>
         <td><span class="tag ${r.role}">${roleLabel(r)}</span>${r.handler?' <span class="tag handler">手配モード中</span>':''}</td>
         <td>${h(r.regno)}</td><td>${fmtAgo(r.last_seen)}</td></tr>`).join('')}</table>
         <div class="cards sp-only">${rows.map(r=>`<div class="dcard">
-          <div class="dcard-head"><span class="dcard-title"><span class="online-dot pulse"></span> ${h(r.name)}</span><span class="tag ${r.role}">${roleLabel(r)}</span></div>
+          <div class="dcard-head"><span class="dcard-title"><span class="online-dot pulse"></span> ${r.uid?`<span class="name-link" data-goto-uid="${r.uid}">${h(r.name)}</span>`:h(r.name)}</span><span class="tag ${r.role}">${roleLabel(r)}</span></div>
           <div class="drow"><span class="dk">登録番号</span><span class="dv">${h(r.regno)}</span></div>
           <div class="drow"><span class="dk">最終アクセス</span><span class="dv">${fmtAgo(r.last_seen)}${r.handler?' / 手配モード中':''}</span></div>
         </div>`).join('')}</div>` : '<div class="muted">現在ログイン中のメンバーはいません</div>';
+      wireNameLinks(el);
     }catch(_){}
   };
   loadOnline();
@@ -1856,13 +2066,14 @@ async function pageHandlerStatus(app){
   const hist = await api('/history');
   $('#hd-history').innerHTML = hist.length ? `<div class="sched-wrap pc-only"><table class="list">
     <tr><th>日時</th><th>編集者</th><th>対象メンバー</th><th>対象日</th><th>変更内容</th></tr>
-    ${hist.map(x=>`<tr><td>${h(x.ts)}</td><td>${h(x.editor_name)}</td><td>${h(x.target_name)}</td><td>${h(x.date)}</td><td>${h(summarize(x.before_json, x.after_json))}</td></tr>`).join('')}
+    ${hist.map(x=>`<tr><td>${h(x.ts)}</td><td>${h(x.editor_name)}</td><td>${x.target_id?`<span class="name-link" data-goto-uid="${x.target_id}">${h(x.target_name)}</span>`:h(x.target_name)}</td><td>${h(x.date)}</td><td>${h(summarize(x.before_json, x.after_json))}</td></tr>`).join('')}
   </table></div>
   <div class="cards sp-only">${hist.map(x=>`<div class="dcard">
-    <div class="dcard-head"><span class="dcard-title">${h(x.target_name)} / ${h(x.date)}</span><span class="dcard-sub">${h(x.editor_name)}</span></div>
+    <div class="dcard-head"><span class="dcard-title">${x.target_id?`<span class="name-link" data-goto-uid="${x.target_id}">${h(x.target_name)}</span>`:h(x.target_name)} / ${h(x.date)}</span><span class="dcard-sub">${h(x.editor_name)}</span></div>
     <div class="drow"><span class="dk">変更</span><span class="dv">${h(summarize(x.before_json, x.after_json))}</span></div>
     <div class="drow"><span class="dk">日時</span><span class="dv dcard-sub">${h(x.ts)}</span></div>
   </div>`).join('')}</div>` : '<div class="muted">編集履歴はありません</div>';
+  wireNameLinks($('#hd-history'));
 }
 
 /* ===== ロール一括権限の編集(管理者のみ・専用ページ) ===== */
@@ -2212,7 +2423,7 @@ async function pageDaicho(app){
     <div class="muted" style="margin-bottom:12px">スプレッドシートを取り込むたびに、元のExcelがそのままサーバーに保管されます（給与計算の根拠・監査用）。ここから閲覧・ダウンロード・削除ができます。<b>管理者のみ</b>がアクセスできます。</div>
     ${items.length ? `
     <div class="muted" style="margin-bottom:8px">保管件数: ${items.length}件</div>
-    <div class="list-scroll">
+    <div class="list-scroll pc-only">
       <table class="list">
         <tr><th>ファイル名</th><th>取り込み日時</th><th>取り込んだ人</th><th>反映件数</th><th>シート数</th><th>サイズ</th><th></th><th></th></tr>
         ${items.map(it=>`<tr>
@@ -2226,6 +2437,18 @@ async function pageDaicho(app){
           <td><button class="btn danger xs dc-del" data-id="${it.id}" data-ts="${h(it.ts)}">削除</button></td>
         </tr>`).join('')}
       </table>
+    </div>
+    <div class="cards sp-only">
+      ${items.map(it=>`<div class="dcard">
+        <div class="dcard-head"><span class="dcard-title">${h(it.file_name||'(名称不明)')}</span></div>
+        <div class="drow"><span class="dk">取り込み日時</span><span class="dv">${h(it.ts)}</span></div>
+        <div class="drow"><span class="dk">取り込んだ人</span><span class="dv">${h(it.importer_name||'—')}</span></div>
+        <div class="drow"><span class="dk">反映件数</span><span class="dv">${it.applied!=null?it.applied+'件':'—'} / シート${it.sheets!=null?it.sheets:'—'} / ${fmtSize(it.size)}</span></div>
+        <div class="dcard-actions">
+          <button class="btn ghost sm dc-dl" data-id="${it.id}" data-name="${h(it.file_name||'daicho.xlsx')}">⬇️ ダウンロード</button>
+          <button class="btn danger sm dc-del" data-id="${it.id}" data-ts="${h(it.ts)}">削除</button>
+        </div>
+      </div>`).join('')}
     </div>
     ` : '<div class="muted" style="padding:24px 0;text-align:center">まだ保管された台帳はありません。スプレッドシートを取り込むと、ここに元Excelが保管されます。</div>'}
   </div>`;
@@ -2247,13 +2470,15 @@ async function pageAdmin(app){
   if(!has('account_manage')){ notFound(app); return; }
   const users = await getUsers(true);
   const mgrs = await api('/managers');
-  const adq = (app._adq||'').trim(), admgr = app._admgr||'';
+  const optLists = await api('/option-lists').catch(()=>({ka:[],han:[]}));
+  const st = PAGE_STATE.admin || (PAGE_STATE.admin = { q:'', mgr:'', open:{ list:true } });
+  const adq = st.q.trim(), admgr = st.mgr;
   const aList = users.filter(u=>{
     const mq = !adq || (u.name||'').includes(adq) || (u.regno||'').includes(adq);
     const mm = !admgr || (admgr==='__chief' ? !u.manager_id : String(u.manager_id)===String(admgr));
     return mq && mm;
   });
-  const openSet = app._admOpen || (app._admOpen = { list:true });
+  const openSet = st.open;
   const sec = (id,title,body)=>`<details class="adm-sec" id="sec-${id}" data-sec="${id}" ${openSet[id]?'open':''}><summary>${title}</summary><div class="adm-body">${body}</div></details>`;
   app.innerHTML = `
   <h2 style="margin-bottom:8px">アカウント管理</h2>
@@ -2279,23 +2504,44 @@ async function pageAdmin(app){
     <div id="dv-out" class="muted">テーブルを選んで「表示する」を押してください。パスワード本体は暗号化保存のため誰にも表示できません(「PWリセット」で初期PW=登録番号に戻せます)。</div>`)}
 
   ${sec('create','➕ 新規アカウント作成 <span class="muted" style="font-weight:400">(初期パスワード = 登録番号)</span>', `
-    <div class="row">
-      <input id="a-regno" placeholder="登録番号 *" style="width:110px"><input id="a-name" placeholder="氏名 *" style="width:120px">
-      <input id="a-rank" placeholder="ランク" style="width:90px"><input id="a-han" placeholder="班" style="width:100px">
-      <input id="a-station" placeholder="最寄駅" style="width:110px">
-      <select id="a-role"><option value="member">メンツ</option><option value="chief">チーフ</option><option value="handler">チーフ(手配者)</option><option value="admin">チーフ(管理者)</option></select>
+    <div class="form-grid" style="max-width:640px">
+      <label>登録番号 *</label><input id="a-regno" placeholder="登録番号">
+      <label>氏名 *</label><input id="a-name" placeholder="氏名">
+      <label>ランク</label><select id="a-rank"><option value="">-</option>${['A','B','C','D','E'].map(r=>`<option>${r}</option>`).join('')}</select>
+      <label>所属課</label><select id="a-ka"><option value="">-</option>${optLists.ka.map(o=>`<option value="${h(o.value)}">${h(o.value)}</option>`).join('')}</select>
+      <label>班</label><select id="a-han"><option value="">-</option>${optLists.han.map(o=>`<option value="${h(o.value)}">${h(o.value)}</option>`).join('')}</select>
+      <label>最寄駅</label><input id="a-station" placeholder="最寄駅">
+      <label>役割</label><select id="a-role"><option value="member">メンツ</option><option value="chief">チーフ</option><option value="handler">チーフ(手配者)</option><option value="admin">チーフ(管理者)</option></select>
+      <label>手配担当</label><select id="a-mgr"><option value="">チーフ手配</option>${mgrs.map(m=>`<option value="${m.id}">${h(m.name)}手配</option>`).join('')}</select>
+    </div>
+    <div class="row" style="margin-top:12px;gap:8px;align-items:center">
       <button class="btn gold" id="a-add">作成</button><span id="a-msg"></span>
+    </div>
+    <div class="muted" style="margin-top:8px">所属課・班の選択肢は<button class="btn ghost xs" id="a-opt-manage" type="button">こちらから追加・削除</button>できます。</div>
+    <div id="a-opt-panel" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--line)">
+      <div class="row" style="gap:16px;flex-wrap:wrap;align-items:flex-start">
+        <div>
+          <div style="font-weight:700;margin-bottom:6px">所属課</div>
+          ${optLists.ka.map(o=>`<div class="row" style="gap:6px;margin-bottom:4px;align-items:center"><span>${h(o.value)}</span><button class="btn ghost xs opt-del" data-id="${o.id}">削除</button></div>`).join('') || '<div class="muted">まだありません</div>'}
+          <div class="row" style="margin-top:6px;gap:6px"><input id="a-ka-new" placeholder="新しい所属課" style="width:140px"><button class="btn ghost sm" id="a-ka-add">追加</button></div>
+        </div>
+        <div>
+          <div style="font-weight:700;margin-bottom:6px">班</div>
+          ${optLists.han.map(o=>`<div class="row" style="gap:6px;margin-bottom:4px;align-items:center"><span>${h(o.value)}</span><button class="btn ghost xs opt-del" data-id="${o.id}">削除</button></div>`).join('') || '<div class="muted">まだありません</div>'}
+          <div class="row" style="margin-top:6px;gap:6px"><input id="a-han-new" placeholder="新しい班" style="width:140px"><button class="btn ghost sm" id="a-han-add">追加</button></div>
+        </div>
+      </div>
     </div>`)}
 
   ${sec('list',`👥 アカウント一覧 <span class="muted" style="font-weight:400">(${aList.length}名)</span>`, `
     <div class="filter-bar">
-      <input id="ad-search" class="search-input" placeholder="🔍 氏名・登録番号で検索" value="${h(app._adq||'')}">
+      <input id="ad-search" class="search-input" placeholder="🔍 氏名・登録番号で検索" value="${h(st.q)}">
       <select id="ad-mgr" class="filter-select">
         <option value="">手配担当:すべて</option>
-        ${mgrs.map(m=>`<option value="${m.id}" ${String(app._admgr||'')===String(m.id)?'selected':''}>${h(m.name)}手配</option>`).join('')}
-        <option value="__chief" ${app._admgr==='__chief'?'selected':''}>チーフ手配(担当未設定)</option>
+        ${mgrs.map(m=>`<option value="${m.id}" ${String(admgr)===String(m.id)?'selected':''}>${h(m.name)}手配</option>`).join('')}
+        <option value="__chief" ${admgr==='__chief'?'selected':''}>チーフ手配</option>
       </select>
-      ${(app._adq||app._admgr)?`<button class="btn ghost sm" id="ad-clear">クリア</button>`:''}
+      ${(adq||admgr)?`<button class="btn ghost sm" id="ad-clear">クリア</button>`:''}
     </div>
     <div class="muted" style="margin:2px 0 10px">${aList.length}名 表示中</div>
     <div class="sched-wrap pc-only"><table class="list">
@@ -2324,10 +2570,10 @@ async function pageAdmin(app){
     <div class="muted" style="margin-top:8px">権限の階層:管理者 → 手配チーム → チーフ → メンツ。「担当手配者」を設定すると、スケジュール閲覧・入力で担当ごとにメンバーを絞り込めます。手配チームは右上メニューからPIN入力で手配者モードに切り替えられます。個人ごとの追加権限は「権限」ボタンから、役割全員への一括権限は上部の「🛡️ 権限の一括設定」から設定できます。</div>`)}`;
 
   // 折りたたみの開閉状態を保持 / 目次ジャンプ
-  app.querySelectorAll('.adm-sec').forEach(d => d.addEventListener('toggle', () => { app._admOpen[d.dataset.sec] = d.open; }));
+  app.querySelectorAll('.adm-sec').forEach(d => d.addEventListener('toggle', () => { st.open[d.dataset.sec] = d.open; }));
   app.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => {
     const d = document.getElementById('sec-'+b.dataset.jump);
-    if(d){ d.open = true; app._admOpen[b.dataset.jump] = true; d.scrollIntoView({behavior:'smooth', block:'start'}); }
+    if(d){ d.open = true; st.open[b.dataset.jump] = true; d.scrollIntoView({behavior:'smooth', block:'start'}); }
   });
 
   $('#dv-load').onclick = async () => {
@@ -2335,23 +2581,46 @@ async function pageAdmin(app){
     try{
       const rows = await api('/admin/data?table=' + $('#dv-table').value);
       if(!rows.length){ $('#dv-out').innerHTML = '<div class="muted">データはありません</div>'; return; }
-      const cols = Object.keys(rows[0]);
-      $('#dv-out').innerHTML = `<div class="sched-wrap"><table class="list">
-        <tr>${cols.map(c=>`<th>${h(c)}</th>`).join('')}</tr>
-        ${rows.map(r=>`<tr>${cols.map(c=>`<td>${h(r[c])}</td>`).join('')}</tr>`).join('')}
-      </table></div><div class="muted" style="margin-top:6px">${rows.length}件</div>`;
+      DV_STATE.rows = rows;
+      DV_STATE.cols = Object.keys(rows[0]);
+      DV_STATE.sortCol = null; DV_STATE.sortDir = 1; DV_STATE.filters = {};
+      DV_STATE.tableName = $('#dv-table').value;
+      renderDvTable();
     }catch(e){ $('#dv-out').innerHTML = `<div class="msg err">${h(e.message)}</div>`; }
   };
   $('#a-add').onclick = async () => {
     try{
-      await api('/users',{method:'POST',body:{ regno:$('#a-regno').value, name:$('#a-name').value, rank:$('#a-rank').value, han:$('#a-han').value, station:$('#a-station').value, role:$('#a-role').value }});
+      await api('/users',{method:'POST',body:{
+        regno:$('#a-regno').value, name:$('#a-name').value, rank:$('#a-rank').value,
+        ka:$('#a-ka').value, han:$('#a-han').value, station:$('#a-station').value,
+        role:$('#a-role').value, manager_id:$('#a-mgr').value ? Number($('#a-mgr').value) : null
+      }});
       USERS_CACHE=null; render();
     }catch(e){ $('#a-msg').innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
   };
+  const aom = $('#a-opt-manage');
+  if(aom) aom.onclick = () => { const p=$('#a-opt-panel'); if(p) p.style.display = p.style.display==='none' ? '' : 'none'; };
+  const akAdd = $('#a-ka-add');
+  if(akAdd) akAdd.onclick = async () => {
+    const v = $('#a-ka-new').value.trim(); if(!v) return;
+    try{ await api('/option-lists',{method:'POST',body:{category:'ka',value:v}}); pageAdmin(app); }
+    catch(e){ popup(e.message,'error'); }
+  };
+  const ahAdd = $('#a-han-add');
+  if(ahAdd) ahAdd.onclick = async () => {
+    const v = $('#a-han-new').value.trim(); if(!v) return;
+    try{ await api('/option-lists',{method:'POST',body:{category:'han',value:v}}); pageAdmin(app); }
+    catch(e){ popup(e.message,'error'); }
+  };
+  app.querySelectorAll('.opt-del').forEach(b => b.onclick = async () => {
+    if(!confirm('この選択肢を削除しますか？(既に設定されているメンバーの値はそのまま残ります)')) return;
+    try{ await api(`/option-lists/${b.dataset.id}`,{method:'DELETE'}); pageAdmin(app); }
+    catch(e){ popup(e.message,'error'); }
+  });
   const adS=$('#ad-search');
-  if(adS){ adS.oninput=()=>{ app._adq=adS.value; const pos=adS.selectionStart; pageAdmin(app).then(()=>{ const n=document.getElementById('ad-search'); if(n){ n.focus(); try{n.setSelectionRange(pos,pos);}catch(_){} } }); }; }
-  const adM=$('#ad-mgr'); if(adM) adM.onchange=()=>{ app._admgr=adM.value; pageAdmin(app); };
-  const adC=$('#ad-clear'); if(adC) adC.onclick=()=>{ app._adq=''; app._admgr=''; pageAdmin(app); };
+  if(adS){ adS.oninput=debounce(()=>{ st.q=adS.value; const pos=adS.selectionStart; pageAdmin(app).then(()=>{ const n=document.getElementById('ad-search'); if(n){ n.focus(); try{n.setSelectionRange(pos,pos);}catch(_){} } }); }); }
+  const adM=$('#ad-mgr'); if(adM) adM.onchange=()=>{ st.mgr=adM.value; pageAdmin(app); };
+  const adC=$('#ad-clear'); if(adC) adC.onclick=()=>{ st.q=''; st.mgr=''; pageAdmin(app); };
   app.querySelectorAll('[data-role]').forEach(s => s.onchange = async () => {
     try{ await api('/users/'+s.dataset.role, { method:'PATCH', body:{ role:s.value } }); USERS_CACHE=null; }
     catch(e){ alert(e.message); render(); }
@@ -2386,7 +2655,8 @@ async function pageAdminSettings(app){
   const notifyData = await api('/notify-settings').catch(()=>null);
   const daichoReloadSettings = await api('/daicho-reload-settings').catch(()=>null);
   const lockData = await api('/lock-settings').catch(()=>null);
-  const openSet = app._asOpen || (app._asOpen = { pin:true });
+  const stAs = PAGE_STATE.adminSettings || (PAGE_STATE.adminSettings = { open:{ pin:true } });
+  const openSet = stAs.open;
   const sec = (id,title,body)=>`<details class="adm-sec" id="asec-${id}" data-sec="${id}" ${openSet[id]?'open':''}><summary>${title}</summary><div class="adm-body">${body}</div></details>`;
   app.innerHTML = `
   <h2 style="margin-bottom:8px">🔧 システム設定</h2>
@@ -2480,10 +2750,10 @@ async function pageAdminSettings(app){
     </div>
   ` : '<div class="muted">時給データを取得できませんでした</div>')}`;
 
-  app.querySelectorAll('.adm-sec').forEach(d => d.addEventListener('toggle', () => { app._asOpen[d.dataset.sec] = d.open; }));
+  app.querySelectorAll('.adm-sec').forEach(d => d.addEventListener('toggle', () => { stAs.open[d.dataset.sec] = d.open; }));
   app.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => {
     const d = document.getElementById('asec-'+b.dataset.jump);
-    if(d){ d.open = true; app._asOpen[b.dataset.jump] = true; d.scrollIntoView({behavior:'smooth', block:'start'}); }
+    if(d){ d.open = true; stAs.open[b.dataset.jump] = true; d.scrollIntoView({behavior:'smooth', block:'start'}); }
   });
 
   { const ws = $('#wage-save'); if(ws) ws.onclick = async () => {

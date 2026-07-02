@@ -173,6 +173,25 @@ async function importScheduleSheet(env, source, url, editorId, fromDate) {
 // ---- コンフリクト検知 ----
 // "H:MM" を分に変換(不正は null)
 function toMin(t) { const m = String(t == null ? '' : t).match(/^(\d{1,2}):(\d{2})$/); return m ? Number(m[1]) * 60 + Number(m[2]) : null; }
+// 現場記録の休憩時間(JSON配列)から合計分数を計算する
+function sumBreakMinutes(breaksJson) {
+  try {
+    const arr = JSON.parse(breaksJson || '[]');
+    if (!Array.isArray(arr)) return 0;
+    let total = 0;
+    for (const b of arr) {
+      const s = toMin(b && b.start), e = toMin(b && b.end);
+      if (s != null && e != null) { let d = e - s; if (d < 0) d += 1440; total += d; }
+    }
+    return total;
+  } catch (e) { return 0; }
+}
+// 勤務時間(分)から、法定上必要な休憩時間(分)を返す(6h超で45分、8h超で60分。それ以下は0)
+function requiredBreakMinutes(workMinutes) {
+  if (workMinutes > 480) return 60;
+  if (workMinutes > 360) return 45;
+  return 0;
+}
 // 2つの時間帯 [in,out) が重なるか。out<=in は日跨ぎとみなし +24h。時刻未入力は「判定不可=重ならない」扱い
 function rangesOverlap(tin1, tout1, tin2, tout2) {
   let s1 = toMin(tin1), e1 = toMin(tout1), s2 = toMin(tin2), e2 = toMin(tout2);
@@ -413,7 +432,7 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
       if (s.type === 'work' && s.site) rookieCheck.push({ uid, date, site: s.site });
     }
     batch.push(env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
-      .bind(ts, editorId, uid, date, beforeJson, JSON.stringify({ slots: afterJson, _src: srcLabel })));
+      .bind(ts, editorId, uid, date, beforeJson, JSON.stringify({ slots: JSON.parse(afterJson), _src: srcLabel })));
     applied += items.length;
     if (mergeNote) errors.push(`${name || uid}さん ${date}: 同一現場の重複行を統合しました ${mergeNote}`);
   }
@@ -899,12 +918,12 @@ function parseFormatAB(rows, ym, cfg) {
   return { rows: out };
 }
 
-async function notify(env, userIds, type, message) {
+async function notify(env, userIds, type, message, link = '') {
   const ts = jstTs();
   for (const id of userIds) {
     const dup = await env.DB.prepare('SELECT 1 FROM notifications WHERE user_id=? AND message=? AND read=0').bind(id, message).first();
     if (dup) continue;
-    await env.DB.prepare('INSERT INTO notifications(user_id,ts,type,message) VALUES(?,?,?,?)').bind(id, ts, type, message).run();
+    await env.DB.prepare('INSERT INTO notifications(user_id,ts,type,message,link) VALUES(?,?,?,?,?)').bind(id, ts, type, message, link).run();
   }
 }
 
@@ -1280,14 +1299,37 @@ async function api(req, env, url) {
     await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('lock_days',?)").bind(String(days)).run();
     return J({ ok: 1, days, lockBefore: payLockDate(days) });
   }
+  // ---- スタッフ登録のプルダウン選択肢(所属課・班)。閲覧は誰でも、追加・削除は管理者のみ ----
+  if (method === 'GET' && path === '/option-lists') {
+    const rows = (await env.DB.prepare('SELECT * FROM option_lists ORDER BY category, sort_order, value').all()).results;
+    const out = { ka: [], han: [] };
+    for (const r of rows) if (out[r.category]) out[r.category].push({ id: r.id, value: r.value });
+    return J(out);
+  }
+  if (method === 'POST' && path === '/option-lists') {
+    if (!has(me, 'account_manage')) return ERR('権限がありません', 403);
+    const category = body.category === 'han' ? 'han' : body.category === 'ka' ? 'ka' : null;
+    const value = String(body.value || '').trim();
+    if (!category || !value) return ERR('入力してください');
+    try { await env.DB.prepare('INSERT INTO option_lists(category,value,sort_order) VALUES(?,?,100)').bind(category, value).run(); }
+    catch (e) { return ERR('既に存在します'); }
+    return J({ ok: 1 });
+  }
+  let olm;
+  if (method === 'DELETE' && (olm = path.match(/^\/option-lists\/(\d+)$/))) {
+    if (!has(me, 'account_manage')) return ERR('権限がありません', 403);
+    await env.DB.prepare('DELETE FROM option_lists WHERE id=?').bind(Number(olm[1])).run();
+    return J({ ok: 1 });
+  }
+
   if (method === 'POST' && path === '/users') {
     if (!has(me, 'account_manage') && !has(me, 'site_manage')) return ERR('ページが見つかりません', 404);
-    const { regno, name, rank = '', han = '', station = '', role = 'member', manager_id = null } = body;
+    const { regno, name, rank = '', han = '', ka = '', station = '', role = 'member', manager_id = null } = body;
     if (!regno || !name) return ERR('登録番号と氏名は必須です');
     const newRole = has(me, 'account_manage') ? (LV[role] != null ? role : 'member') : 'member';
     try {
-      await env.DB.prepare('INSERT INTO users(regno,name,rank,han,station,role,manager_id) VALUES(?,?,?,?,?,?,?)')
-        .bind(String(regno).trim(), name, rank, han, station, newRole, manager_id || null).run();
+      await env.DB.prepare('INSERT INTO users(regno,name,rank,han,ka,station,role,manager_id) VALUES(?,?,?,?,?,?,?,?)')
+        .bind(String(regno).trim(), name, rank, han, ka, station, newRole, manager_id || null).run();
     } catch { return ERR('この登録番号は既に存在します'); }
     return J({ ok: 1 });
   }
@@ -1356,8 +1398,23 @@ async function api(req, env, url) {
     const rows = (await env.DB.prepare("SELECT * FROM schedule WHERE user_id=? AND date LIKE ? ORDER BY date, slot").bind(uid, month + '%').all()).results;
     const canSeePay = has(me, 'site_pay'); // 時間・給与・IN・OUT を閲覧できるか
     const canSeePaidLeave = has(me, 'site_manage'); // 有給は手配者以上のみ閲覧可(本人も含め、それ以外には「休暇」として見せる)
+    // 休憩不足の目安(本人 or 管理者のみ計算。現場記録は本人・管理者しか見れないため)
+    const canSeeBreak = (uid === me.id) || me.role === 'admin';
+    const breakByKey = {};
+    if (canSeeBreak) {
+      const recs = (await env.DB.prepare("SELECT date, site, breaks FROM site_records WHERE user_id=? AND date LIKE ?").bind(uid, month + '%').all()).results;
+      for (const rec of recs) breakByKey[rec.date + '|' + rec.site] = sumBreakMinutes(rec.breaks);
+    }
     const entries = {};            // entries[date] = [ {現場1}, {現場2}, ... ]
     for (const r of rows) {
+      if (canSeeBreak && r.type === 'work' && r.site) {
+        const sMin = toMin(r.tin), eMin = toMin(r.tout);
+        let workMin = 0;
+        if (sMin != null && eMin != null) { workMin = eMin - sMin; if (workMin < 0) workMin += 1440; }
+        const required = requiredBreakMinutes(workMin);
+        const taken = breakByKey[r.date + '|' + r.site] || 0;
+        r.breakShort = required > 0 && taken < required;
+      }
       if (!canSeePay) { r.hours = 0; r.overtime = 0; r.pay = 0; r.tin = ''; r.tout = ''; r.duty = ''; r.load_end = ''; r.show_end = ''; r.multi = 0; }
       if (r.type === 'paid' && !canSeePaidLeave) { r.type = 'off'; r.hours = 0; r.overtime = 0; r.pay = 0; }
       (entries[r.date] ||= []).push(r);
@@ -1398,8 +1455,9 @@ async function api(req, env, url) {
     const nameCache = {};
     const lockDays = await getLockDays(env);
     const ts = jstTs();
+    const notifyTargets = new Set(); // 手配チーム通知の対象(uid)を、変更があった人だけ集めて最後にまとめて送る
     for (const a of assignments) {
-      if (!(a.uid in nameCache)) { const u = await env.DB.prepare('SELECT name, rank FROM users WHERE id=?').bind(a.uid).first(); nameCache[a.uid] = u ? { name: u.name, rank: u.rank } : { name: '', rank: '' }; }
+      if (!(a.uid in nameCache)) { const u = await env.DB.prepare('SELECT name, rank, manager_id FROM users WHERE id=?').bind(a.uid).first(); nameCache[a.uid] = u ? { name: u.name, rank: u.rank, managerId: u.manager_id } : { name: '', rank: '', managerId: null }; }
       const uname = nameCache[a.uid].name;
       for (const date of a.dates) {
         if (isLocked(date, me, lockDays)) { skipped++; continue; } // 給与確定済みは編集不可(管理者は除く)
@@ -1425,7 +1483,16 @@ async function api(req, env, url) {
           .bind(ts, me.id, a.uid, date, JSON.stringify(before.map(stripRow)), JSON.stringify(after.map(stripRow))).run();
         const rs = (await env.DB.prepare("SELECT * FROM reports WHERE next_date=? AND next_site=?").bind(date, site).all()).results;
         for (const r of rs) await notify(env, [a.uid], 'rookie', `🔰 ${r.next_date} ${r.next_site} に新人「${r.candidate_name}」が入る予定です`);
+        // 手配チーム通知: 対象者の手配担当が自分以外なら、担当へ「更新しました」と知らせる(本人による自己更新は対象外)
+        const managerId = nameCache[a.uid].managerId;
+        if (managerId && Number(managerId) !== me.id && Number(managerId) !== Number(a.uid)) notifyTargets.add(a.uid);
       }
+    }
+    for (const uid of notifyTargets) {
+      const managerId = nameCache[uid].managerId;
+      await notify(env, [Number(managerId)], 'team_sched',
+        `📅 ${me.name}さんが${nameCache[uid].name}さんの${site}のスケジュールを更新しました。`,
+        `#/schedule/${uid}`);
     }
     return J({ ok: 1, added, skipped, conflicts });
   }
@@ -1471,6 +1538,19 @@ async function api(req, env, url) {
         updated++;
       }
     }
+    // 手配チーム通知: 更新・削除された対象者の手配担当が自分以外なら知らせる(本人による自己更新は対象外)
+    const touchedUids = [...new Set([...removeUids, ...keepUids])];
+    if (touchedUids.length) {
+      const ph = touchedUids.map(() => '?').join(',');
+      const tgtUsers = (await env.DB.prepare(`SELECT id, name, manager_id FROM users WHERE id IN (${ph})`).bind(...touchedUids).all()).results;
+      for (const u of tgtUsers) {
+        if (u.manager_id && Number(u.manager_id) !== me.id && Number(u.manager_id) !== u.id) {
+          await notify(env, [Number(u.manager_id)], 'team_sched',
+            `📅 ${me.name}さんが${u.name}さんの${site}のスケジュールを更新しました。`,
+            `#/schedule/${u.id}`);
+        }
+      }
+    }
     return J({ ok: 1, updated, removed });
   }
 
@@ -1492,7 +1572,7 @@ async function api(req, env, url) {
     } else return ERR('不正なリクエストです');
 
     // --- コンフリクト検知(同日二重現場 / IN・OUT重複) ---
-    const tgt = await env.DB.prepare('SELECT name, rank FROM users WHERE id=?').bind(uid).first();
+    const tgt = await env.DB.prepare('SELECT name, rank, manager_id FROM users WHERE id=?').bind(uid).first();
     const tname = tgt ? tgt.name : '';
     const trank = tgt ? tgt.rank : '';
     const resolve = await loadWageResolver(env);
@@ -1510,6 +1590,7 @@ async function api(req, env, url) {
       return J({ ok: 0, conflicts: allConflicts });
     }
 
+    let anyChanged = false, changedSite = '';
     for (const date of Object.keys(byDate)) {
       const before = (await env.DB.prepare('SELECT * FROM schedule WHERE user_id=? AND date=? ORDER BY slot').bind(uid, date).all()).results;
       // 有効な行(typeあり)だけ残す
@@ -1533,14 +1614,23 @@ async function api(req, env, url) {
         if (row.type === 'work' && row.site) {
           const rs = (await env.DB.prepare("SELECT * FROM reports WHERE next_date=? AND next_site=?").bind(date, row.site).all()).results;
           for (const r of rs) await notify(env, [uid], 'rookie', `🔰 ${r.next_date} ${r.next_site} に新人「${r.candidate_name}」が入る予定です`);
+          if (!changedSite) changedSite = row.site;
         }
       }
       // 変更があったら履歴に1件残す(当日まるごと before→after)
       const beforeJson = JSON.stringify(before.map(stripRow));
       const afterJson = JSON.stringify(saved.map(stripRow));
-      if (beforeJson !== afterJson)
+      if (beforeJson !== afterJson) {
+        anyChanged = true;
         await env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
           .bind(ts, me.id, uid, date, beforeJson, afterJson).run();
+      }
+    }
+    // 手配チーム通知: 対象者の手配担当が自分以外なら知らせる(本人による自己更新は対象外)
+    if (anyChanged && tgt && tgt.manager_id && Number(tgt.manager_id) !== me.id && Number(tgt.manager_id) !== Number(uid)) {
+      await notify(env, [Number(tgt.manager_id)], 'team_sched',
+        `📅 ${me.name}さんが${tname}さんの${changedSite ? changedSite + 'の' : ''}スケジュールを更新しました。`,
+        `#/schedule/${uid}`);
     }
     return J({ ok: 1, conflicts: allConflicts.filter(c => c.level === 'warn') });
   }
@@ -1558,7 +1648,74 @@ async function api(req, env, url) {
       .bind(uid, date, plan || '').run();
     await env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
       .bind(jstTs(), me.id, uid, date, JSON.stringify({ plan: beforePlan }), JSON.stringify({ plan: plan || '' })).run();
+    // 育成計画が新しく書かれたら、本人へ通知(自分自身が書いた場合は通知しない)
+    if (Number(uid) !== me.id && (plan || '').trim() && !(beforePlan || '').trim()) {
+      try {
+        const tgt = await env.DB.prepare('SELECT name FROM users WHERE id=?').bind(uid).first();
+        const siteRow = await env.DB.prepare("SELECT site FROM schedule WHERE user_id=? AND date=? AND type='work' AND site!='' LIMIT 1").bind(uid, date).first();
+        const label = `${date} ${tgt ? tgt.name : ''}${siteRow ? '＠' + siteRow.site : ''}`;
+        await notify(env, [Number(uid)], 'plan',
+          `📘 ${label}に育成計画が追加されました。(${me.name})`,
+          `#/schedule/${uid}?month=${date.slice(0, 7)}`);
+      } catch (e) {}
+    }
     return J({ ok: 1 });
+  }
+
+  // ---- 現場記録(配置・休憩時間・自由記入欄)。閲覧・編集は本人と管理者のみ ----
+  // 対象の現場での自分の記録を取得。育成計画・備考(scheduleのnote)もあわせて返す。
+  if (method === 'GET' && path === '/site-record') {
+    const uid = Number(url.searchParams.get('uid'));
+    const date = url.searchParams.get('date');
+    const site = url.searchParams.get('site');
+    if (!uid || !date || !site) return ERR('不正なリクエストです');
+    if (uid !== me.id && me.role !== 'admin') return ERR('権限がありません', 403);
+    const rec = await env.DB.prepare('SELECT * FROM site_records WHERE user_id=? AND date=? AND site=?').bind(uid, date, site).first();
+    const schedRow = await env.DB.prepare("SELECT note FROM schedule WHERE user_id=? AND date=? AND site=? AND type='work' LIMIT 1").bind(uid, date, site).first();
+    const planRow = await env.DB.prepare('SELECT plan FROM dev_plan WHERE user_id=? AND date=?').bind(uid, date).first();
+    return J({
+      placement: rec ? rec.placement : '',
+      breaks: rec ? JSON.parse(rec.breaks || '[]') : [],
+      memo: rec ? rec.memo : '',
+      breakMinutes: rec ? sumBreakMinutes(rec.breaks) : 0,
+      note: schedRow ? schedRow.note : '',
+      plan: planRow ? planRow.plan : '',
+    });
+  }
+  if (method === 'PUT' && path === '/site-record') {
+    const uid = Number(body.uid);
+    const date = body.date, site = body.site;
+    if (!uid || !date || !site) return ERR('不正なリクエストです');
+    if (uid !== me.id && me.role !== 'admin') return ERR('権限がありません', 403);
+    const placement = String(body.placement || '').slice(0, 2000);
+    const memo = String(body.memo || ''); // 自由記入欄は文字数制限なし
+    const breaks = Array.isArray(body.breaks)
+      ? body.breaks.filter(b => b && (b.start || b.end)).map(b => ({ start: String(b.start || '').trim(), end: String(b.end || '').trim() }))
+      : [];
+    await env.DB.prepare(
+      `INSERT INTO site_records(user_id,date,site,placement,breaks,memo,updated_at) VALUES(?,?,?,?,?,?,?)
+       ON CONFLICT(user_id,date,site) DO UPDATE SET placement=excluded.placement, breaks=excluded.breaks, memo=excluded.memo, updated_at=excluded.updated_at`
+    ).bind(uid, date, site, placement, JSON.stringify(breaks), memo, jstTs()).run();
+    return J({ ok: 1 });
+  }
+  // 現場一覧用: その現場日の全員分の休憩時間合計(チーフ以上のみ)。勤務時間との対比で不足の目安も返す。
+  if (method === 'GET' && path === '/site-record-breaks') {
+    if (lv(me) < 1) return ERR('ページが見つかりません', 404);
+    const date = url.searchParams.get('date');
+    const site = url.searchParams.get('site');
+    if (!date || !site) return ERR('不正なリクエストです');
+    const recs = (await env.DB.prepare('SELECT user_id, breaks FROM site_records WHERE date=? AND site=?').bind(date, site).all()).results;
+    const schedRows = (await env.DB.prepare("SELECT user_id, tin, tout FROM schedule WHERE date=? AND site=? AND type='work'").bind(date, site).all()).results;
+    const breakByUid = {}; for (const r of recs) breakByUid[r.user_id] = sumBreakMinutes(r.breaks);
+    const out = schedRows.map(s => {
+      let workMin = 0;
+      const sIn = toMin(s.tin), sOut = toMin(s.tout);
+      if (sIn != null && sOut != null) { workMin = sOut - sIn; if (workMin < 0) workMin += 1440; }
+      const taken = breakByUid[s.user_id] || 0;
+      const required = requiredBreakMinutes(workMin);
+      return { uid: s.user_id, workMinutes: workMin, breakMinutes: taken, requiredMinutes: required, short: required > 0 && taken < required };
+    });
+    return J(out);
   }
 
   // 現場一覧(チーフ以上)。現場名×日付ごとに人数・会場をまとめる。month指定可
@@ -1780,7 +1937,7 @@ async function api(req, env, url) {
   if (method === 'GET' && path === '/online') {
     if (!handlerMode && !has(me, 'handler_tools')) return ERR('ページが見つかりません', 404);
     const rows = (await env.DB.prepare(
-      'SELECT u.name,u.role,u.regno,MAX(s.last_seen) AS last_seen,MAX(s.handler) AS handler FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.last_seen>? GROUP BY u.id ORDER BY last_seen DESC'
+      'SELECT u.id AS uid,u.name,u.role,u.regno,MAX(s.last_seen) AS last_seen,MAX(s.handler) AS handler FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.last_seen>? GROUP BY u.id ORDER BY last_seen DESC'
     ).bind(Date.now() - 120000).all()).results;
     return J(rows);
   }
@@ -1877,6 +2034,11 @@ async function api(req, env, url) {
   }
   if (method === 'POST' && path === '/notifications/read') {
     await env.DB.prepare('UPDATE notifications SET read=1 WHERE user_id=?').bind(me.id).run();
+    return J({ ok: 1 });
+  }
+  let nrm;
+  if (method === 'POST' && (nrm = path.match(/^\/notifications\/(\d+)\/read$/))) {
+    await env.DB.prepare('UPDATE notifications SET read=1 WHERE id=? AND user_id=?').bind(Number(nrm[1]), me.id).run();
     return J({ ok: 1 });
   }
 
