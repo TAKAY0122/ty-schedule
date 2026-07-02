@@ -251,6 +251,60 @@ function timeToMin(t) {
   return x;
 }
 
+// ===== 台帳に不在の人を休暇扱いにする =====
+// 取り込んだ台帳(実績)ファイルの対象日ごとに、「台帳に一切登場しない人」を洗い出し、
+// その日その人に登録されている現場(work)予定を全て取り消して休暇(off)に置き換える。
+// (台帳が「その日の正しい出勤者名簿」である、という前提のもと、載っていない人は出勤していないとみなす)
+// rows: applyImportRowsに渡すのと同じ形式({regno, date, ...}の配列)。
+async function clearAbsentFromDaicho(env, rows, editorId) {
+  // 対象日ごとに、台帳に登場した登録番号の集合を作る
+  const datesRegnos = {};
+  for (const r of rows) {
+    const regno = String(r.regno || '').trim();
+    const date = String(r.date || '').trim();
+    if (!regno || !date) continue;
+    (datesRegnos[date] ||= new Set()).add(regno);
+  }
+  const dates = Object.keys(datesRegnos);
+  if (!dates.length) return { clearedPeople: 0, clearedDays: 0 };
+
+  const allUsers = (await env.DB.prepare('SELECT id, regno FROM users').all()).results;
+  const regnoById = {}; for (const u of allUsers) regnoById[u.id] = String(u.regno).trim();
+
+  const ts = jstTs();
+  const batch = [];
+  let clearedPeople = 0;
+  const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
+
+  for (const date of dates) {
+    const present = datesRegnos[date];
+    // その日、現場(work)予定を持っている人を全員洗い出す
+    const workUsers = (await env.DB.prepare(
+      "SELECT DISTINCT user_id FROM schedule WHERE date=? AND type='work'"
+    ).bind(date).all()).results;
+
+    for (const wu of workUsers) {
+      const regno = regnoById[wu.user_id];
+      if (!regno || present.has(regno)) continue; // 台帳に載っている、または不明なユーザーはそのまま
+
+      const before = (await env.DB.prepare('SELECT * FROM schedule WHERE user_id=? AND date=? ORDER BY slot').bind(wu.user_id, date).all()).results;
+      const beforeJson = JSON.stringify(before.map(stripRow));
+      const afterJson = JSON.stringify([stripRow({ type: 'off', site: '', venue: '', tin: '', tout: '', pay: 0, note: '', duty: '', load_end: '', show_end: '', multi: 0 })]);
+      if (beforeJson === afterJson) continue; // 既に休暇のみなら変更不要
+
+      batch.push(env.DB.prepare('DELETE FROM schedule WHERE user_id=? AND date=?').bind(wu.user_id, date));
+      batch.push(env.DB.prepare('INSERT INTO schedule(user_id,date,slot,type,site,venue,tin,tout,hours,overtime,pay,note,duty,load_end,show_end,multi) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+        .bind(wu.user_id, date, 0, 'off', '', '', '', '', 0, 0, 0, '', '', '', '', 0));
+      batch.push(env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
+        .bind(ts, editorId, wu.user_id, date, beforeJson, JSON.stringify({ slots: JSON.parse(afterJson), _src: '台帳照合(不在のため休暇に変更)' })));
+      clearedPeople++;
+    }
+  }
+
+  if (batch.length) for (const part of chunk(batch, 200)) await env.DB.batch(part);
+  return { clearedPeople, clearedDays: dates.length };
+}
+
 async function applyImportRows(env, rows, editorId, mode = 'replace-person-day', srcLabel = 'spreadsheet') {
   const ts = jstTs();
   const resolve = await loadWageResolver(env);
@@ -1603,6 +1657,8 @@ async function api(req, env, url) {
         continue;
       }
       const r = await applyImportRows(env, allRows, me.id, mode, 'スプレッドシートURL');
+      // 台帳の対象日に一切登場しない人は、その日の現場予定を休暇に置き換える
+      const absent = await clearAbsentFromDaicho(env, allRows, me.id);
 
       // 監査・証拠用に、取り込んだ元Excel(xlsx)をR2へ保管しインデックスを記録する。
       let archived = false, archiveError = '';
@@ -1624,7 +1680,7 @@ async function api(req, env, url) {
         } catch (e) { archiveError = e.message; }
       }
 
-      results.push({ url: rawUrl, ok: true, sheetsRead: sheetReport.length, sheets: sheetReport, applied: r.applied, skipped: r.skipped, skippedUnregistered: r.skippedUnregistered, skippedUnchanged: r.skippedUnchanged, skippedInvalid: r.skippedInvalid, errors: r.errors, mode: fellBack ? '単一シート(全タブ取得に失敗)' : '全シート', archived, archiveError });
+      results.push({ url: rawUrl, ok: true, sheetsRead: sheetReport.length, sheets: sheetReport, applied: r.applied, skipped: r.skipped, skippedUnregistered: r.skippedUnregistered, skippedUnchanged: r.skippedUnchanged, skippedInvalid: r.skippedInvalid, errors: r.errors, mode: fellBack ? '単一シート(全タブ取得に失敗)' : '全シート', archived, archiveError, clearedAbsent: absent.clearedPeople });
     }
     if (body.save) {
       const saved = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
@@ -1851,6 +1907,8 @@ async function cronDaichoReload(env) {
       }
       if (!allRows.length) { results.push({ url: rawUrl, ok: false, error: 'データなし' }); continue; }
       const r = await applyImportRows(env, allRows, editorId, 'replace-person-day', '台帳自動再取り込み');
+      // 台帳の対象日に一切登場しない人は、その日の現場予定を休暇に置き換える
+      const absent = await clearAbsentFromDaicho(env, allRows, editorId);
 
       // R2台帳を保管(同じfile_idの古いバージョンを削除して最新版だけ残す)
       if (got.raw && env.DAICHO) {
@@ -1874,7 +1932,7 @@ async function cronDaichoReload(env) {
           await env.DB.prepare('DELETE FROM daicho_archive WHERE id=?').bind(old.id).run();
         }
       }
-      results.push({ url: rawUrl, ok: true, applied: r.applied });
+      results.push({ url: rawUrl, ok: true, applied: r.applied, clearedAbsent: absent.clearedPeople });
     } catch (e) {
       results.push({ url: rawUrl, ok: false, error: e.message });
     }

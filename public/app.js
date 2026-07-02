@@ -402,6 +402,9 @@ function renderForcedPassword(){
 
 /* ===== シェル(ヘッダー)===== */
 function renderShell(hash){
+  // hashが指定パスと同一、またはパス配下(パス+'/'で始まる)かを正確に判定する。
+  // 単純な startsWith だと "#/admin-settings" が "#/admin" にマッチしてしまう等の誤爆が起きるため使用。
+  const hashIs = (h, p) => h === p || h.startsWith(p + '/');
   const isChief = LV[ME.role] >= 1, isHandler = LV[ME.role] >= 2 || has('site_manage') || has('handler_tools') || has('import_data');
   const canAccountAdmin = has('account_manage');
   const canSystemSettings = has('wage_settings');
@@ -437,9 +440,9 @@ function renderShell(hash){
   // 現在ページ名(ヘッダー中央に表示)。グループ内の子ページも探索する。
   let curName = '';
   outer: for(const item of nav){
-    if(item.path && hash.startsWith(item.path)){ curName = item.label.replace(/^\S+\s/,''); break; }
+    if(item.path && hashIs(hash, item.path)){ curName = item.label.replace(/^\S+\s/,''); break; }
     if(item.children){
-      for(const [p,l] of item.children){ if(hash.startsWith(p)){ curName = l.replace(/^\S+\s/,''); break outer; } }
+      for(const [p,l] of item.children){ if(hashIs(hash, p)){ curName = l.replace(/^\S+\s/,''); break outer; } }
     }
   }
   document.getElementById('root').innerHTML = `
@@ -489,7 +492,7 @@ function renderShell(hash){
         <div class="drawer-head">メニュー</div>
         ${nav.map((item,i) => item.children
           ? `<button type="button" class="drawer-link drawer-group" data-group="${i}">${item.label}<span class="drawer-arrow">›</span></button>`
-          : `<button type="button" class="drawer-link ${hash.startsWith(item.path)?'active':''}" data-go="${item.path}">${item.label}</button>`
+          : `<button type="button" class="drawer-link ${hashIs(hash, item.path)?'active':''}" data-go="${item.path}">${item.label}</button>`
         ).join('')}
         ${footerLinks}
       </nav>`;
@@ -504,8 +507,7 @@ function renderShell(hash){
     dr.innerHTML = `<div class="drawer-bg" id="drawer-bg"></div>
       <nav class="drawer">
         <div class="drawer-head drawer-head-sub"><button type="button" class="drawer-back" id="drawer-back">‹</button><span>${item.label.replace(/^\S+\s/,'')}</span></div>
-        ${item.children.map(([p,l]) => `<button type="button" class="drawer-link ${hash.startsWith(p)?'active':''}" data-go="${p}">${l}</button>`).join('')}
-        ${footerLinks}
+        ${item.children.map(([p,l]) => `<button type="button" class="drawer-link ${hashIs(hash, p)?'active':''}" data-go="${p}">${l}</button>`).join('')}
       </nav>`;
     dr.querySelector('#drawer-bg').onclick = close;
     dr.querySelector('#drawer-back').onclick = renderDrawerTop;
@@ -1785,10 +1787,11 @@ async function pageHandler(app){
         const arch = r.archived ? '<div class="muted" style="margin-top:4px">📦 台帳をサーバーに保管しました</div>' : (r.archiveError?`<div class="muted" style="margin-top:4px">⚠️保管失敗:${h(r.archiveError)}</div>`:'');
         const shList = r.sheets&&r.sheets.length ? `<div class="muted" style="margin-top:4px">シート: ${r.sheets.map(s=>`${h(s.name)}(${s.count})`).join(' / ')}</div>` : '';
         const skipDetail = (r.skippedUnregistered||r.skippedUnchanged||r.skippedInvalid) ? `<div class="muted" style="margin-top:4px">内訳: 未登録 ${r.skippedUnregistered||0}件 / 変更なし ${r.skippedUnchanged||0}件 / 不正な行 ${r.skippedInvalid||0}件</div>` : '';
+        const absentInfo = r.clearedAbsent ? `<div class="muted" style="margin-top:4px">🏖️ 台帳に登場しなかった人の現場を ${r.clearedAbsent}件、休暇に変更しました</div>` : '';
         return `<div class="imp-card">
           <div class="imp-card-url">${h(short)}</div>
           <div class="msg ok" style="margin-top:4px">${r.sheetsRead||1}シート読込 / 反映 ${r.applied} / スキップ ${r.skipped}</div>
-          ${skipDetail}${shList}${errs}${arch}
+          ${skipDetail}${shList}${errs}${arch}${absentInfo}
         </div>`;
       }).join('');
       showSaved();
@@ -2511,7 +2514,7 @@ async function pageAdminSettings(app){
       const savedCount = d.urls.length;
       const r = res && res.result;
       el.innerHTML = `<div style="margin-bottom:6px">現在の保存済みURL: <b>${savedCount}件</b>${savedCount?` <span class="muted">(次回0:00に自動再取り込み後、削除されます)</span>`:' <span class="muted">(再取り込み対象なし)</span>'}</div>`
-        + (r ? `<div class="muted">最終実行: ${h(r.ts)} / ${r.count}件のURLを再取り込み<br>${r.results.map(x=>`${x.ok?'✓':'✗'} ${h((x.url||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>')}</div>` : '<div class="muted">まだ自動実行されていません</div>');
+        + (r ? `<div class="muted">最終実行: ${h(r.ts)} / ${r.count}件のURLを再取り込み<br>${r.results.map(x=>`${x.ok?'✓':'✗'} ${h((x.url||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件${x.clearedAbsent?` / 休暇に変更${x.clearedAbsent}件`:''}`:`エラー:${h(x.error)}`}`).join('<br>')}</div>` : '<div class="muted">まだ自動実行されていません</div>');
     }).catch(()=>{ el.textContent='設定を取得できませんでした'; });
   }).catch(()=>{});
 
