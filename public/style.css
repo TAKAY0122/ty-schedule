@@ -24,6 +24,8 @@ header{background:var(--ink);color:#f3f1ea;display:flex;align-items:center;gap:1
 .cur-page{font-size:15px;font-weight:600;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
 .hright{display:flex;align-items:center;gap:10px;margin-left:auto}
 .bell{position:relative;background:none;border:none;font-size:18px;color:#f3f1ea;padding:4px;cursor:pointer}
+.pin-btn{background:none;border:none;font-size:18px;color:#f3f1ea;padding:4px;cursor:pointer;border-radius:6px}
+.pin-btn.active{background:rgba(201,162,39,.25)}
 .bell .badge{position:absolute;top:-4px;right:-6px;background:var(--cell-off);color:#fff;font-size:10px;border-radius:9px;padding:1px 5px;font-weight:700}
 .uname{font-size:12px;color:#cfd4e0;white-space:nowrap;text-align:right;line-height:1.25}
 .menu-btn{background:none;border:1px solid #4a5570;color:#f3f1ea;border-radius:5px;padding:6px 11px;font-size:17px;cursor:pointer;line-height:1}

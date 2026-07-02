@@ -991,10 +991,21 @@ async function api(req, env, url) {
   }
 
   // ---- 手配者モード ----
+  // PINは誰でも入力を試せる。PINが正しくても、手配権限(site_manage)がない人は
+  // 手配モードを有効にできず、代わりに管理者へ通知する(PIN漏えい等の不正利用の検知のため)。
   if (method === 'POST' && path === '/handler-mode') {
-    if (!has(me, 'site_manage')) return ERR('権限がありません', 403);
     const pin = await getSetting(env, 'handler_pin', '111111');
     if (body.pin !== pin) return ERR('パスワードが違います', 403);
+    if (!has(me, 'site_manage')) {
+      try {
+        const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
+        if (admins.length) {
+          await notify(env, admins.map(a => a.id), 'security',
+            `⚠️(${jstTs()}) ${me.name}さん(${me.regno}/${me.role})が手配者パスワードを入力しましたが、権限がないためアクセスを拒否しました。`);
+        }
+      } catch (e) {}
+      return ERR('権限がありません', 403);
+    }
     await env.DB.prepare('UPDATE sessions SET handler=1 WHERE token=?').bind(me._tk).run();
     return J({ ok: 1 });
   }
@@ -1667,8 +1678,8 @@ async function api(req, env, url) {
         continue;
       }
       const r = await applyImportRows(env, allRows, me.id, mode, 'スプレッドシートURL');
-      // 台帳の対象日に一切登場しない人は、その日の現場予定を休暇に置き換える
-      const absent = await clearAbsentFromDaicho(env, allRows, me.id);
+      // 台帳に登場しない人を休暇にする処理は、複数ファイル(URL)を横断して判定する必要があるため、
+      // ここ(手動取り込み・1URLごと)では行わず、夜間の自動再取り込み(cronDaichoReload)でのみ実行する。
 
       // 監査・証拠用に、取り込んだ元Excel(xlsx)をR2へ保管しインデックスを記録する。
       let archived = false, archiveError = '';
@@ -1690,7 +1701,7 @@ async function api(req, env, url) {
         } catch (e) { archiveError = e.message; }
       }
 
-      results.push({ url: rawUrl, ok: true, sheetsRead: sheetReport.length, sheets: sheetReport, applied: r.applied, skipped: r.skipped, skippedUnregistered: r.skippedUnregistered, skippedUnchanged: r.skippedUnchanged, skippedInvalid: r.skippedInvalid, errors: r.errors, mode: fellBack ? '単一シート(全タブ取得に失敗)' : '全シート', archived, archiveError, clearedAbsent: absent.clearedPeople });
+      results.push({ url: rawUrl, ok: true, sheetsRead: sheetReport.length, sheets: sheetReport, applied: r.applied, skipped: r.skipped, skippedUnregistered: r.skippedUnregistered, skippedUnchanged: r.skippedUnchanged, skippedInvalid: r.skippedInvalid, errors: r.errors, mode: fellBack ? '単一シート(全タブ取得に失敗)' : '全シート', archived, archiveError });
     }
     if (body.save) {
       const saved = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
@@ -1897,6 +1908,7 @@ async function cronDaichoReload(env) {
   const editorId = adminUser ? adminUser.id : 0;
   const editorName = adminUser ? adminUser.name : '自動';
   const results = [];
+  const allRowsCombined = []; // 今夜取り込む全URL(全ファイル)を横断して集める。不在者判定はこれを使って最後にまとめて行う。
 
   for (const rawUrl of urls) {
     const meta = parseSheetUrl(rawUrl);
@@ -1917,8 +1929,7 @@ async function cronDaichoReload(env) {
       }
       if (!allRows.length) { results.push({ url: rawUrl, ok: false, error: 'データなし' }); continue; }
       const r = await applyImportRows(env, allRows, editorId, 'replace-person-day', '台帳自動再取り込み');
-      // 台帳の対象日に一切登場しない人は、その日の現場予定を休暇に置き換える
-      const absent = await clearAbsentFromDaicho(env, allRows, editorId);
+      allRowsCombined.push(...allRows); // 不在者判定用に集約(この時点ではまだ休暇化しない)
 
       // R2台帳を保管(同じfile_idの古いバージョンを削除して最新版だけ残す)
       if (got.raw && env.DAICHO) {
@@ -1942,10 +1953,19 @@ async function cronDaichoReload(env) {
           await env.DB.prepare('DELETE FROM daicho_archive WHERE id=?').bind(old.id).run();
         }
       }
-      results.push({ url: rawUrl, ok: true, applied: r.applied, clearedAbsent: absent.clearedPeople });
+      results.push({ url: rawUrl, ok: true, applied: r.applied });
     } catch (e) {
       results.push({ url: rawUrl, ok: false, error: e.message });
     }
+  }
+
+  // 不在者の休暇化: 今夜取り込んだ「全URL(全ファイル)」を横断して判定する。
+  // (1ファイルごとに判定すると、Aファイルには載っているがBファイルには載っていない人まで
+  //  誤って休暇にしてしまうため、必ず全ファイル分を集めてから最後に1回だけ行う)
+  let absentResult = { clearedPeople: 0, clearedDays: 0 };
+  if (allRowsCombined.length) {
+    try { absentResult = await clearAbsentFromDaicho(env, allRowsCombined, editorId); }
+    catch (e) { console.error('clearAbsentFromDaicho failed:', e); }
   }
 
   // 取り込んだURLを保存済みリストから削除
@@ -1953,7 +1973,7 @@ async function cronDaichoReload(env) {
 
   // 実行結果を記録(管理者ページで確認できるように)
   await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_result',?)").bind(
-    JSON.stringify({ ts: jstTs(), count: urls.length, results })
+    JSON.stringify({ ts: jstTs(), count: urls.length, results, clearedAbsent: absentResult.clearedPeople })
   ).run();
 
   // 管理者へ結果を通知
@@ -1964,7 +1984,7 @@ async function cronDaichoReload(env) {
     const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
     if (admins.length) {
       await notify(env, admins.map(a => a.id), 'sched_import',
-        `🌙 台帳の深夜自動再取り込みが完了しました(${jstTs()})。${okCount}件成功(反映${totalApplied}件)${ngCount ? ` / ${ngCount}件失敗` : ''}`);
+        `🌙 台帳の深夜自動再取り込みが完了しました(${jstTs()})。${okCount}件成功(反映${totalApplied}件)${ngCount ? ` / ${ngCount}件失敗` : ''}${absentResult.clearedPeople ? ` / 不在者の休暇化${absentResult.clearedPeople}件` : ''}`);
     }
   } catch (e) {}
 }

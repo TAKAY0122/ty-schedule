@@ -328,7 +328,8 @@ async function render(){
     else if(hash === '#/reports') await pageReports(app);
     else if(hash === '#/draft') await pageDraft(app);
     else if(hash === '#/blacklist') await pageBlacklist(app);
-    else if(hash === '#/handler') await pageHandler(app);
+    else if(hash === '#/import') await pageImport(app);
+    else if(hash === '#/handler-status') await pageHandlerStatus(app);
     else if(hash === '#/admin') await pageAdmin(app);
     else if(hash === '#/admin-settings') await pageAdminSettings(app);
     else if(hash === '#/daicho') await pageDaicho(app);
@@ -405,35 +406,49 @@ function renderShell(hash){
   // hashが指定パスと同一、またはパス配下(パス+'/'で始まる)かを正確に判定する。
   // 単純な startsWith だと "#/admin-settings" が "#/admin" にマッチしてしまう等の誤爆が起きるため使用。
   const hashIs = (h, p) => h === p || h.startsWith(p + '/');
-  const isChief = LV[ME.role] >= 1, isHandler = LV[ME.role] >= 2 || has('site_manage') || has('handler_tools') || has('import_data');
+  const isChief = LV[ME.role] >= 1;
+  const canEdit = ME.handler === 1;
+  const canDraft = has('report_check');
+  const canBlacklist = has('blacklist_manage');
   const canAccountAdmin = has('account_manage');
   const canSystemSettings = has('wage_settings');
-  const canDaicho = ME.role === 'admin' || has('daicho_manage');
-  const canSchedSrc = has('wage_settings');
   const canRolePerm = has('account_manage');
+  const canHandlerStatus = has('handler_tools');
+  const canImport = has('import_data');
+  const canSchedSrc = has('wage_settings');
+  const canDaicho = has('daicho_manage');
+  const showSystemGroup = canAccountAdmin || canSystemSettings || canRolePerm || canHandlerStatus;
+  const showSpreadGroup = canImport || canSchedSrc || canDaicho;
 
   // ナビゲーション構造。children を持つ項目はグループ(タップでサブメニューに切り替わる)、
-  // 持たない項目は単独ページへのリンク。
+  // 持たない項目は単独ページへのリンク。権限がない機能は、グループ内の子としても一切出現しない
+  // (グループ自体も、中身が1つも無ければ表示されない)。
   const nav = [
-    { path:'#/schedule', label:'📅 マイスケジュール', show:true },
-    { label:'🏟️ 現場管理', show:isChief, children:[
-      ['#/sites','🏟️ 現場一覧'],
-      ['#/summary','📊 稼働サマリー'],
-      ['#/members','👥 メンバー'],
+    { label:'📅 スケジュール', show:true, children:[
+      ['#/schedule','📅 マイスケジュール'],
+      ...(canEdit ? [['#/edit','✏️ スケジュール入力']] : []),
     ]},
-    { label:'🆕 新人管理', show:true, children:[
+    { path:'#/sites', label:'🏟️ 現場一覧', show:isChief },
+    { label:'👥 メンバー', show:isChief, children:[
+      ['#/members','👥 メンバー一覧'],
+      ['#/summary','📊 稼働サマリー'],
+    ]},
+    { label:'🆕 新人報告', show:true, children:[
       ['#/report','📝 新人報告'],
       ['#/reports','📋 報告一覧'],
-      ...(has('report_check') ? [['#/draft','⭐ ドラフト']] : []),
-      ...(has('blacklist_manage') ? [['#/blacklist','🚫 ブラックリスト']] : []),
+      ...(canDraft ? [['#/draft','⭐ ドラフト']] : []),
+      ...(canBlacklist ? [['#/blacklist','🚫 ブラックリスト']] : []),
     ]},
-    { path:'#/edit', label:'✏️ スケジュール入力', show: ME.handler === 1 },
-    { label:'⚙️ 管理者メニュー', show: canAccountAdmin || canSystemSettings || canDaicho || canSchedSrc, children:[
+    { label:'⚙️ システム管理', show: showSystemGroup, children:[
       ...(canAccountAdmin ? [['#/admin','👥 アカウント管理']] : []),
       ...(canSystemSettings ? [['#/admin-settings','🔧 システム設定']] : []),
       ...(canRolePerm ? [['#/role-permissions','🛡️ 権限の一括設定']] : []),
+      ...(canHandlerStatus ? [['#/handler-status','🟢 ログイン中・編集履歴']] : []),
+    ]},
+    { label:'📤 スプレッド読み込み', show: showSpreadGroup, children:[
+      ...(canImport ? [['#/import','📥 スプレッドシート取り込み']] : []),
+      ...(canSchedSrc ? [['#/sched-sources','📡 予定表ソース管理']] : []),
       ...(canDaicho ? [['#/daicho','🗂️ 台帳保管']] : []),
-      ...(canSchedSrc ? [['#/sched-sources','📥 予定表ソース管理']] : []),
     ]},
   ].filter(n => n.show);
 
@@ -451,6 +466,7 @@ function renderShell(hash){
     <div class="brand">RB事業2課<small>SCHEDULE</small></div>
     <div class="cur-page">${h(curName)}</div>
     <div class="hright">
+      <button class="pin-btn ${ME.handler===1?'active':''}" id="pin-btn" title="${ME.handler===1?'手配者モードを終了':'手配者モードに入る'}">${ME.handler===1?'🔓':'🔑'}</button>
       <button class="bell" id="bell">🔔<span class="badge" id="bcount" style="display:none"></span></button>
       <span class="uname">${h(ME.name)}<br><span style="color:var(--gold)">${roleLabel(ME)}${ME.handler?'(手配モード)':''}</span></span>
     </div>
@@ -459,11 +475,19 @@ function renderShell(hash){
   <div id="dd"></div>
   <div id="menu-drawer"></div>`;
 
+  const pinBtn = $('#pin-btn');
+  if(pinBtn) pinBtn.onclick = async () => {
+    if(ME.handler === 1){
+      if(!confirm('手配者モードを終了しますか?')) return;
+      await api('/handler-mode',{method:'DELETE'}); ME.handler=0; render();
+    } else {
+      openHandlerPin();
+    }
+  };
+
   const footerLinks = `
     <div class="drawer-sep"></div>
     <button type="button" class="drawer-link" data-go="#/password">🔑 パスワード変更</button>
-    ${isHandler ? `<button type="button" class="drawer-link" id="dd-handler">🛠️ 手配者専用ページ</button>` : ''}
-    ${ME.handler===1 ? `<button type="button" class="drawer-link" id="dd-exit">🔓 手配者モードを終了</button>` : ''}
     <button type="button" class="drawer-link danger" id="dd-logout">↩️ ログアウト</button>`;
 
   const wireFooter = (dr, close) => {
@@ -472,14 +496,6 @@ function renderShell(hash){
       close();
       if(location.hash === to){ render(); } else { location.hash = to; }
     });
-    const dh = dr.querySelector('#dd-handler');
-    if(dh) dh.onclick = () => {
-      close();
-      if(ME.handler===1){ location.hash='#/handler'; render(); return; }
-      openHandlerPin();
-    };
-    const de = dr.querySelector('#dd-exit');
-    if(de) de.onclick = async () => { await api('/handler-mode',{method:'DELETE'}); ME.handler=0; close(); location.hash='#/schedule'; render(); };
     const dl = dr.querySelector('#dd-logout');
     if(dl) dl.onclick = async () => { try{ await api('/logout',{method:'POST'}); }catch(_){} logoutLocal(); };
   };
@@ -1706,16 +1722,12 @@ async function pageBlacklist(app){
 }
 
 /* ===== 手配者専用ページ ===== */
-async function pageHandler(app){
-  if(ME.handler !== 1){ notFound(app); return; }
-  const openSet = app._hdOpen || (app._hdOpen = { imp:true });
-  const sec = (id,title,body)=>`<details class="adm-sec" id="hsec-${id}" data-sec="${id}" ${openSet[id]?'open':''}><summary>${title}</summary><div class="adm-body">${body}</div></details>`;
+/* ===== スプレッドシート取り込み(import_data権限・専用ページ) ===== */
+async function pageImport(app){
+  if(!has('import_data')){ notFound(app); return; }
   app.innerHTML = `
-  <h2 style="margin-bottom:8px">手配者専用ページ</h2>
-  <div class="adm-nav">
-    ${[['imp','📥 取り込み'],['online','🟢 ログイン中'],['hist','📝 編集履歴']].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
-  </div>
-  ${sec('imp','📥 スプレッドシートから取り込み <span class="muted" style="font-weight:400">(IN/OUT・現場・会場)</span>', `
+  <h2 style="margin-bottom:8px">📥 スプレッドシートから取り込み <span class="muted" style="font-weight:400;font-size:13px">(IN/OUT・現場・会場)</span></h2>
+  <div class="card">
     <div class="muted" style="margin-bottom:8px">対象シートを「リンクを知る全員が閲覧可」にしてからURLを貼ってください。複数URLは改行で区切れます。取り込んだ内容はアプリに保存され、後でシートを非公開に戻しても残ります。</div>
     <textarea id="imp-urls" placeholder="https://docs.google.com/spreadsheets/d/.../edit?gid=...&#10;https://docs.google.com/spreadsheets/d/.../edit?gid=..." style="width:100%;min-height:80px;font-family:monospace;font-size:12px"></textarea>
     <div class="row" style="margin-top:8px;flex-wrap:wrap">
@@ -1734,17 +1746,9 @@ async function pageHandler(app){
     </div>
     <div class="muted" style="margin-top:6px">💡 IN/OUT台帳は基本的に「1ファイル=1日分」です。シート内の日付が自動で読み取れない場合、この「対象日」がその日の日付として使われます。1ファイルに複数日が混在する場合は、日付ごとにURLを分けて取り込んでください。</div>
     <div id="imp-result" style="margin-top:10px"></div>
-    <div id="imp-saved" class="muted" style="margin-top:8px"></div>`)}
-  ${sec('online','🟢 現在ログイン中のメンバー <span class="muted" style="font-weight:400">(10秒ごとに自動更新)</span>', `<div id="hd-online" class="muted">読み込み中…</div>`)}
-  ${sec('hist','📝 スケジュール編集履歴 <span class="muted" style="font-weight:400">(直近150件)</span>', `<div id="hd-history" class="muted">読み込み中…</div>`)}`;
+    <div id="imp-saved" class="muted" style="margin-top:8px"></div>
+  </div>`;
 
-  app.querySelectorAll('.adm-sec').forEach(d => d.addEventListener('toggle', () => { app._hdOpen[d.dataset.sec] = d.open; }));
-  app.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => {
-    const d = document.getElementById('hsec-'+b.dataset.jump);
-    if(d){ d.open = true; app._hdOpen[b.dataset.jump] = true; d.scrollIntoView({behavior:'smooth', block:'start'}); }
-  });
-
-  // 取り込み実行
   const showSaved = async () => {
     try{
       const d = await api('/import-urls');
@@ -1787,17 +1791,36 @@ async function pageHandler(app){
         const arch = r.archived ? '<div class="muted" style="margin-top:4px">📦 台帳をサーバーに保管しました</div>' : (r.archiveError?`<div class="muted" style="margin-top:4px">⚠️保管失敗:${h(r.archiveError)}</div>`:'');
         const shList = r.sheets&&r.sheets.length ? `<div class="muted" style="margin-top:4px">シート: ${r.sheets.map(s=>`${h(s.name)}(${s.count})`).join(' / ')}</div>` : '';
         const skipDetail = (r.skippedUnregistered||r.skippedUnchanged||r.skippedInvalid) ? `<div class="muted" style="margin-top:4px">内訳: 未登録 ${r.skippedUnregistered||0}件 / 変更なし ${r.skippedUnchanged||0}件 / 不正な行 ${r.skippedInvalid||0}件</div>` : '';
-        const absentInfo = r.clearedAbsent ? `<div class="muted" style="margin-top:4px">🏖️ 台帳に登場しなかった人の現場を ${r.clearedAbsent}件、休暇に変更しました</div>` : '';
         return `<div class="imp-card">
           <div class="imp-card-url">${h(short)}</div>
           <div class="msg ok" style="margin-top:4px">${r.sheetsRead||1}シート読込 / 反映 ${r.applied} / スキップ ${r.skipped}</div>
-          ${skipDetail}${shList}${errs}${arch}${absentInfo}
+          ${skipDetail}${shList}${errs}${arch}
         </div>`;
       }).join('');
       showSaved();
     }catch(e){ $('#imp-result').innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
     $('#imp-run').disabled = false;
   };
+}
+
+/* ===== ログイン中メンバー・編集履歴(handler_tools権限・専用ページ) ===== */
+async function pageHandlerStatus(app){
+  if(!has('handler_tools')){ notFound(app); return; }
+  const openSet = app._hsOpen || (app._hsOpen = { online:true });
+  const sec = (id,title,body)=>`<details class="adm-sec" id="hssec-${id}" data-sec="${id}" ${openSet[id]?'open':''}><summary>${title}</summary><div class="adm-body">${body}</div></details>`;
+  app.innerHTML = `
+  <h2 style="margin-bottom:8px">ログイン中メンバー・編集履歴</h2>
+  <div class="adm-nav">
+    ${[['online','🟢 ログイン中'],['hist','📝 編集履歴']].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
+  </div>
+  ${sec('online','🟢 現在ログイン中のメンバー <span class="muted" style="font-weight:400">(10秒ごとに自動更新)</span>', `<div id="hd-online" class="muted">読み込み中…</div>`)}
+  ${sec('hist','📝 スケジュール編集履歴 <span class="muted" style="font-weight:400">(直近150件)</span>', `<div id="hd-history" class="muted">読み込み中…</div>`)}`;
+
+  app.querySelectorAll('.adm-sec').forEach(d => d.addEventListener('toggle', () => { app._hsOpen[d.dataset.sec] = d.open; }));
+  app.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => {
+    const d = document.getElementById('hssec-'+b.dataset.jump);
+    if(d){ d.open = true; app._hsOpen[b.dataset.jump] = true; d.scrollIntoView({behavior:'smooth', block:'start'}); }
+  });
 
   const fmtAgo = ms => { const s = Math.floor((Date.now()-ms)/1000); return s<60?'たった今':Math.floor(s/60)+'分前'; };
   const summarize = (b, a) => {
@@ -2514,7 +2537,7 @@ async function pageAdminSettings(app){
       const savedCount = d.urls.length;
       const r = res && res.result;
       el.innerHTML = `<div style="margin-bottom:6px">現在の保存済みURL: <b>${savedCount}件</b>${savedCount?` <span class="muted">(次回0:00に自動再取り込み後、削除されます)</span>`:' <span class="muted">(再取り込み対象なし)</span>'}</div>`
-        + (r ? `<div class="muted">最終実行: ${h(r.ts)} / ${r.count}件のURLを再取り込み<br>${r.results.map(x=>`${x.ok?'✓':'✗'} ${h((x.url||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件${x.clearedAbsent?` / 休暇に変更${x.clearedAbsent}件`:''}`:`エラー:${h(x.error)}`}`).join('<br>')}</div>` : '<div class="muted">まだ自動実行されていません</div>');
+        + (r ? `<div class="muted">最終実行: ${h(r.ts)} / ${r.count}件のURLを再取り込み${r.clearedAbsent?` / 🏖️ どのファイルにも登場しなかった人の現場を${r.clearedAbsent}件、休暇に変更`:''}<br>${r.results.map(x=>`${x.ok?'✓':'✗'} ${h((x.url||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>')}</div>` : '<div class="muted">まだ自動実行されていません</div>');
     }).catch(()=>{ el.textContent='設定を取得できませんでした'; });
   }).catch(()=>{});
 
