@@ -142,7 +142,7 @@ async function importScheduleSheet(env, source, url, editorId, fromDate) {
   // 前回スナップショットを一括取得
   const snapMap = {};
   const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
-  for (const part of chunk(regnos, 200)) {
+  for (const part of chunk(regnos, 50)) {
     const ph = part.map(() => '?').join(',');
     const rs = (await env.DB.prepare(`SELECT regno, data FROM import_snapshots WHERE source=? AND regno IN (${ph})`).bind(source, ...part).all()).results;
     for (const s of rs) snapMap[s.regno] = s.data;
@@ -333,15 +333,20 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
   const datesAll = [...new Set(order.map(k => groups[k].date))];
   const beforeMap = {}; // key "uid|date" -> rows[]
   if (uidsAll.length && datesAll.length) {
-    // SQLiteのプレースホルダ上限を考慮し、必要なら複数回に分けて取得する
+    // D1のバインド変数上限を考慮し、user_id・date の両方を安全なサイズにチャンク化して取得する
+    // (片方だけチャンク化すると、もう片方が大きい場合に上限を超えてエラーになるため)
     const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
-    for (const uidChunk of chunk(uidsAll, 200)) {
-      const ph1 = uidChunk.map(() => '?').join(',');
-      const ph2 = datesAll.map(() => '?').join(',');
-      const rs = (await env.DB.prepare(
-        `SELECT * FROM schedule WHERE user_id IN (${ph1}) AND date IN (${ph2}) ORDER BY user_id, date, slot`
-      ).bind(...uidChunk, ...datesAll).all()).results;
-      for (const r of rs) (beforeMap[r.user_id + '|' + r.date] ||= []).push(r);
+    const uidChunks = chunk(uidsAll, 30);
+    const dateChunks = chunk(datesAll, 30);
+    for (const uidChunk of uidChunks) {
+      for (const dateChunk of dateChunks) {
+        const ph1 = uidChunk.map(() => '?').join(',');
+        const ph2 = dateChunk.map(() => '?').join(',');
+        const rs = (await env.DB.prepare(
+          `SELECT * FROM schedule WHERE user_id IN (${ph1}) AND date IN (${ph2}) ORDER BY user_id, date, slot`
+        ).bind(...uidChunk, ...dateChunk).all()).results;
+        for (const r of rs) (beforeMap[r.user_id + '|' + r.date] ||= []).push(r);
+      }
     }
   }
   // DELETE/INSERTをまとめて1回のバッチ実行で送るためのstatement配列
@@ -420,8 +425,13 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
   // 新人配属通知をまとめて判定(対象のnext_date×next_siteの組み合わせだけ取得して突き合わせる)
   if (rookieCheck.length) {
     const dates = [...new Set(rookieCheck.map(x => x.date))];
-    const ph = dates.map(() => '?').join(',');
-    const allReports = (await env.DB.prepare(`SELECT * FROM reports WHERE next_date IN (${ph}) AND next_site!=''`).bind(...dates).all()).results;
+    const chunkR = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
+    let allReports = [];
+    for (const dateChunk of chunkR(dates, 50)) {
+      const ph = dateChunk.map(() => '?').join(',');
+      const rs = (await env.DB.prepare(`SELECT * FROM reports WHERE next_date IN (${ph}) AND next_site!=''`).bind(...dateChunk).all()).results;
+      allReports = allReports.concat(rs);
+    }
     for (const rc of rookieCheck) {
       const matches = allReports.filter(rr => rr.next_date === rc.date && rr.next_site === rc.site);
       for (const rr of matches) await notify(env, [rc.uid], 'rookie', `🔰 ${rr.next_date} ${rr.next_site} に新人「${rr.candidate_name}」が入る予定です`);
