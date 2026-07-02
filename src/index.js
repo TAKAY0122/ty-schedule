@@ -46,7 +46,7 @@ async function pbkdf2(pw, salt) {
   return [...new Uint8Array(bits)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0, must_change: u.must_change ? 1 : 0, extra_perms: getPerms(u) });
+const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0, must_change: u.must_change ? 1 : 0, extra_perms: getPerms(u), notify_rookie: u.notify_rookie === null || u.notify_rookie === undefined ? null : (u.notify_rookie ? 1 : 0) });
 
 // ===== 給与計算 (RB事業2課ルール) =====
 // 業務名 → 計算区分。 g5=案内料金(最低5h) / l3=搬入出料金(最低3h) / lg,gl,lgl=時間帯分割 / skip=対象外
@@ -1082,14 +1082,14 @@ async function api(req, env, url) {
     return J({
       enabled: (await getSetting(env, 'notify_enabled', '1')) !== '0',
       hour: parseInt(await getSetting(env, 'notify_hour', '21'), 10),
-      target: await getSetting(env, 'notify_target', 'handlers'),
+      target: await getSetting(env, 'notify_target', 'chiefs'),
     });
   }
   if (method === 'PUT' && path === '/notify-settings') {
     if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
     const enabled = body.enabled ? '1' : '0';
     let hour = parseInt(body.hour, 10); if (isNaN(hour) || hour < 0 || hour > 23) hour = 21;
-    const target = ['handlers', 'chiefs', 'all'].includes(body.target) ? body.target : 'handlers';
+    const target = ['handlers', 'chiefs', 'all'].includes(body.target) ? body.target : 'chiefs';
     await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('notify_enabled',?)").bind(enabled).run();
     await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('notify_hour',?)").bind(String(hour)).run();
     await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('notify_target',?)").bind(target).run();
@@ -1101,56 +1101,95 @@ async function api(req, env, url) {
     return J({ ok: 1 });
   }
 
-  // ---- 予定表(チーフ/1課等)の自動取り込み設定。:source は 'chief'|'ka1' など ----
+  // ---- 予定表ソース管理(動的に何個でも追加可能) ----
   let scm;
-  const SCHED_SOURCES = { chief: 'チーフスケジュール表', ka1: '1課スケジュール表' };
-  const SCHED_DEFAULT_FREQ = { chief: 'daily', ka1: 'hourly' }; // 1課はスプレッドシート更新を毎時チェック
-  if (method === 'GET' && (scm = path.match(/^\/sched-settings\/(\w+)$/)) && SCHED_SOURCES[scm[1]]) {
+  if (method === 'GET' && path === '/sched-sources') {
     if (!has(me, 'wage_settings')) return ERR('ページが見つかりません', 404);
-    const src = scm[1];
-    let lastResult = null;
-    try { lastResult = JSON.parse(await getSetting(env, `sched_${src}_last_result`, '') || 'null'); } catch (e) {}
-    return J({
-      source: src, label: SCHED_SOURCES[src],
-      enabled: (await getSetting(env, `sched_${src}_enabled`, '0')) === '1',
-      url: await getSetting(env, `sched_${src}_url`, ''),
-      hour: parseInt(await getSetting(env, `sched_${src}_hour`, '6'), 10),
-      frequency: await getSetting(env, `sched_${src}_freq`, SCHED_DEFAULT_FREQ[src] || 'daily'),
-      lastRun: await getSetting(env, `sched_${src}_last_run`, ''),
-      lastResult,
-    });
+    const rows = (await env.DB.prepare('SELECT * FROM sched_sources ORDER BY id').all()).results;
+    return J({ sources: rows.map(r => ({
+      id: r.id, label: r.label, url: r.url, enabled: !!r.enabled,
+      freqType: r.freq_type, intervalHours: r.interval_hours, hour: r.hour,
+      notifyAdmin: !!r.notify_admin, lastRun: r.last_run || '',
+      lastResult: (() => { try { return JSON.parse(r.last_result || '') } catch (e) { return null } })(),
+    })) });
   }
-  if (method === 'PUT' && (scm = path.match(/^\/sched-settings\/(\w+)$/)) && SCHED_SOURCES[scm[1]]) {
+  if (method === 'POST' && path === '/sched-sources') {
     if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
-    const src = scm[1];
-    const enabled = body.enabled ? '1' : '0';
-    let hour = parseInt(body.hour, 10); if (isNaN(hour) || hour < 0 || hour > 23) hour = 6;
+    const label = (body.label || '').trim();
     const url = (body.url || '').trim();
-    const frequency = body.frequency === 'hourly' ? 'hourly' : 'daily';
-    await env.DB.prepare(`REPLACE INTO settings(key,value) VALUES('sched_${src}_enabled',?)`).bind(enabled).run();
-    await env.DB.prepare(`REPLACE INTO settings(key,value) VALUES('sched_${src}_url',?)`).bind(url).run();
-    await env.DB.prepare(`REPLACE INTO settings(key,value) VALUES('sched_${src}_hour',?)`).bind(String(hour)).run();
-    await env.DB.prepare(`REPLACE INTO settings(key,value) VALUES('sched_${src}_freq',?)`).bind(frequency).run();
-    return J({ ok: 1, enabled: enabled === '1', url, hour, frequency });
+    if (!label || !url) return ERR('名前とURLを入力してください');
+    if (!parseSheetUrl(url)) return ERR('URLの形式が正しくありません');
+    const freqType = body.freqType === 'daily' ? 'daily' : 'interval';
+    let intervalHours = parseInt(body.intervalHours, 10); if (isNaN(intervalHours) || intervalHours < 1) intervalHours = 1;
+    let hour = parseInt(body.hour, 10); if (isNaN(hour) || hour < 0 || hour > 23) hour = 6;
+    const notifyAdmin = body.notifyAdmin === false ? 0 : 1;
+    const r = await env.DB.prepare(
+      'INSERT INTO sched_sources(label,url,enabled,freq_type,interval_hours,hour,notify_admin,last_run,last_result,created_at,created_by) VALUES(?,?,1,?,?,?,?,?,?,?,?)'
+    ).bind(label, url, freqType, intervalHours, hour, notifyAdmin, '', '', jstTs(), me.id).run();
+    return J({ ok: 1, id: r.meta.last_row_id });
+  }
+  if (method === 'PUT' && (scm = path.match(/^\/sched-sources\/(\d+)$/))) {
+    if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
+    const id = Number(scm[1]);
+    const existing = await env.DB.prepare('SELECT id FROM sched_sources WHERE id=?').bind(id).first();
+    if (!existing) return ERR('見つかりません', 404);
+    const label = (body.label || '').trim();
+    const url = (body.url || '').trim();
+    if (!label || !url) return ERR('名前とURLを入力してください');
+    if (!parseSheetUrl(url)) return ERR('URLの形式が正しくありません');
+    const enabled = body.enabled ? 1 : 0;
+    const freqType = body.freqType === 'daily' ? 'daily' : 'interval';
+    let intervalHours = parseInt(body.intervalHours, 10); if (isNaN(intervalHours) || intervalHours < 1) intervalHours = 1;
+    let hour = parseInt(body.hour, 10); if (isNaN(hour) || hour < 0 || hour > 23) hour = 6;
+    const notifyAdmin = body.notifyAdmin === false ? 0 : 1;
+    await env.DB.prepare(
+      'UPDATE sched_sources SET label=?, url=?, enabled=?, freq_type=?, interval_hours=?, hour=?, notify_admin=? WHERE id=?'
+    ).bind(label, url, enabled, freqType, intervalHours, hour, notifyAdmin, id).run();
+    return J({ ok: 1 });
+  }
+  if (method === 'DELETE' && (scm = path.match(/^\/sched-sources\/(\d+)$/))) {
+    if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
+    const id = Number(scm[1]);
+    await env.DB.prepare('DELETE FROM sched_sources WHERE id=?').bind(id).run();
+    await env.DB.prepare("DELETE FROM import_snapshots WHERE source=?").bind('sched_src_' + id).run();
+    return J({ ok: 1 });
   }
   // 今すぐ手動実行(対象日=今日+2日以降、固定)
-  if (method === 'POST' && (scm = path.match(/^\/sched-run\/(\w+)$/)) && SCHED_SOURCES[scm[1]]) {
+  if (method === 'POST' && (scm = path.match(/^\/sched-sources\/(\d+)\/run$/))) {
     if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
-    const src = scm[1];
-    const url = (body.url || await getSetting(env, `sched_${src}_url`, '')).trim();
-    if (!url) return ERR('URLが設定されていません');
+    const id = Number(scm[1]);
+    const src = await env.DB.prepare('SELECT * FROM sched_sources WHERE id=?').bind(id).first();
+    if (!src) return ERR('見つかりません', 404);
     const d = new Date(Date.now() + 9 * 3600e3); d.setDate(d.getDate() + 2);
     const fromDate = d.toISOString().slice(0, 10);
     try {
-      const r = await importScheduleSheet(env, 'sched_' + src, url, me.id, fromDate);
-      await env.DB.prepare(`REPLACE INTO settings(key,value) VALUES('sched_${src}_last_run',?)`).bind(jstTs()).run();
-      await env.DB.prepare(`REPLACE INTO settings(key,value) VALUES('sched_${src}_last_result',?)`).bind(
-        JSON.stringify({ ts: jstTs(), applied: r.applied, skipped: r.skipped, unchangedPeople: r.unchangedPeople, changedPeople: r.changedPeople, error: '' })
+      const r = await importScheduleSheet(env, 'sched_src_' + id, src.url, me.id, fromDate);
+      await env.DB.prepare('UPDATE sched_sources SET last_run=?, last_result=? WHERE id=?').bind(
+        jstTs(), JSON.stringify({ ts: jstTs(), applied: r.applied, skipped: r.skipped, unchangedPeople: r.unchangedPeople, changedPeople: r.changedPeople, error: '' }), id
       ).run();
+      if (src.notify_admin && r.applied > 0) {
+        const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
+        if (admins.length) await notify(env, admins.map(a => a.id), 'sched_import', `📅【${src.label}】からスケジュールを取り込みました(${jstTs()})。反映${r.applied}件・変更あり${r.changedPeople ?? '-'}人`);
+      }
       return J({ ok: 1, fromDate, ...r });
     } catch (e) {
+      await env.DB.prepare('UPDATE sched_sources SET last_run=?, last_result=? WHERE id=?').bind(
+        jstTs(), JSON.stringify({ ts: jstTs(), applied: 0, skipped: 0, error: e.message }), id
+      ).run();
       return ERR('取り込みエラー: ' + e.message);
     }
+  }
+
+  // ---- 台帳の深夜自動再取り込みの実行時刻設定 ----
+  if (method === 'GET' && path === '/daicho-reload-settings') {
+    if (!has(me, 'wage_settings')) return ERR('ページが見つかりません', 404);
+    return J({ hour: parseInt(await getSetting(env, 'daicho_reload_hour', '0'), 10) });
+  }
+  if (method === 'PUT' && path === '/daicho-reload-settings') {
+    if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
+    let hour = parseInt(body.hour, 10); if (isNaN(hour) || hour < 0 || hour > 23) hour = 0;
+    await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_hour',?)").bind(String(hour)).run();
+    return J({ ok: 1, hour });
   }
 
   // ---- 給与確定ロック期間の設定 ----
@@ -1201,6 +1240,11 @@ async function api(req, env, url) {
         const mid = body.manager_id || null;
         if (mid) { const mgr = await env.DB.prepare('SELECT role FROM users WHERE id=?').bind(mid).first(); if (!mgr || LV[mgr.role] < 2) return ERR('担当手配者は手配担当以上を指定してください'); }
         await env.DB.prepare('UPDATE users SET manager_id=? WHERE id=?').bind(mid, uid).run();
+      }
+      if (body.notify_rookie !== undefined) { // 新人報告リマインドの個人設定(NULL=基本ルール/1=常に対象/0=常に対象外)
+        if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
+        const v = body.notify_rookie === null ? null : (body.notify_rookie ? 1 : 0);
+        await env.DB.prepare('UPDATE users SET notify_rookie=? WHERE id=?').bind(v, uid).run();
       }
       for (const f of ['name', 'rank', 'han', 'station', 'ka']) {
         if (body[f] !== undefined) {
@@ -1772,8 +1816,9 @@ async function api(req, env, url) {
 //   - 取り込んだURLを保存済みリストから削除する
 //   - R2台帳は同じfile_idの古いバージョンを削除し、最新版だけ残す
 async function cronDaichoReload(env) {
+  const targetHour = parseInt(await getSetting(env, 'daicho_reload_hour', '0'), 10);
   const now = new Date(Date.now() + 9 * 3600e3); // JST
-  if (now.getHours() !== 0) return; // JST 0:00 のみ実行
+  if (now.getUTCHours() !== targetHour) return; // 指定時刻(既定0時)のみ実行
   const today = jstDate();
   const lastRun = await getSetting(env, 'daicho_reload_last_run', '');
   if (lastRun === today) return; // 1日1回のみ
@@ -1842,74 +1887,112 @@ async function cronDaichoReload(env) {
   await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_result',?)").bind(
     JSON.stringify({ ts: jstTs(), count: urls.length, results })
   ).run();
+
+  // 管理者へ結果を通知
+  const totalApplied = results.reduce((s, r) => s + (r.ok ? (r.applied || 0) : 0), 0);
+  const okCount = results.filter(r => r.ok).length;
+  const ngCount = results.length - okCount;
+  try {
+    const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
+    if (admins.length) {
+      await notify(env, admins.map(a => a.id), 'sched_import',
+        `🌙 台帳の深夜自動再取り込みが完了しました(${jstTs()})。${okCount}件成功(反映${totalApplied}件)${ngCount ? ` / ${ngCount}件失敗` : ''}`);
+    }
+  } catch (e) {}
 }
 
+// 新人報告リマインド通知。
+// 対象者 = 「その日、現場(work)の予定がある」かつ「役割が基本ルールを満たす(既定:チーフ以上)」人。
+// 役割に関わらず、個人ごとに users.notify_rookie で「常に対象(1)」「常に対象外(0)」に上書き設定できる(NULL=基本ルールに従う)。
+// さらに、対象者本人がその日まだ新人報告を提出していない場合のみ送信する(既に提出済みの人には送らない)。
 async function cronNotify(env) {
   const enabled = await getSetting(env, 'notify_enabled', '1');
   if (enabled === '0') return;
   const targetHour = parseInt(await getSetting(env, 'notify_hour', '21'), 10);
   const now = new Date(Date.now() + 9 * 3600e3);   // JST
-  if (now.getHours() !== targetHour) return;        // 設定時刻の回だけ実行
+  if (now.getUTCHours() !== targetHour) return;        // 設定時刻の回だけ実行
 
   const today = jstDate();
-  const scope = await getSetting(env, 'notify_target', 'handlers'); // 既定:手配者以上
-  let where = "role IN ('handler','admin')";
-  if (scope === 'chiefs') where = "role IN ('chief','handler','admin')";
-  else if (scope === 'all') where = "role IN ('chief','handler','admin')"; // メンツには送らない
+  const scope = await getSetting(env, 'notify_target', 'chiefs'); // 既定:チーフ以上
+  let baseRoles = ['chief', 'handler', 'admin'];
+  if (scope === 'handlers') baseRoles = ['handler', 'admin'];
+  else if (scope === 'all') baseRoles = ['member', 'chief', 'handler', 'admin'];
 
+  const phRole = baseRoles.map(() => '?').join(',');
   const recipients = (await env.DB.prepare(
-    `SELECT id FROM users WHERE ${where} AND COALESCE(suspended,0)=0`
-  ).all()).results;
-
-  // 本日まだ新人報告が無ければ催促
-  const anyReport = await env.DB.prepare('SELECT 1 FROM reports WHERE ts LIKE ?').bind(today + '%').first();
-  if (anyReport) return; // 誰かが提出済みなら催促しない
+    `SELECT DISTINCT u.id FROM users u
+     JOIN schedule s ON s.user_id = u.id AND s.date = ? AND s.type = 'work'
+     WHERE COALESCE(u.suspended,0) = 0
+       AND (
+         (u.role IN (${phRole}) AND COALESCE(u.notify_rookie, 1) != 0)
+         OR u.notify_rookie = 1
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM reports r WHERE r.reporter_id = u.id AND r.ts LIKE ?
+       )`
+  ).bind(today, ...baseRoles, today + '%').all()).results;
 
   const ids = recipients.map(r => r.id);
-  if (ids.length) await notify(env, ids, 'remind', '⏰【リマインド】本日の新人報告がまだ提出されていません。対象者がいる場合は忘れずに提出をお願いします。');
+  if (ids.length) await notify(env, ids, 'remind', `⏰【リマインド】(${today}) 本日現場に入られています。新人の報告があれば忘れずに提出してください。`);
 }
 
-// 予定表(チーフ/1課など)を自動取り込みする。毎時0分に呼ばれ、頻度設定に応じて実行する。
-// - daily: 指定時刻(JST)の回のみ、1日1回
-// - hourly: 毎時実行(スプレッドシートの更新をなるべく早く検知して反映したい場合)
-// settings: sched_{source}_enabled('1'/'0'), sched_{source}_url, sched_{source}_hour('6'),
-//           sched_{source}_freq('daily'|'hourly'), sched_{source}_last_run(YYYY-MM-DD HH:MM:SS)
+// 予定表(チーフ/1課など、sched_sourcesテーブルに登録された全ソース)を自動取り込みする。
+// 毎時0分に呼ばれ、各ソースの頻度設定に応じて実行する。
+// - freq_type='interval': 前回実行からinterval_hours時間以上経過していたら実行
+// - freq_type='daily': 指定時刻(JST)の回のみ、1日1回
 // 「読み込み日の2日後以降」のみ反映(当日・翌日は台帳の実績取り込みに任せる)
-async function cronChiefSchedule(env) {
-  const SOURCES = ['chief', 'ka1'];
-  const DEFAULT_FREQ = { chief: 'daily', ka1: 'hourly' };
+// 反映件数が1件以上あった場合、notify_adminが有効なら管理者へ通知する。
+async function cronScheduleSources(env) {
   const now = new Date(Date.now() + 9 * 3600e3); // JST
-  const nowTs = jstTs();
-  const nowHourKey = nowTs.slice(0, 13); // "YYYY-MM-DD HH"
-  for (const src of SOURCES) {
-    const enabled = await getSetting(env, `sched_${src}_enabled`, '0');
-    if (enabled !== '1') continue;
-    const url = await getSetting(env, `sched_${src}_url`, '');
-    if (!url) continue;
-    const frequency = await getSetting(env, `sched_${src}_freq`, DEFAULT_FREQ[src] || 'daily');
-    const lastRun = await getSetting(env, `sched_${src}_last_run`, '');
-    if (frequency === 'hourly') {
-      if (lastRun.slice(0, 13) === nowHourKey) continue; // この時間帯は既に実行済み
-    } else {
-      const targetHour = parseInt(await getSetting(env, `sched_${src}_hour`, '6'), 10);
-      if (now.getHours() !== targetHour) continue;
-      if (lastRun.slice(0, 10) === jstDate()) continue; // 1日1回のみ
-    }
-    const d = new Date(Date.now() + 9 * 3600e3); d.setDate(d.getDate() + 2);
-    const fromDate = d.toISOString().slice(0, 10); // 読み込み日の2日後
+  const nowMs = Date.now();
+  // last_runが古い(または未実行=空文字)ものから優先的に処理する。
+  // これにより、CPU時間制限等で全ソースを処理しきれない場合でも、
+  // 最も取り込みが遅れているソースが後回しにされ続けることを防ぐ。
+  const sources = (await env.DB.prepare("SELECT * FROM sched_sources WHERE enabled=1 ORDER BY last_run ASC").all()).results;
 
+  for (const src of sources) {
     try {
+      let shouldRun = false;
+      if (src.freq_type === 'daily') {
+        const targetHour = Number(src.hour) || 0;
+        if (now.getUTCHours() === targetHour && (src.last_run || '').slice(0, 10) !== jstDate()) shouldRun = true;
+      } else {
+        const intervalH = Math.max(1, Number(src.interval_hours) || 1);
+        if (!src.last_run) shouldRun = true;
+        else {
+          const lastRunMs = Date.parse(src.last_run.replace(' ', 'T') + '+09:00');
+          if (!isNaN(lastRunMs) && (nowMs - lastRunMs) / 3600000 >= intervalH) shouldRun = true;
+        }
+      }
+      if (!shouldRun) continue;
+      console.log(`[cronScheduleSources] start: id=${src.id} label=${src.label} lastRun=${src.last_run || '(なし)'}`);
+
+      const d = new Date(Date.now() + 9 * 3600e3); d.setDate(d.getDate() + 2);
+      const fromDate = d.toISOString().slice(0, 10); // 読み込み日の2日後
       const adminUser = await env.DB.prepare("SELECT id FROM users WHERE role='admin' LIMIT 1").first();
-      const r = await importScheduleSheet(env, 'sched_' + src, url, adminUser ? adminUser.id : 0, fromDate);
-      await env.DB.prepare(`REPLACE INTO settings(key,value) VALUES('sched_${src}_last_run',?)`).bind(jstTs()).run();
-      await env.DB.prepare(`REPLACE INTO settings(key,value) VALUES('sched_${src}_last_result',?)`).bind(
-        JSON.stringify({ ts: jstTs(), applied: r.applied, skipped: r.skipped, unchangedPeople: r.unchangedPeople, changedPeople: r.changedPeople, error: '' })
+      const r = await importScheduleSheet(env, 'sched_src_' + src.id, src.url, adminUser ? adminUser.id : 0, fromDate);
+      await env.DB.prepare('UPDATE sched_sources SET last_run=?, last_result=? WHERE id=?').bind(
+        jstTs(),
+        JSON.stringify({ ts: jstTs(), applied: r.applied, skipped: r.skipped, unchangedPeople: r.unchangedPeople, changedPeople: r.changedPeople, error: '' }),
+        src.id
       ).run();
+      console.log(`[cronScheduleSources] done: id=${src.id} applied=${r.applied} skipped=${r.skipped}`);
+
+      if (src.notify_admin && r.applied > 0) {
+        const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
+        if (admins.length) {
+          await notify(env, admins.map(a => a.id), 'sched_import',
+            `📅【${src.label}】からスケジュールを取り込みました(${jstTs()})。反映${r.applied}件・変更あり${r.changedPeople ?? '-'}人`);
+        }
+      }
     } catch (e) {
-      await env.DB.prepare(`REPLACE INTO settings(key,value) VALUES('sched_${src}_last_run',?)`).bind(jstTs()).run();
-      await env.DB.prepare(`REPLACE INTO settings(key,value) VALUES('sched_${src}_last_result',?)`).bind(
-        JSON.stringify({ ts: jstTs(), applied: 0, skipped: 0, error: e.message })
-      ).run();
+      console.error(`[cronScheduleSources] error: id=${src.id} label=${src.label}`, e);
+      // 1つのソースの失敗が他のソースの処理を止めないよう、ここで完結させる
+      try {
+        await env.DB.prepare('UPDATE sched_sources SET last_run=?, last_result=? WHERE id=?').bind(
+          jstTs(), JSON.stringify({ ts: jstTs(), applied: 0, skipped: 0, error: e.message }), src.id
+        ).run();
+      } catch (e2) {}
     }
   }
 }
@@ -1923,5 +2006,14 @@ export default {
     }
     return env.ASSETS.fetch(req);
   },
-  async scheduled(event, env) { await cronNotify(env); await cronChiefSchedule(env); await cronDaichoReload(env); }
+  // 各cronタスクは互いに影響しないよう、それぞれ独立してtry-catchする。
+  // 台帳の深夜再取込を最優先で実行(最も重要な処理のため、他のcronが重くても確実に走らせる)。
+  async scheduled(event, env) {
+    const startTs = jstTs();
+    console.log(`[scheduled] start at ${startTs}`);
+    try { await cronDaichoReload(env); } catch (e) { console.error('cronDaichoReload failed:', e); }
+    try { await cronScheduleSources(env); } catch (e) { console.error('cronScheduleSources failed:', e); }
+    try { await cronNotify(env); } catch (e) { console.error('cronNotify failed:', e); }
+    console.log(`[scheduled] end (started at ${startTs})`);
+  }
 };

@@ -331,6 +331,7 @@ async function render(){
     else if(hash === '#/handler') await pageHandler(app);
     else if(hash === '#/admin') await pageAdmin(app);
     else if(hash === '#/daicho') await pageDaicho(app);
+    else if(hash === '#/sched-sources') await pageSchedSources(app);
     else if(hash.startsWith('#/permissions/')) await pagePermissions(app, hash);
     else if(hash === '#/role-permissions') await pageRolePermissions(app);
     else if(hash === '#/password') pagePassword(app);
@@ -414,6 +415,7 @@ function renderShell(hash){
     ['#/edit','✏️ スケジュール入力', ME.handler === 1],
     ['#/admin','⚙️ アカウント管理', canAdmin],
     ['#/daicho','🗂️ 台帳保管', ME.role === 'admin' || has('daicho_manage')],
+    ['#/sched-sources','📥 予定表ソース管理', has('wage_settings')],
   ].filter(l => l[2]);
   // 現在ページ名(ヘッダー中央に表示)
   const cur = links.find(l => hash.startsWith(l[0]));
@@ -1855,46 +1857,270 @@ async function pageRolePermissions(app){
 
 /* ===== 個別権限の編集(管理者のみ・専用ページ) ===== */
 async function pagePermissions(app, hash){
-  if(!has('account_manage')){ notFound(app); return; }
+  const canPerms = has('account_manage');
+  const canNotify = has('wage_settings');
+  if(!canPerms && !canNotify){ notFound(app); return; }
   const uid = Number(hash.split('/')[2]);
   if(!uid){ notFound(app); return; }
   app.innerHTML = '<h2>権限編集</h2><div class="card"><div class="muted">読み込み中…</div></div>';
-  let data, defs;
+  let data = null, defs = null, baseUser = null;
   try{
-    [data, defs] = await Promise.all([ api(`/users/${uid}/perms`), api('/perm-defs') ]);
+    const users = await getUsers();
+    baseUser = users.find(u => u.id === uid);
+    if(!baseUser) throw new Error('ユーザーが見つかりません');
+    if(canPerms){
+      [data, defs] = await Promise.all([ api(`/users/${uid}/perms`), api('/perm-defs') ]);
+    }
   }catch(e){ app.innerHTML = `<h2>権限編集</h2><div class="card"><div class="msg err">${h(e.message)}</div></div>`; return; }
-  const baseLvOfMe = LV[data.role] ?? 0;
+  const roleForDisplay = data ? data.role : baseUser.role;
+  const baseLvOfMe = LV[roleForDisplay] ?? 0;
   app.innerHTML = `
   <div style="margin-bottom:14px"><a href="#/admin" class="btn ghost sm">← アカウント管理に戻る</a></div>
   <h2 style="margin-bottom:4px">権限編集</h2>
-  <div class="muted" style="margin-bottom:16px">${h(data.name)} さん（登録番号 ${h(data.regno)} / ${h(roleLabel({role:data.role}))}）に、基本権限とは別に追加で使える機能を設定します。</div>
-  <div class="card">
-    <div class="muted" style="margin-bottom:14px">この人の基本権限（${h(roleLabel({role:data.role}))}）で既に使える機能にはチェックを入れられません。下記はそれ以外に「追加で」使えるようにする機能です。</div>
+  <div class="muted" style="margin-bottom:16px">${h(baseUser.name)} さん（登録番号 ${h(baseUser.regno)} / ${h(roleLabel({role:roleForDisplay}))}）の設定を行います。</div>
+
+  ${canPerms ? `
+  <div class="card" style="margin-bottom:16px">
+    <h2 style="font-size:14px;margin-bottom:10px">追加権限</h2>
+    <div class="muted" style="margin-bottom:14px">この人の基本権限（${h(roleLabel({role:roleForDisplay}))}）で既に使える機能にはチェックを入れられません。下記はそれ以外に「追加で」使えるようにする機能です。</div>
     <div id="perm-list"></div>
     <div class="row" style="margin-top:18px;gap:8px;align-items:center">
       <button class="btn gold" id="perm-save">保存する</button>
       <span id="perm-msg" class="muted"></span>
     </div>
-  </div>`;
-  const list = $('#perm-list');
-  list.innerHTML = defs.perms.map(p => {
-    const already = baseLvOfMe >= p.baseLv; // 基本権限で既に使える
-    const checked = already || data.extraPerms.includes(p.key);
-    return `<label style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line);${already?'opacity:.5':''}">
-      <input type="checkbox" class="perm-cb" value="${p.key}" ${checked?'checked':''} ${already?'disabled':''} style="width:18px;height:18px">
-      <span style="flex:1">${h(p.label)}</span>
-      ${already?'<span class="tag" style="font-size:11px">標準で利用可</span>':''}
-    </label>`;
-  }).join('');
-  $('#perm-save').onclick = async () => {
-    const keys = [...document.querySelectorAll('.perm-cb:not(:disabled)')].filter(c=>c.checked).map(c=>c.value);
-    $('#perm-msg').textContent = '保存中…';
-    try{ await api(`/users/${uid}/perms`, {method:'PUT', body:{perms:keys}}); $('#perm-msg').textContent='保存しました'; popup('権限を保存しました'); }
-    catch(e){ $('#perm-msg').textContent = e.message; }
-  };
+  </div>` : ''}
+
+  ${canNotify ? `
+  <div class="card">
+    <h2 style="font-size:14px;margin-bottom:10px">新人報告リマインドの個人設定</h2>
+    <div class="muted" style="margin-bottom:14px">「その日、現場に入っている」チーフ以上の人には毎日21時ごろに新人報告のリマインドが届きます。役割に関わらず、この人だけ個別に対象へ含めたり外したりできます。</div>
+    <div class="form-grid" style="max-width:480px">
+      <label>この人への送信</label>
+      <select id="nr-select">
+        <option value="">基本ルールに従う（役割で自動判定）</option>
+        <option value="1">常に対象にする（役割に関わらず）</option>
+        <option value="0">常に対象外にする（役割に関わらず）</option>
+      </select>
+    </div>
+    <div class="row" style="margin-top:14px;gap:8px;align-items:center">
+      <button class="btn gold sm" id="nr-save">保存する</button>
+      <span id="nr-msg" class="muted"></span>
+    </div>
+  </div>` : ''}
+  `;
+
+  if(canPerms){
+    const list = $('#perm-list');
+    list.innerHTML = defs.perms.map(p => {
+      const already = baseLvOfMe >= p.baseLv; // 基本権限で既に使える
+      const checked = already || data.extraPerms.includes(p.key);
+      return `<label style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line);${already?'opacity:.5':''}">
+        <input type="checkbox" class="perm-cb" value="${p.key}" ${checked?'checked':''} ${already?'disabled':''} style="width:18px;height:18px">
+        <span style="flex:1">${h(p.label)}</span>
+        ${already?'<span class="tag" style="font-size:11px">標準で利用可</span>':''}
+      </label>`;
+    }).join('');
+    $('#perm-save').onclick = async () => {
+      const keys = [...document.querySelectorAll('.perm-cb:not(:disabled)')].filter(c=>c.checked).map(c=>c.value);
+      $('#perm-msg').textContent = '保存中…';
+      try{ await api(`/users/${uid}/perms`, {method:'PUT', body:{perms:keys}}); $('#perm-msg').textContent='保存しました'; popup('権限を保存しました'); }
+      catch(e){ $('#perm-msg').textContent = e.message; }
+    };
+  }
+
+  if(canNotify){
+    const sel = $('#nr-select');
+    const cur = baseUser.notify_rookie;
+    sel.value = cur === 1 ? '1' : cur === 0 ? '0' : '';
+    $('#nr-save').onclick = async () => {
+      const v = sel.value === '' ? null : Number(sel.value);
+      $('#nr-msg').textContent = '保存中…';
+      try{ await api(`/users/${uid}`, {method:'PATCH', body:{notify_rookie:v}}); $('#nr-msg').textContent='保存しました'; popup('通知設定を保存しました'); }
+      catch(e){ $('#nr-msg').textContent = e.message; }
+    };
+  }
 }
 
 /* ===== 台帳保管(管理者のみ) ===== */
+/* ===== 予定表ソース管理(管理者・wage_settings権限のみ) ===== */
+async function pageSchedSources(app){
+  if(!has('wage_settings')){ notFound(app); return; }
+  app.innerHTML = '<h2>📥 予定表ソース管理</h2><div class="card"><div class="muted">読み込み中…</div></div>';
+  let data;
+  try{ data = await api('/sched-sources'); }
+  catch(e){ app.innerHTML = `<h2>📥 予定表ソース管理</h2><div class="card"><div class="msg err">${h(e.message)}</div></div>`; return; }
+  const sources = data.sources || [];
+
+  const freqLabel = s => s.freqType==='daily' ? `毎日 ${String(s.hour).padStart(2,'0')}:00` : `${s.intervalHours}時間ごと`;
+
+  app.innerHTML = `
+  <div style="margin-bottom:14px"><a href="#/admin" class="btn ghost sm">← アカウント管理に戻る</a></div>
+  <h2 style="margin-bottom:4px">📥 予定表ソース管理</h2>
+  <div class="muted" style="margin-bottom:16px">チーフ予定・1課予定など、自動で取り込む予定表を何個でも登録できます。取り込み日から<b>2日後以降の日付のみ</b>反映され(当日・翌日は台帳の実績取り込みを優先)、時刻情報のない表のため現場名・会場名・×・休暇のみ反映されます。反映があった場合、管理者へ通知が届きます。</div>
+
+  <div class="card" style="margin-bottom:16px">
+    <h2 style="font-size:14px;margin-bottom:10px">＋ 新しい予定表ソースを追加</h2>
+    <div class="form-grid" style="max-width:640px">
+      <label>名前</label>
+      <input id="ss-new-label" placeholder="例: 2課スケジュール表">
+      <label>スプレッドシートURL</label>
+      <input id="ss-new-url" placeholder="https://docs.google.com/spreadsheets/d/..." style="font-family:monospace;font-size:12px">
+      <label>取り込み頻度</label>
+      <select id="ss-new-freqtype" class="ss-new-freqtype">
+        <option value="interval">N時間ごとにチェック</option>
+        <option value="daily">1日1回、決まった時刻のみ</option>
+      </select>
+      <label class="ss-new-interval-row">間隔</label>
+      <select id="ss-new-interval" class="ss-new-interval-row">
+        <option value="1">1時間ごと</option>
+        <option value="2">2時間ごと</option>
+        <option value="3">3時間ごと</option>
+        <option value="6">6時間ごと</option>
+        <option value="12">12時間ごと</option>
+        <option value="24">24時間ごと</option>
+      </select>
+      <label class="ss-new-hour-row" style="display:none">実行時刻</label>
+      <select id="ss-new-hour" class="ss-new-hour-row" style="display:none">${Array.from({length:24},(_,i)=>`<option value="${i}">${String(i).padStart(2,'0')}:00</option>`).join('')}</select>
+      <label>管理者へ通知</label>
+      <label style="font-weight:400;display:flex;align-items:center;gap:8px"><input type="checkbox" id="ss-new-notify" checked style="width:auto"> 反映があった時に通知する</label>
+    </div>
+    <div class="row" style="margin-top:12px;gap:8px;align-items:center">
+      <button class="btn gold sm" id="ss-add">追加する</button>
+      <span class="muted" id="ss-add-msg"></span>
+    </div>
+  </div>
+
+  ${sources.length ? sources.map(s => `
+  <div class="card" style="margin-bottom:14px" data-id="${s.id}">
+    <div class="row" style="justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
+      <div style="flex:1;min-width:200px">
+        <div style="font-weight:700;font-size:15px">${h(s.label)} ${s.enabled?'':'<span class="tag" style="font-size:11px">停止中</span>'}</div>
+        <div class="muted" style="font-family:monospace;font-size:11px;margin-top:2px;overflow-wrap:break-word;word-break:break-all">${h(s.url)}</div>
+      </div>
+      <div class="row" style="gap:6px">
+        <button class="btn ghost sm ss-edit-toggle" data-id="${s.id}">編集</button>
+        <button class="btn ghost sm ss-run" data-id="${s.id}">今すぐ取り込む</button>
+        <button class="btn danger sm ss-del" data-id="${s.id}">削除</button>
+      </div>
+    </div>
+    <div class="muted" style="margin-top:8px">頻度: ${freqLabel(s)} / 通知: ${s.notifyAdmin?'する':'しない'}</div>
+    <div class="muted" style="margin-top:4px">
+      ${s.lastRun ? `最終実行: ${h(s.lastRun)}` : 'まだ実行されていません'}
+      ${s.lastResult ? `<br>結果: 反映 ${s.lastResult.applied}件 / スキップ ${s.lastResult.skipped}件${s.lastResult.changedPeople!=null?` / 変更あり ${s.lastResult.changedPeople}人・変更なし ${s.lastResult.unchangedPeople}人`:''}${s.lastResult.error?` <span style="color:#b85042">エラー: ${h(s.lastResult.error)}</span>`:''}` : ''}
+    </div>
+    <span class="ss-msg muted" data-id="${s.id}" style="display:block;margin-top:6px"></span>
+
+    <div class="ss-edit-form" data-id="${s.id}" style="display:none;margin-top:14px;border-top:1px solid var(--line);padding-top:14px">
+      <div class="form-grid" style="max-width:640px">
+        <label>名前</label>
+        <input class="ss-e-label" data-id="${s.id}" value="${h(s.label)}">
+        <label>スプレッドシートURL</label>
+        <input class="ss-e-url" data-id="${s.id}" value="${h(s.url)}" style="font-family:monospace;font-size:12px">
+        <label>有効</label>
+        <label style="font-weight:400;display:flex;align-items:center;gap:8px"><input type="checkbox" class="ss-e-enabled" data-id="${s.id}" ${s.enabled?'checked':''} style="width:auto"> このソースを有効にする</label>
+        <label>取り込み頻度</label>
+        <select class="ss-e-freqtype" data-id="${s.id}">
+          <option value="interval" ${s.freqType==='interval'?'selected':''}>N時間ごとにチェック</option>
+          <option value="daily" ${s.freqType==='daily'?'selected':''}>1日1回、決まった時刻のみ</option>
+        </select>
+        <label class="ss-e-interval-row" data-id="${s.id}" style="${s.freqType==='daily'?'display:none':''}">間隔</label>
+        <select class="ss-e-interval ss-e-interval-row" data-id="${s.id}" style="${s.freqType==='daily'?'display:none':''}">
+          ${[1,2,3,6,12,24].map(n=>`<option value="${n}" ${s.intervalHours===n?'selected':''}>${n}時間ごと</option>`).join('')}
+        </select>
+        <label class="ss-e-hour-row" data-id="${s.id}" style="${s.freqType==='daily'?'':'display:none'}">実行時刻</label>
+        <select class="ss-e-hour ss-e-hour-row" data-id="${s.id}" style="${s.freqType==='daily'?'':'display:none'}">${Array.from({length:24},(_,i)=>`<option value="${i}" ${s.hour===i?'selected':''}>${String(i).padStart(2,'0')}:00</option>`).join('')}</select>
+        <label>管理者へ通知</label>
+        <label style="font-weight:400;display:flex;align-items:center;gap:8px"><input type="checkbox" class="ss-e-notify" data-id="${s.id}" ${s.notifyAdmin?'checked':''} style="width:auto"> 反映があった時に通知する</label>
+      </div>
+      <div class="row" style="margin-top:10px"><button class="btn gold sm ss-save" data-id="${s.id}">保存する</button></div>
+    </div>
+  </div>`).join('') : '<div class="card"><div class="muted" style="text-align:center;padding:20px 0">まだ予定表ソースが登録されていません。上のフォームから追加してください。</div></div>'}
+  `;
+
+  // 新規追加フォームの頻度切替
+  const newFreqSel = $('#ss-new-freqtype');
+  if(newFreqSel) newFreqSel.onchange = () => {
+    const daily = newFreqSel.value === 'daily';
+    document.querySelectorAll('.ss-new-interval-row').forEach(el=>el.style.display = daily?'none':'');
+    document.querySelectorAll('.ss-new-hour-row').forEach(el=>el.style.display = daily?'':'none');
+  };
+
+  // 新規追加
+  const addBtn = $('#ss-add');
+  if(addBtn) addBtn.onclick = async () => {
+    const label = $('#ss-new-label').value.trim();
+    const url = $('#ss-new-url').value.trim();
+    const freqType = $('#ss-new-freqtype').value;
+    const intervalHours = Number($('#ss-new-interval').value);
+    const hour = Number($('#ss-new-hour').value);
+    const notifyAdmin = $('#ss-new-notify').checked;
+    if(!label || !url){ $('#ss-add-msg').textContent='名前とURLを入力してください'; return; }
+    $('#ss-add-msg').textContent='追加中…';
+    try{
+      await api('/sched-sources',{method:'POST',body:{label,url,freqType,intervalHours,hour,notifyAdmin}});
+      popup('予定表ソースを追加しました');
+      pageSchedSources(app);
+    }catch(e){ $('#ss-add-msg').textContent = e.message; }
+  };
+
+  // 編集フォームの開閉
+  document.querySelectorAll('.ss-edit-toggle').forEach(btn => btn.onclick = () => {
+    const id = btn.dataset.id;
+    const form = document.querySelector(`.ss-edit-form[data-id="${id}"]`);
+    if(form) form.style.display = form.style.display==='none' ? '' : 'none';
+  });
+
+  // 編集フォーム内の頻度切替
+  document.querySelectorAll('.ss-e-freqtype').forEach(sel => sel.onchange = () => {
+    const id = sel.dataset.id;
+    const daily = sel.value === 'daily';
+    document.querySelectorAll(`.ss-e-interval-row[data-id="${id}"]`).forEach(el=>el.style.display = daily?'none':'');
+    document.querySelectorAll(`.ss-e-hour-row[data-id="${id}"]`).forEach(el=>el.style.display = daily?'':'none');
+  });
+
+  // 保存
+  document.querySelectorAll('.ss-save').forEach(btn => btn.onclick = async () => {
+    const id = btn.dataset.id;
+    const label = document.querySelector(`.ss-e-label[data-id="${id}"]`).value.trim();
+    const url = document.querySelector(`.ss-e-url[data-id="${id}"]`).value.trim();
+    const enabled = document.querySelector(`.ss-e-enabled[data-id="${id}"]`).checked;
+    const freqType = document.querySelector(`.ss-e-freqtype[data-id="${id}"]`).value;
+    const intervalHours = Number(document.querySelector(`.ss-e-interval[data-id="${id}"]`).value);
+    const hour = Number(document.querySelector(`.ss-e-hour[data-id="${id}"]`).value);
+    const notifyAdmin = document.querySelector(`.ss-e-notify[data-id="${id}"]`).checked;
+    const msgEl = document.querySelector(`.ss-msg[data-id="${id}"]`);
+    if(!label || !url){ if(msgEl) msgEl.textContent='名前とURLを入力してください'; return; }
+    if(msgEl) msgEl.textContent='保存中…';
+    try{
+      await api(`/sched-sources/${id}`,{method:'PUT',body:{label,url,enabled,freqType,intervalHours,hour,notifyAdmin}});
+      popup('保存しました');
+      pageSchedSources(app);
+    }catch(e){ if(msgEl) msgEl.textContent = e.message; }
+  });
+
+  // 今すぐ取り込む
+  document.querySelectorAll('.ss-run').forEach(btn => btn.onclick = async () => {
+    const id = btn.dataset.id;
+    const msgEl = document.querySelector(`.ss-msg[data-id="${id}"]`);
+    btn.disabled = true; if(msgEl) msgEl.textContent='取り込み中…（少し時間がかかります）';
+    try{
+      const r = await api(`/sched-sources/${id}/run`,{method:'POST'});
+      if(msgEl) msgEl.textContent = `対象日 ${r.fromDate} 以降: 反映 ${r.applied}件 / スキップ ${r.skipped}件`;
+      popup(`取り込みました(反映${r.applied}件)`);
+      pageSchedSources(app);
+    }catch(e){ if(msgEl) msgEl.textContent = e.message; }
+    finally{ btn.disabled = false; }
+  });
+
+  // 削除
+  document.querySelectorAll('.ss-del').forEach(btn => btn.onclick = async () => {
+    const id = btn.dataset.id;
+    if(!confirm('この予定表ソースを削除しますか？\n\n※既に取り込まれたスケジュールデータは残ります。')) return;
+    try{ await api(`/sched-sources/${id}`,{method:'DELETE'}); popup('削除しました'); pageSchedSources(app); }
+    catch(e){ popup(e.message,'error'); }
+  });
+}
+
 async function pageDaicho(app){
   if(ME.role !== 'admin'){ notFound(app); return; }
   app.innerHTML = '<h2>🗂️ 台帳保管</h2><div class="card"><div class="muted">読み込み中…</div></div>';
@@ -1948,9 +2174,7 @@ async function pageAdmin(app){
   const importTok = (await api('/settings/import-token')).token;
   const wageData = await api('/wage-rates').catch(()=>null);
   const notifyData = await api('/notify-settings').catch(()=>null);
-  const SCHED_SOURCES = [['chief','チーフ予定'],['ka1','1課予定']];
-  const schedDataMap = {};
-  for (const [src] of SCHED_SOURCES) schedDataMap[src] = await api(`/sched-settings/${src}`).catch(()=>null);
+  const daichoReloadSettings = await api('/daicho-reload-settings').catch(()=>null);
   const lockData = await api('/lock-settings').catch(()=>null);
   const adq = (app._adq||'').trim(), admgr = app._admgr||'';
   const aList = users.filter(u=>{
@@ -1963,7 +2187,7 @@ async function pageAdmin(app){
   app.innerHTML = `
   <h2 style="margin-bottom:8px">アカウント管理</h2>
   <div class="adm-nav">
-    ${[['pin','🔑 PIN'],['link','🔗 連携'],['daicho-reload','🌙 台帳夜間再取込'],['notify','🔔 通知'],['sched-chief','📅 チーフ予定取込'],['sched-ka1','📅 1課予定取込'],['wage','💴 時給'],['data','📋 全データ'],['create','➕ 新規作成'],['list','👥 アカウント一覧']].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
+    ${[['pin','🔑 PIN'],['link','🔗 連携'],['daicho-reload','🌙 台帳夜間再取込'],['notify','🔔 通知'],['sched-link','📥 予定表取込'],['wage','💴 時給'],['data','📋 全データ'],['create','➕ 新規作成'],['list','👥 アカウント一覧']].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
     ${has('account_manage') ? `<a href="#/role-permissions" class="adm-chip" style="text-decoration:none;display:inline-block">🛡️ 権限の一括設定</a>` : ''}
   </div>
 
@@ -1984,12 +2208,20 @@ async function pageAdmin(app){
     <div class="muted" style="margin-top:6px">このトークンをGoogleスプレッドシート側のスクリプト(同梱の gas-連携.gs)に貼り付けると、シートの内容がアプリのスケジュールに自動反映されます。再発行すると古いトークンは無効になります。</div>`)}
 
   ${sec('daicho-reload','🌙 台帳の深夜自動再取り込み', `
-    <div class="muted" style="margin-bottom:10px">手動で取り込んだ台帳URLを、<b>毎日JST 0:00に自動で再取り込み</b>します。手動取り込みが「事前の仮確認」、この自動処理が「その日の夜に確定版で上書き」という運用です。</div>
-    <div class="muted">実行後、保存済みURLは自動的に削除されます。またR2台帳は<b>同じファイルの古いバージョンが削除され、最新版1件だけが残ります</b>。</div>
-    <div id="daicho-reload-status" class="muted" style="margin-top:12px">読み込み中…</div>`)}
+    <div class="muted" style="margin-bottom:10px">手動で取り込んだ台帳URLを、<b>設定した時刻に毎日自動で再取り込み</b>します。手動取り込みが「事前の仮確認」、この自動処理が「その日の夜に確定版で上書き」という運用です。</div>
+    <div class="muted" style="margin-bottom:12px">実行後、保存済みURLは自動的に削除されます。またR2台帳は<b>同じファイルの古いバージョンが削除され、最新版1件だけが残ります</b>。</div>
+    <div class="form-grid" style="max-width:420px">
+      <label>実行時刻</label>
+      <select id="dr-hour" style="width:120px;max-width:100%">${Array.from({length:24},(_,i)=>`<option value="${i}" ${daichoReloadSettings&&daichoReloadSettings.hour===i?'selected':''}>${String(i).padStart(2,'0')}:00</option>`).join('')}</select>
+    </div>
+    <div class="row" style="margin-top:10px;gap:8px;align-items:center">
+      <button class="btn gold sm" id="dr-save">保存</button>
+      <span class="muted" id="dr-msg"></span>
+    </div>
+    <div id="daicho-reload-status" class="muted" style="margin-top:16px">読み込み中…</div>`)}
 
-  ${sec('notify','🔔 通知設定 <span class="muted" style="font-weight:400">(新人報告の催促)</span>', notifyData ? `
-    <div class="muted" style="margin-bottom:10px">毎日決まった時刻に「新人報告がまだ提出されていません」というお知らせ（🔔）を対象者へ送ります。</div>
+  ${sec('notify','🔔 通知設定 <span class="muted" style="font-weight:400">(新人報告リマインド)</span>', notifyData ? `
+    <div class="muted" style="margin-bottom:10px">その日<b>現場に入っている人</b>のうち、下記の対象条件に当てはまり、かつ<b>まだ本人が新人報告を提出していない人</b>にだけ、決まった時刻にリマインドのお知らせ（🔔）を送ります。役割に関わらず、個人ごとの追加・除外は各アカウントの「権限編集」ページから設定できます。</div>
     <div class="form-grid" style="grid-template-columns:120px 1fr;max-width:440px;gap:10px 12px;align-items:center">
       <label>通知</label>
       <label style="font-weight:400;display:flex;align-items:center;gap:8px"><input type="checkbox" id="nt-enabled" ${notifyData.enabled?'checked':''} style="width:auto"> 通知をオンにする</label>
@@ -1997,8 +2229,9 @@ async function pageAdmin(app){
       <select id="nt-hour" style="width:120px">${Array.from({length:24},(_,i)=>`<option value="${i}" ${notifyData.hour===i?'selected':''}>${String(i).padStart(2,'0')}:00</option>`).join('')}</select>
       <label>送信対象</label>
       <select id="nt-target" style="width:auto">
-        <option value="handlers" ${notifyData.target==='handlers'?'selected':''}>チーフ(手配者)・管理者のみ</option>
-        <option value="chiefs" ${notifyData.target==='chiefs'?'selected':''}>チーフ全員（チーフ・手配者・管理者）</option>
+        <option value="chiefs" ${notifyData.target==='chiefs'?'selected':''}>チーフ以上（チーフ・手配者・管理者）</option>
+        <option value="handlers" ${notifyData.target==='handlers'?'selected':''}>手配者・管理者のみ</option>
+        <option value="all" ${notifyData.target==='all'?'selected':''}>メンツを含む全員</option>
       </select>
     </div>
     <div class="row" style="margin-top:14px;gap:8px;align-items:center">
@@ -2006,40 +2239,13 @@ async function pageAdmin(app){
       <button class="btn ghost sm" id="nt-test">今すぐテスト送信</button>
       <span id="nt-msg" class="muted"></span>
     </div>
-    <div class="muted" style="margin-top:8px">※その日に誰かが既に新人報告を提出していれば、催促は送られません。通知はアプリ内のお知らせ（🔔）に届きます。</div>
+    <div class="muted" style="margin-top:8px">※現場に入っていない人には送られません。既に本人が新人報告を提出済みの場合も送られません。通知はアプリ内のお知らせ（🔔）に届きます。</div>
   ` : '<div class="muted">通知設定を取得できませんでした</div>')}
 
-  ${SCHED_SOURCES.map(([src,label])=>{
-    const d = schedDataMap[src];
-    const isHourly = d && d.frequency === 'hourly';
-    return sec('sched-'+src, `📅 ${label}の自動取り込み <span class="muted" style="font-weight:400">(${src==='chief'?'チーフスケジュール表':'1課スケジュール表'})</span>`, d ? `
-    <div class="muted" style="margin-bottom:10px">スプレッドシート(複数シートで分かれている場合は全シート)を自動で取り込み、各人のスケジュールに反映します。<b>取り込み日から2日後以降の日付のみ</b>反映され、当日・翌日分は対象外です(その期間は台帳の実績取り込みを優先するため)。時刻情報はこの表にはないため、現場名・会場名・×・休暇のみ反映されます。前回取り込み内容と人単位で比較し、変更がない人はスキップされます(変更があった人だけ更新)。</div>
-    <div class="form-grid" style="max-width:640px">
-      <label>自動取り込み</label>
-      <label style="font-weight:400;display:flex;align-items:center;gap:8px"><input type="checkbox" id="cs-enabled-${src}" ${d.enabled?'checked':''} style="width:auto"> 自動で取り込む</label>
-      <label>スプレッドシートURL</label>
-      <input id="cs-url-${src}" value="${h(d.url||'')}" placeholder="https://docs.google.com/spreadsheets/d/..." style="font-family:monospace;font-size:12px;width:100%;max-width:100%;box-sizing:border-box">
-      <label>取り込み頻度</label>
-      <select id="cs-freq-${src}" class="cs-freq" data-src="${src}" style="width:100%;max-width:360px">
-        <option value="hourly" ${isHourly?'selected':''}>毎時チェック(スプレッドシートの更新をなるべく早く反映)</option>
-        <option value="daily" ${!isHourly?'selected':''}>1日1回、決まった時刻のみ</option>
-      </select>
-      <label class="cs-hour-row" data-src="${src}" style="${isHourly?'display:none':''}">実行時刻</label>
-      <span class="cs-hour-row" data-src="${src}" style="${isHourly?'display:none':''}">
-        <select id="cs-hour-${src}" style="width:120px;max-width:100%">${Array.from({length:24},(_,i)=>`<option value="${i}" ${d.hour===i?'selected':''}>${String(i).padStart(2,'0')}:00</option>`).join('')}</select>
-      </span>
-    </div>
-    <div class="row" style="margin-top:14px;gap:8px;align-items:center">
-      <button class="btn gold sm cs-save" data-src="${src}">設定を保存</button>
-      <button class="btn ghost sm cs-run" data-src="${src}">今すぐ取り込む</button>
-      <span class="muted cs-msg" data-src="${src}"></span>
-    </div>
-    <div class="muted" style="margin-top:10px">
-      ${d.lastRun ? `最終実行: ${h(d.lastRun)}` : 'まだ実行されていません'}
-      ${d.lastResult ? `<br>結果(${h(d.lastResult.ts)}): 反映 ${d.lastResult.applied}件 / スキップ ${d.lastResult.skipped}件${d.lastResult.changedPeople!=null?` / 変更あり ${d.lastResult.changedPeople}人・変更なし ${d.lastResult.unchangedPeople}人`:''}${d.lastResult.error?` <span style="color:#b85042">エラー: ${h(d.lastResult.error)}</span>`:''}` : ''}
-    </div>
-  ` : '<div class="muted">設定を取得できませんでした</div>');
-  }).join('')}
+  ${sec('sched-link','📥 予定表の自動取り込み', `
+    <div class="muted" style="margin-bottom:12px">チーフ予定・1課予定など、予定表の自動取り込み設定は専用ページに移動しました。ソースを何個でも追加でき、取り込み頻度も細かく設定できます。</div>
+    <a href="#/sched-sources" class="btn gold" style="text-decoration:none;display:inline-block">📥 予定表ソース管理を開く</a>
+  `)}
 
   ${sec('wage','💴 時給設定 <span class="muted" style="font-weight:400">(ランク×時期)</span>', wageData ? `
     <div class="muted" style="margin-bottom:8px">現場日に有効な時給が給与計算に使われます。<b>${h(wageData.lockBefore)}</b> 以前の現場は給与確定済み（時給を変えても再計算されません）。</div>
@@ -2177,39 +2383,15 @@ async function pageAdmin(app){
       try{ await api('/notify-test',{method:'POST'}); $('#nt-msg').textContent='テスト通知を送りました（🔔を確認）'; popup('テスト通知を送信しました。画面上部の🔔を確認してください'); }
       catch(e){ $('#nt-msg').textContent=e.message; }
   }; }
-  document.querySelectorAll('.cs-freq').forEach(sel => sel.onchange = () => {
-    const src = sel.dataset.src;
-    const show = sel.value !== 'hourly';
-    document.querySelectorAll(`.cs-hour-row[data-src="${src}"]`).forEach(el => el.style.display = show ? '' : 'none');
-  });
-  document.querySelectorAll('.cs-save').forEach(cs => cs.onclick = async () => {
-    const src = cs.dataset.src;
-    const msgEl = document.querySelector(`.cs-msg[data-src="${src}"]`);
-    const enabled = $('#cs-enabled-'+src).checked;
-    const url = $('#cs-url-'+src).value.trim();
-    const hour = Number($('#cs-hour-'+src).value);
-    const frequency = $('#cs-freq-'+src).value;
-    msgEl.textContent='保存中…';
-    try{ await api(`/sched-settings/${src}`,{method:'PUT',body:{enabled,url,hour,frequency}});
-      msgEl.textContent = !enabled ? '自動取り込みオフ' : (frequency==='hourly' ? '毎時チェックします' : `毎日 ${String(hour).padStart(2,'0')}:00 に自動取り込み`);
-      popup('設定を保存しました'); }
-    catch(e){ msgEl.textContent=e.message; }
-  });
-  document.querySelectorAll('.cs-run').forEach(cr => cr.onclick = async () => {
-    const src = cr.dataset.src;
-    const msgEl = document.querySelector(`.cs-msg[data-src="${src}"]`);
-    const url = $('#cs-url-'+src).value.trim();
-    if(!url){ msgEl.textContent='URLを入力してください'; return; }
-    cr.disabled = true; msgEl.textContent='取り込み中…（少し時間がかかります）';
-    try{
-      const r = await api(`/sched-run/${src}`,{method:'POST',body:{url}});
-      msgEl.textContent = `対象日 ${r.fromDate} 以降: 反映 ${r.applied}件 / スキップ ${r.skipped}件 / 変更あり${r.changedPeople??'-'}人・変更なし${r.unchangedPeople??'-'}人`;
-      popup(`取り込みました(反映${r.applied}件)`);
-      pageAdmin(app);
-    }catch(e){ msgEl.textContent=e.message; }
-    finally{ cr.disabled = false; }
-  });
 
+  { const dr = $('#dr-save'); if(dr) dr.onclick = async () => {
+      const hour = Number($('#dr-hour').value);
+      $('#dr-msg').textContent='保存中…';
+      try{ await api('/daicho-reload-settings',{method:'PUT',body:{hour}});
+        $('#dr-msg').textContent = `毎日 ${String(hour).padStart(2,'0')}:00 に自動再取り込み`;
+        popup('設定を保存しました'); }
+      catch(e){ $('#dr-msg').textContent=e.message; }
+  }; }
 
   // 台帳自動再取り込みの最終実行結果と保存済みURLの件数を表示
   api('/import-urls').then(d => {

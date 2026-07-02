@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS users(
   suspended INTEGER DEFAULT 0,           -- 1 = アカウント停止(ログイン不可・一覧等には表示)
   must_change INTEGER DEFAULT 0,         -- 1 = 次回ログイン時にパスワード変更を強制
   extra_perms TEXT DEFAULT '[]',         -- 基本権限とは別に個別付与された追加権限(JSON配列)
+  notify_rookie INTEGER DEFAULT NULL,    -- 新人報告リマインドの個人設定: NULL=役割の基本ルールに従う/1=常に対象/0=常に対象外
   created TEXT DEFAULT (datetime('now'))
 );
 
@@ -169,6 +170,23 @@ CREATE TABLE IF NOT EXISTS import_snapshots(
   data TEXT NOT NULL,     -- その人の対象期間分のデータをJSON化したもの
   updated_at TEXT,
   PRIMARY KEY(source, regno)
+);
+
+-- 予定表(チーフ/1課など)の自動取り込みソースを動的に管理するテーブル。
+-- 管理者が「予定表ソース管理」ページから何個でも追加・編集・削除できる。
+CREATE TABLE IF NOT EXISTS sched_sources(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  label TEXT NOT NULL,               -- 表示名(例: チーフスケジュール表)
+  url TEXT NOT NULL,
+  enabled INTEGER DEFAULT 1,
+  freq_type TEXT DEFAULT 'interval', -- 'interval'(N時間ごと) | 'daily'(1日1回、指定時刻)
+  interval_hours INTEGER DEFAULT 1,  -- freq_type='interval'の場合の間隔(時間)
+  hour INTEGER DEFAULT 6,            -- freq_type='daily'の場合の実行時刻(0-23、JST)
+  notify_admin INTEGER DEFAULT 1,    -- 取り込みで反映があった時に管理者へ通知するか
+  last_run TEXT DEFAULT '',
+  last_result TEXT DEFAULT '',       -- JSON
+  created_at TEXT,
+  created_by INTEGER
 );
 
 -- 初期管理者(初期パスワードは登録番号と同じ: 323331)
