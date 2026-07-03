@@ -335,7 +335,7 @@ async function openSiteRecord(uid, uname, date, site){
 
   const breakRow = (b={}, i=0) => `<div class="sr-break" data-i="${i}">
     <input type="time" class="sr-break-start" value="${h(b.start||'')}">
-    <span>〜</span>
+    <span class="sr-break-sep">〜</span>
     <input type="time" class="sr-break-end" value="${h(b.end||'')}">
     <button class="btn ghost xs sr-break-del" type="button">✕</button>
   </div>`;
@@ -347,10 +347,10 @@ async function openSiteRecord(uid, uname, date, site){
     <div class="form-grid" style="grid-template-columns:80px 1fr;margin-top:10px">
       <label>配置</label><input id="sr-placement" value="${h(data.placement)}" placeholder="例:入口案内">
     </div>
-    <div style="margin-top:12px">
+    <div style="margin-top:14px">
       <label style="font-weight:700;font-size:13px">休憩時間 <span class="muted" id="sr-break-total">(合計 ${data.breakMinutes}分)</span></label>
-      <div id="sr-breaks" style="margin-top:6px">${(data.breaks.length?data.breaks:[{}]).map((b,i)=>breakRow(b,i)).join('')}</div>
-      <button class="btn ghost xs" id="sr-break-add" type="button" style="margin-top:6px">＋ 休憩を追加</button>
+      <div id="sr-breaks" class="sr-breaks-wrap" style="margin-top:8px">${(data.breaks.length?data.breaks:[{}]).map((b,i)=>breakRow(b,i)).join('')}</div>
+      <button class="btn ghost sm" id="sr-break-add" type="button" style="margin-top:8px">＋ 休憩を追加</button>
     </div>
     <div style="margin-top:12px">
       <label style="font-weight:700;font-size:13px">自由記入欄</label>
