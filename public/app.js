@@ -42,6 +42,17 @@ function wireNameLinks(container){
     el.onclick = (e) => { e.stopPropagation(); location.hash = '#/schedule/' + el.dataset.gotoUid; };
   });
 }
+// ドロワー(左メニュー)を閉じる際、スライドアウト+フェードアウトのアニメーションを再生してから
+// 中身を空にする(即座に消すとカクついて見えるため)。
+function closeDrawerAnimated(dr){
+  if(!dr) return;
+  const bg = dr.querySelector('.drawer-bg');
+  const nav = dr.querySelector('.drawer');
+  if(!bg && !nav){ dr.innerHTML=''; return; }
+  if(bg) bg.classList.add('closing');
+  if(nav) nav.classList.add('closing');
+  setTimeout(() => { dr.innerHTML=''; }, 180);
+}
 // 全データ閲覧(システム設定): テーブル表示・ソート・フィルタ・CSVダウンロードの状態
 const DV_STATE = { rows:[], cols:[], sortCol:null, sortDir:1, filters:{}, tableName:'' };
 function renderDvTable(){
@@ -147,7 +158,17 @@ function modal(html){
   $('#modal-layer .close-x').onclick = closeModal;
   $('#modal-layer .modal-bg').onclick = e => { if(e.target.classList.contains('modal-bg')) closeModal(); };
 }
-function closeModal(){ $('#modal-layer').innerHTML=''; }
+// モーダルを閉じる際、フェードアウト+スケールダウンのアニメーションを再生してから中身を空にする
+function closeModal(){
+  const layer = $('#modal-layer');
+  if(!layer) return;
+  const bg = layer.querySelector('.modal-bg');
+  const box = layer.querySelector('.modal');
+  if(!bg && !box){ layer.innerHTML=''; return; }
+  if(bg) bg.classList.add('closing');
+  if(box) box.classList.add('closing');
+  setTimeout(() => { layer.innerHTML=''; }, 160);
+}
 
 // 保存・更新などの完了をOKボタン付きポップアップで知らせる
 function popup(message, kind){
@@ -703,7 +724,7 @@ function renderShell(hash){
 
   const renderDrawer = () => {
     const dr = $('#menu-drawer');
-    const close = () => dr.innerHTML='';
+    const close = () => closeDrawerAnimated(dr);
     dr.innerHTML = `<div class="drawer-bg" id="drawer-bg"></div>
       <nav class="drawer">
         <div class="drawer-head">メニュー</div>
@@ -730,7 +751,7 @@ function renderShell(hash){
 
   $('#menu-btn').onclick = () => {
     const dr = $('#menu-drawer');
-    if(dr.innerHTML){ dr.innerHTML=''; return; }
+    if(dr.innerHTML){ closeDrawerAnimated(dr); return; }
     renderDrawer();
   };
 
