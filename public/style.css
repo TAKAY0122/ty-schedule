@@ -81,7 +81,7 @@ header{background:var(--ink);color:#f3f1ea;display:flex;align-items:center;gap:1
 .notif-item.notif-clickable.unread:hover{background:#fbeecb}
 .name-link{color:var(--gold, #b8860b);text-decoration:underline;text-underline-offset:2px;cursor:pointer}
 .name-link:active{opacity:.7}
-.rec-btn{cursor:pointer;font-size:13px;opacity:.75;display:inline-flex;align-items:center;gap:2px;padding:3px 5px;margin:-3px -5px;border-radius:5px;transition:opacity .15s ease,background .15s ease,transform .1s ease;-webkit-tap-highlight-color:transparent}
+.rec-btn{cursor:pointer;font-size:13px;opacity:.75;display:inline-flex;align-items:center;gap:2px;padding:3px 5px;margin:-3px -5px;border-radius:5px;vertical-align:middle;transition:opacity .15s ease,background .15s ease,transform .1s ease;-webkit-tap-highlight-color:transparent}
 .rec-btn:hover{opacity:1;background:rgba(0,0,0,.05)}
 .rec-btn:active{opacity:1;background:rgba(0,0,0,.1);transform:scale(.92)}
 .sr-info{background:#f7f5ef;border:1px solid var(--line);border-left:3px solid var(--gold);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:13px}
