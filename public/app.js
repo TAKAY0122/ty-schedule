@@ -42,6 +42,21 @@ function wireNameLinks(container){
     el.onclick = (e) => { e.stopPropagation(); location.hash = '#/schedule/' + el.dataset.gotoUid; };
   });
 }
+// アプリを最新版に強制更新する(キャッシュされた古いapp.js/style.cssを使い続けてしまう問題への対策)。
+// ブラウザのCache Storage APIが使えれば削除し、URLにタイムスタンプを付けて再読み込みすることで、
+// ブラウザに「これは新しいリクエストだ」と認識させ、キャッシュを迂回して最新版を取得させる。
+async function forceRefresh(btn){
+  if(btn){ btn.disabled = true; btn.textContent = '更新中…'; }
+  try{
+    if('caches' in window){
+      const keys = await caches.keys();
+      await Promise.all(keys.map(k => caches.delete(k)));
+    }
+  }catch(e){}
+  const url = new URL(location.href);
+  url.searchParams.set('_r', Date.now());
+  location.href = url.toString();
+}
 // ドロワー(左メニュー)を閉じる際、スライドアウト+フェードアウトのアニメーションを再生してから
 // 中身を空にする(即座に消すとカクついて見えるため)。
 function closeDrawerAnimated(dr){
@@ -570,6 +585,7 @@ function renderLogin(err){
     <button class="btn gold" id="l-btn">ログイン</button>
     <div id="l-err"></div>
     <div class="hint">初期パスワードは登録番号と同じです</div>
+    <button class="btn ghost sm" id="l-refresh" style="width:100%;margin-top:14px">🔄 最新版に更新(表示がおかしい時)</button>
   </div></div>`;
   const go = async () => {
     try{
@@ -580,6 +596,7 @@ function renderLogin(err){
   };
   $('#l-btn').onclick = go;
   $('#l-pw').onkeydown = e => { if(e.key==='Enter') go(); };
+  $('#l-refresh').onclick = () => forceRefresh($('#l-refresh'));
 }
 
 /* ===== 初回ログイン時の強制パスワード変更 ===== */
@@ -704,6 +721,7 @@ function renderShell(hash){
   const footerLinks = `
     <div class="drawer-sep"></div>
     <button type="button" class="drawer-link" data-go="#/password">🔑 パスワード変更</button>
+    <button type="button" class="drawer-link" id="dd-refresh">🔄 最新版に更新</button>
     <button type="button" class="drawer-link danger" id="dd-logout">↩️ ログアウト</button>`;
 
   const wireFooter = (dr, close) => {
@@ -712,6 +730,8 @@ function renderShell(hash){
       close();
       if(location.hash === to){ render(); } else { location.hash = to; }
     });
+    const dr2 = dr.querySelector('#dd-refresh');
+    if(dr2) dr2.onclick = () => forceRefresh(dr2);
     const dl = dr.querySelector('#dd-logout');
     if(dl) dl.onclick = async () => { try{ await api('/logout',{method:'POST'}); }catch(_){} logoutLocal(); };
   };
@@ -744,7 +764,13 @@ function renderShell(hash){
     dr.querySelectorAll('.drawer-group').forEach(btn => btn.onclick = () => {
       const i = Number(btn.dataset.toggle);
       stMenu.open[i] = !stMenu.open[i];
-      renderDrawer();
+      // ドロワー全体(dr.innerHTML)を再構築すると、.drawer/.drawer-bgのフェードイン・スライドイン
+      // アニメーションが毎回再発火し、メニューが一瞬消えたように見えてしまう。
+      // そのため、該当グループの矢印とサブメニューの開閉クラスだけを直接切り替える。
+      const sub = btn.nextElementSibling;
+      const arrow = btn.querySelector('.drawer-arrow');
+      if(sub && sub.classList.contains('drawer-sub')) sub.classList.toggle('collapsed', !stMenu.open[i]);
+      if(arrow) arrow.classList.toggle('open', stMenu.open[i]);
     });
     wireFooter(dr, close);
   };

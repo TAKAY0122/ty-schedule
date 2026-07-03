@@ -2254,7 +2254,17 @@ export default {
       try { return await api(req, env, url); }
       catch (e) { return ERR('サーバーエラー: ' + e.message, 500); }
     }
-    return env.ASSETS.fetch(req);
+    const resp = await env.ASSETS.fetch(req);
+    // index.html / app.js / style.css は、ブラウザ・CDNどちらにもキャッシュさせない。
+    // (これらは更新の反映が最優先のファイルであり、古い版が残ると不具合の原因になるため)
+    const p = url.pathname;
+    if (p === '/' || p === '/index.html' || p === '/app.js' || p === '/style.css') {
+      const headers = new Headers(resp.headers);
+      headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+      headers.delete('etag');
+      return new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers });
+    }
+    return resp;
   },
   // 各cronタスクは互いに影響しないよう、それぞれ独立してtry-catchする。
   // 台帳の深夜再取込を最優先で実行(最も重要な処理のため、他のcronが重くても確実に走らせる)。
