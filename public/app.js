@@ -45,6 +45,41 @@ function wireNameLinks(container){
 // 全データ閲覧(システム設定): テーブル表示・ソート・フィルタ・CSVダウンロードの状態
 const DV_STATE = { rows:[], cols:[], sortCol:null, sortDir:1, filters:{}, tableName:'' };
 function renderDvTable(){
+  const { cols, tableName } = DV_STATE;
+  const out = $('#dv-out'); if(!out) return;
+  out.innerHTML = `
+    <div class="row" style="margin-bottom:8px;gap:8px;align-items:center">
+      <span class="muted" id="dv-summary"></span>
+      <button class="btn ghost xs" id="dv-clear-filter" style="display:none">絞り込み解除</button>
+      <button class="btn ghost xs" id="dv-export">📥 Excel(CSV)でダウンロード</button>
+    </div>
+    <div class="sched-wrap"><table class="list dv-table">
+      <thead>
+        <tr>${cols.map(c=>`<th class="dv-th" data-col="${h(c)}" style="cursor:pointer;white-space:nowrap">${h(c)} <span class="dv-sort-mark muted" data-col="${h(c)}">⇅</span></th>`).join('')}</tr>
+        <tr class="dv-filter-row">${cols.map(c=>`<td><input class="dv-filter" data-col="${h(c)}" placeholder="絞り込み" style="width:100%;font-size:11px;box-sizing:border-box"></td>`).join('')}</tr>
+      </thead>
+      <tbody id="dv-tbody"></tbody>
+    </table></div>`;
+  out.querySelectorAll('.dv-th').forEach(th => th.onclick = () => {
+    const c = th.dataset.col;
+    if(DV_STATE.sortCol === c) DV_STATE.sortDir *= -1;
+    else { DV_STATE.sortCol = c; DV_STATE.sortDir = 1; }
+    renderDvBody(); // ソートはtbodyだけ更新すればよい(フィルタ入力欄はそのまま)
+  });
+  out.querySelectorAll('.dv-filter').forEach(inp => inp.oninput = () => {
+    DV_STATE.filters[inp.dataset.col] = inp.value;
+    renderDvBody(); // input要素自体には触れないのでキーボードは閉じない
+  });
+  const cf = $('#dv-clear-filter');
+  if(cf) cf.onclick = () => {
+    DV_STATE.filters = {};
+    out.querySelectorAll('.dv-filter').forEach(inp => inp.value = '');
+    renderDvBody();
+  };
+  renderDvBody();
+}
+// 全データ閲覧: フィルタ・ソート結果に応じて<tbody>部分だけを再構築する(フィルタ入力欄はそのまま保持)
+function renderDvBody(){
   const { rows, cols, sortCol, sortDir, filters, tableName } = DV_STATE;
   let filtered = rows.filter(r => cols.every(c => !filters[c] || String(r[c]??'').toLowerCase().includes(filters[c].toLowerCase())));
   if(sortCol){
@@ -56,32 +91,12 @@ function renderDvTable(){
       return String(av).localeCompare(String(bv), 'ja') * sortDir;
     });
   }
-  const out = $('#dv-out'); if(!out) return;
-  out.innerHTML = `
-    <div class="row" style="margin-bottom:8px;gap:8px;align-items:center">
-      <span class="muted">${filtered.length}件 / 全${rows.length}件${Object.values(filters).some(v=>v) ? ' (絞り込み中)' : ''}</span>
-      ${Object.values(filters).some(v=>v) ? '<button class="btn ghost xs" id="dv-clear-filter">絞り込み解除</button>' : ''}
-      <button class="btn ghost xs" id="dv-export">📥 Excel(CSV)でダウンロード</button>
-    </div>
-    <div class="sched-wrap"><table class="list dv-table">
-      <tr>${cols.map(c=>`<th class="dv-th" data-col="${h(c)}" style="cursor:pointer;white-space:nowrap">${h(c)} ${sortCol===c?(sortDir===1?'▲':'▼'):'<span class="muted">⇅</span>'}</th>`).join('')}</tr>
-      <tr class="dv-filter-row">${cols.map(c=>`<td><input class="dv-filter" data-col="${h(c)}" value="${h(filters[c]||'')}" placeholder="絞り込み" style="width:100%;font-size:11px;box-sizing:border-box"></td>`).join('')}</tr>
-      ${filtered.map(r=>`<tr>${cols.map(c=>`<td>${h(r[c])}</td>`).join('')}</tr>`).join('')}
-    </table></div>`;
-  out.querySelectorAll('.dv-th').forEach(th => th.onclick = () => {
-    const c = th.dataset.col;
-    if(DV_STATE.sortCol === c) DV_STATE.sortDir *= -1;
-    else { DV_STATE.sortCol = c; DV_STATE.sortDir = 1; }
-    renderDvTable();
-  });
-  out.querySelectorAll('.dv-filter').forEach(inp => inp.oninput = debounce(() => {
-    const col = inp.dataset.col, pos = inp.selectionStart;
-    DV_STATE.filters[col] = inp.value;
-    renderDvTable();
-    const n = $('#dv-out') && $('#dv-out').querySelector(`.dv-filter[data-col="${col}"]`);
-    if(n){ n.focus(); try{n.setSelectionRange(pos,pos);}catch(_){} }
-  }, 300));
-  const cf = $('#dv-clear-filter'); if(cf) cf.onclick = () => { DV_STATE.filters={}; renderDvTable(); };
+  const tbody = $('#dv-tbody'); if(!tbody) return;
+  tbody.innerHTML = filtered.map(r=>`<tr>${cols.map(c=>`<td>${h(r[c])}</td>`).join('')}</tr>`).join('');
+  const hasFilter = Object.values(filters).some(v=>v);
+  const summary = $('#dv-summary'); if(summary) summary.textContent = `${filtered.length}件 / 全${rows.length}件${hasFilter?' (絞り込み中)':''}`;
+  const cf = $('#dv-clear-filter'); if(cf) cf.style.display = hasFilter ? '' : 'none';
+  document.querySelectorAll('.dv-sort-mark').forEach(m => { m.textContent = m.dataset.col===sortCol ? (sortDir===1?'▲':'▼') : '⇅'; });
   const exp = $('#dv-export'); if(exp) exp.onclick = () => exportRowsToCsv(filtered, cols, tableName);
 }
 // テーブルデータをCSV(Excelで直接開ける形式)としてダウンロードする
@@ -1230,16 +1245,7 @@ async function pageMembers(app){
   const users = await getUsers(true);
   const managers = await api('/managers');
   const st = PAGE_STATE.members || (PAGE_STATE.members = { tab:'2課', q:'', mgr:'' }); // 既定は2課(主に2課が使うため)
-  const tab = st.tab, q = st.q.trim(), fmgr = st.mgr;
   const kaOf = u => u.ka || '未設定';
-  const inTab = u => tab==='未設定' ? !u.ka : kaOf(u)===tab;
-  const matchQ = u => !q || (u.name||'').includes(q) || (u.regno||'').includes(q) || (u.han||'').includes(q) || (u.station||'').includes(q);
-  const matchMgr = u => {
-    if(!fmgr) return true;
-    if(fmgr==='__chief') return !u.manager_id;     // チーフ手配
-    return String(u.manager_id)===String(fmgr);
-  };
-  const list = users.filter(u=>inTab(u)&&matchQ(u)&&matchMgr(u));
   const cnt2 = users.filter(u=>kaOf(u)==='2課').length;
   const cnt1 = users.filter(u=>kaOf(u)==='1課').length;
   const cntX = users.filter(u=>!u.ka).length;
@@ -1251,68 +1257,95 @@ async function pageMembers(app){
     : `<button class="btn ghost sm" data-skill="${u.id}">できること編集</button>`;
   const schedBtn = (u,cls='gold') => `<button class="btn ${cls} sm go-sched" data-uid="${u.id}">📅 スケジュール</button>`;
 
+  // リスト部分だけを再構築する。検索欄などフォームのinput要素はここでは一切触らない
+  // (input要素をDOMから作り直すと、スマホでソフトウェアキーボードが閉じてしまうため)
+  const renderList = () => {
+    const tab = st.tab, q = st.q.trim(), fmgr = st.mgr;
+    const inTab = u => tab==='未設定' ? !u.ka : kaOf(u)===tab;
+    const matchQ = u => !q || (u.name||'').includes(q) || (u.regno||'').includes(q) || (u.han||'').includes(q) || (u.station||'').includes(q);
+    const matchMgr = u => {
+      if(!fmgr) return true;
+      if(fmgr==='__chief') return !u.manager_id;     // チーフ手配
+      return String(u.manager_id)===String(fmgr);
+    };
+    const list = users.filter(u=>inTab(u)&&matchQ(u)&&matchMgr(u));
+    const area = $('#m-list-area'); if(!area) return;
+    area.innerHTML = `
+      <div class="muted" style="margin:2px 0 10px">${list.length}名 表示中</div>
+      <div class="list-scroll pc-only">
+      <table class="list ka-table ka-${tab==='1課'?'1':'2'}">
+      <tr><th>登録番号</th><th>氏名</th><th>役割</th><th>ランク</th><th>班</th><th>手配担当</th><th>最寄駅</th><th>できること</th><th></th></tr>
+      ${list.map(u=>`<tr>
+        <td>${h(u.regno)}</td><td><b class="name-link" data-goto-uid="${u.id}">${h(u.name)}</b></td>
+        <td><span class="tag ${u.role}">${roleLabel(u)}</span></td>
+        <td>${h(u.rank)}</td><td>${h(u.han)}</td><td>${h(managerName(u,users))}</td><td>${h(u.station)}</td>
+        <td class="wrapcell">${h(u.skills)}</td>
+        <td>${editBtn(u)} ${schedBtn(u,'ghost')}</td>
+      </tr>`).join('') || '<tr><td colspan="9" class="muted" style="text-align:center;padding:16px">該当するメンバーはいません</td></tr>'}
+      </table>
+      </div>
+      <div class="cards sp-only">
+      ${list.map(u=>`<div class="dcard ka-${kaOf(u)==='1課'?'1':'2'}">
+        <div class="dcard-head"><span class="dcard-title name-link" data-goto-uid="${u.id}">${h(u.name)}</span><span class="tag ${u.role}">${roleLabel(u)}</span></div>
+        <div class="drow"><span class="dk">登録番号</span><span class="dv">${h(u.regno)}</span></div>
+        <div class="drow"><span class="dk">ランク / 班</span><span class="dv">${h(u.rank)||'—'} / ${h(u.han)||'—'}</span></div>
+        <div class="drow"><span class="dk">手配担当</span><span class="dv">${h(managerName(u,users))}</span></div>
+        <div class="drow"><span class="dk">最寄駅</span><span class="dv">${h(u.station)||'—'}</span></div>
+        <div class="drow"><span class="dk">できること</span><span class="dv">${h(u.skills)||'<span class="muted">（未設定）</span>'}</span></div>
+        <div class="dcard-actions">
+          ${editBtn(u)}
+          ${schedBtn(u)}
+        </div>
+      </div>`).join('') || '<div class="muted" style="text-align:center;padding:16px">該当するメンバーはいません</div>'}
+      </div>
+      <div class="muted" style="margin-top:8px">「できること」= 配置以外にできる業務(進行、買い出し など)</div>`;
+    wireNameLinks(area);
+    area.querySelectorAll('.go-sched').forEach(b=>b.onclick=()=>{ location.hash='#/schedule/'+b.dataset.uid; });
+    area.querySelectorAll('[data-skill]').forEach(b => b.onclick = async () => {
+      const u = users.find(x=>x.id==b.dataset.skill);
+      const v = prompt(`${u.name} のできることリスト(カンマ区切り)`, u.skills||'');
+      if(v==null) return;
+      await api('/users/'+u.id, { method:'PATCH', body:{ skills:v } });
+      USERS_CACHE = null; render();
+    });
+    area.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => {
+      openMemberEdit(users.find(x=>x.id==b.dataset.edit), users, managers);
+    });
+  };
+
   app.innerHTML = `
-  <h2>メンバー一覧 <span class="ka-badge ka-${tab==='1課'?'1':'2'}">${tab}</span></h2>
+  <h2>メンバー一覧 <span class="ka-badge ka-${st.tab==='1課'?'1':'2'}">${st.tab}</span></h2>
   <div class="card">
     <div class="ka-tabs">
-      <button class="ka-tab ka2 ${tab==='2課'?'on':''}" data-tab="2課">2課 (${cnt2}名)</button>
-      <button class="ka-tab ka1 ${tab==='1課'?'on':''}" data-tab="1課">1課 (${cnt1}名)</button>
-      ${cntX?`<button class="ka-tab ${tab==='未設定'?'on':''}" data-tab="未設定">未設定 (${cntX}名)</button>`:''}
+      <button class="ka-tab ka2 ${st.tab==='2課'?'on':''}" data-tab="2課">2課 (${cnt2}名)</button>
+      <button class="ka-tab ka1 ${st.tab==='1課'?'on':''}" data-tab="1課">1課 (${cnt1}名)</button>
+      ${cntX?`<button class="ka-tab ${st.tab==='未設定'?'on':''}" data-tab="未設定">未設定 (${cntX}名)</button>`:''}
     </div>
     <div class="filter-bar">
       <input id="m-search" class="search-input" placeholder="🔍 氏名・登録番号・班・駅で検索" value="${h(st.q)}">
       <select id="m-mgr" class="filter-select">
         <option value="">手配担当:すべて</option>
-        ${managers.map(m=>`<option value="${m.id}" ${String(fmgr)===String(m.id)?'selected':''}>${h(m.name)}手配</option>`).join('')}
-        <option value="__chief" ${fmgr==='__chief'?'selected':''}>チーフ手配</option>
+        ${managers.map(m=>`<option value="${m.id}" ${String(st.mgr)===String(m.id)?'selected':''}>${h(m.name)}手配</option>`).join('')}
+        <option value="__chief" ${st.mgr==='__chief'?'selected':''}>チーフ手配</option>
       </select>
-      ${(q||fmgr)?`<button class="btn ghost sm" id="m-clear">クリア</button>`:''}
+      <button class="btn ghost sm" id="m-clear" style="${(st.q||st.mgr)?'':'display:none'}">クリア</button>
     </div>
-    <div class="muted" style="margin:2px 0 10px">${list.length}名 表示中</div>
-    <div class="list-scroll pc-only">
-    <table class="list ka-table ka-${tab==='1課'?'1':'2'}">
-    <tr><th>登録番号</th><th>氏名</th><th>役割</th><th>ランク</th><th>班</th><th>手配担当</th><th>最寄駅</th><th>できること</th><th></th></tr>
-    ${list.map(u=>`<tr>
-      <td>${h(u.regno)}</td><td><b class="name-link" data-goto-uid="${u.id}">${h(u.name)}</b></td>
-      <td><span class="tag ${u.role}">${roleLabel(u)}</span></td>
-      <td>${h(u.rank)}</td><td>${h(u.han)}</td><td>${h(managerName(u,users))}</td><td>${h(u.station)}</td>
-      <td class="wrapcell">${h(u.skills)}</td>
-      <td>${editBtn(u)} ${schedBtn(u,'ghost')}</td>
-    </tr>`).join('') || '<tr><td colspan="9" class="muted" style="text-align:center;padding:16px">該当するメンバーはいません</td></tr>'}
-    </table>
-    </div>
-    <div class="cards sp-only">
-    ${list.map(u=>`<div class="dcard ka-${kaOf(u)==='1課'?'1':'2'}">
-      <div class="dcard-head"><span class="dcard-title name-link" data-goto-uid="${u.id}">${h(u.name)}</span><span class="tag ${u.role}">${roleLabel(u)}</span></div>
-      <div class="drow"><span class="dk">登録番号</span><span class="dv">${h(u.regno)}</span></div>
-      <div class="drow"><span class="dk">ランク / 班</span><span class="dv">${h(u.rank)||'—'} / ${h(u.han)||'—'}</span></div>
-      <div class="drow"><span class="dk">手配担当</span><span class="dv">${h(managerName(u,users))}</span></div>
-      <div class="drow"><span class="dk">最寄駅</span><span class="dv">${h(u.station)||'—'}</span></div>
-      <div class="drow"><span class="dk">できること</span><span class="dv">${h(u.skills)||'<span class="muted">（未設定）</span>'}</span></div>
-      <div class="dcard-actions">
-        ${editBtn(u)}
-        ${schedBtn(u)}
-      </div>
-    </div>`).join('') || '<div class="muted" style="text-align:center;padding:16px">該当するメンバーはいません</div>'}
-    </div>
-  <div class="muted" style="margin-top:8px">「できること」= 配置以外にできる業務(進行、買い出し など)</div></div>`;
+    <div id="m-list-area"></div>
+  </div>`;
+
+  renderList();
 
   app.querySelectorAll('.ka-tab').forEach(b=>b.onclick=()=>{ st.tab=b.dataset.tab; pageMembers(app); });
-  app.querySelectorAll('.go-sched').forEach(b=>b.onclick=()=>{ location.hash='#/schedule/'+b.dataset.uid; });
   const si = $('#m-search');
-  if(si){ si.oninput = debounce(() => { st.q = si.value; const pos=si.selectionStart; pageMembers(app).then(()=>{ const n=document.getElementById('m-search'); if(n){ n.focus(); try{n.setSelectionRange(pos,pos);}catch(_){} } }); }); }
-  const mm = $('#m-mgr'); if(mm) mm.onchange = () => { st.mgr = mm.value; pageMembers(app); };
+  if(si){
+    si.oninput = () => {
+      st.q = si.value;
+      const mc = $('#m-clear'); if(mc) mc.style.display = (st.q||st.mgr) ? '' : 'none';
+      renderList(); // input要素自体には触れず、リストだけ更新するのでキーボードは閉じない
+    };
+  }
+  const mm = $('#m-mgr'); if(mm) mm.onchange = () => { st.mgr = mm.value; const mc=$('#m-clear'); if(mc) mc.style.display=(st.q||st.mgr)?'':'none'; renderList(); };
   const mc = $('#m-clear'); if(mc) mc.onclick = () => { st.q=''; st.mgr=''; pageMembers(app); };
-  app.querySelectorAll('[data-skill]').forEach(b => b.onclick = async () => {
-    const u = users.find(x=>x.id==b.dataset.skill);
-    const v = prompt(`${u.name} のできることリスト(カンマ区切り)`, u.skills||'');
-    if(v==null) return;
-    await api('/users/'+u.id, { method:'PATCH', body:{ skills:v } });
-    USERS_CACHE = null; render();
-  });
-  app.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => {
-    openMemberEdit(users.find(x=>x.id==b.dataset.edit), users, managers);
-  });
 }
 
 // メンバー情報の編集(手配者以上、または個別権限あり)。ランク・課・班・最寄駅・できること・担当手配者(役割の変更はaccount_manage権限のみ)
@@ -2472,14 +2505,71 @@ async function pageAdmin(app){
   const mgrs = await api('/managers');
   const optLists = await api('/option-lists').catch(()=>({ka:[],han:[]}));
   const st = PAGE_STATE.admin || (PAGE_STATE.admin = { q:'', mgr:'', open:{ list:true } });
-  const adq = st.q.trim(), admgr = st.mgr;
-  const aList = users.filter(u=>{
-    const mq = !adq || (u.name||'').includes(adq) || (u.regno||'').includes(adq);
-    const mm = !admgr || (admgr==='__chief' ? !u.manager_id : String(u.manager_id)===String(admgr));
-    return mq && mm;
-  });
   const openSet = st.open;
   const sec = (id,title,body)=>`<details class="adm-sec" id="sec-${id}" data-sec="${id}" ${openSet[id]?'open':''}><summary>${title}</summary><div class="adm-body">${body}</div></details>`;
+
+  // アカウント一覧のリスト部分だけを再構築する。検索欄など入力要素はここでは触らない
+  // (input要素をDOMから作り直すと、スマホでソフトウェアキーボードが閉じてしまうため)
+  const renderAccountList = () => {
+    const adq = st.q.trim(), admgr = st.mgr;
+    const aList = users.filter(u=>{
+      const mq = !adq || (u.name||'').includes(adq) || (u.regno||'').includes(adq);
+      const mm = !admgr || (admgr==='__chief' ? !u.manager_id : String(u.manager_id)===String(admgr));
+      return mq && mm;
+    });
+    const area = $('#ad-list-area'); if(!area) return;
+    const countEl = $('#ad-count'); if(countEl) countEl.textContent = `(${aList.length}名)`;
+    area.innerHTML = `
+      <div class="muted" style="margin:2px 0 10px">${aList.length}名 表示中</div>
+      <div class="sched-wrap pc-only"><table class="list">
+      <tr><th>登録番号</th><th>氏名</th><th>役割(管理者のみ変更可)</th><th>担当手配者</th><th>ランク</th><th>班</th><th>駅</th><th>操作</th></tr>
+      ${aList.map(u=>`<tr class="${u.suspended?'is-suspended':''}">
+        <td class="nowrap">${h(u.regno)}</td><td class="nowrap">${h(u.name)}${u.suspended?' <span class="susp-tag">停止</span>':''}</td>
+        <td><select data-role="${u.id}">${['member','chief','handler','admin'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${ROLE_JP[r]}</option>`).join('')}</select></td>
+        <td><select data-mgr="${u.id}"><option value="">(なし)</option>${mgrs.map(m=>`<option value="${m.id}" ${String(u.manager_id)===String(m.id)?'selected':''}>${h(m.name)}手配</option>`).join('')}</select></td>
+        <td class="nowrap">${h(u.rank)}</td><td class="nowrap">${h(u.han)}</td><td class="nowrap">${h(u.station)}</td>
+        <td class="nowrap"><a class="btn ghost sm" href="#/permissions/${u.id}" style="text-decoration:none;display:inline-block">権限</a>
+            <button class="btn ghost sm" data-suspend="${u.id}" data-cur="${u.suspended?1:0}">${u.suspended?'復活':'停止'}</button>
+            <button class="btn ghost sm" data-reset="${u.id}">PWリセット</button>
+            <button class="btn danger sm" data-del="${u.id}">削除</button></td>
+      </tr>`).join('') || '<tr><td colspan="8" class="muted" style="text-align:center;padding:16px">該当するアカウントはありません</td></tr>'}
+      </table></div>
+      <div class="cards sp-only">
+      ${aList.map(u=>`<div class="dcard ${u.suspended?'is-suspended':''}">
+        <div class="dcard-head"><span class="dcard-title">${h(u.name)}${u.suspended?' <span class="susp-tag">停止</span>':''}</span><span class="dcard-sub">${h(u.regno)}</span></div>
+        <div class="drow"><span class="dk">役割</span><span class="dv"><select data-role="${u.id}">${['member','chief','handler','admin'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${ROLE_JP[r]}</option>`).join('')}</select></span></div>
+        <div class="drow"><span class="dk">担当手配</span><span class="dv"><select data-mgr="${u.id}"><option value="">(なし)</option>${mgrs.map(m=>`<option value="${m.id}" ${String(u.manager_id)===String(m.id)?'selected':''}>${h(m.name)}手配</option>`).join('')}</select></span></div>
+        <div class="drow"><span class="dk">ランク/班</span><span class="dv">${h(u.rank)||'—'} / ${h(u.han)||'—'}</span></div>
+        <div class="drow"><span class="dk">最寄駅</span><span class="dv">${h(u.station)||'—'}</span></div>
+        <div class="dcard-actions"><a class="btn ghost sm" href="#/permissions/${u.id}" style="text-decoration:none;display:inline-block">権限</a><button class="btn ghost sm" data-suspend="${u.id}" data-cur="${u.suspended?1:0}">${u.suspended?'復活':'停止'}</button><button class="btn ghost sm" data-reset="${u.id}">PWリセット</button><button class="btn danger sm" data-del="${u.id}">削除</button></div>
+      </div>`).join('') || '<div class="muted" style="text-align:center;padding:16px">該当するアカウントはありません</div>'}
+      </div>
+      <div class="muted" style="margin-top:8px">権限の階層:管理者 → 手配チーム → チーフ → メンツ。「担当手配者」を設定すると、スケジュール閲覧・入力で担当ごとにメンバーを絞り込めます。手配チームは右上メニューからPIN入力で手配者モードに切り替えられます。個人ごとの追加権限は「権限」ボタンから、役割全員への一括権限は上部の「🛡️ 権限の一括設定」から設定できます。</div>`;
+    area.querySelectorAll('[data-role]').forEach(s => s.onchange = async () => {
+      try{ await api('/users/'+s.dataset.role, { method:'PATCH', body:{ role:s.value } }); USERS_CACHE=null; }
+      catch(e){ alert(e.message); render(); }
+    });
+    area.querySelectorAll('[data-mgr]').forEach(s => s.onchange = async () => {
+      try{ await api('/users/'+s.dataset.mgr, { method:'PATCH', body:{ manager_id: s.value?Number(s.value):null } }); USERS_CACHE=null; }
+      catch(e){ alert(e.message); render(); }
+    });
+    area.querySelectorAll('[data-suspend]').forEach(b => b.onclick = async () => {
+      const id = b.dataset.suspend, cur = b.dataset.cur === '1';
+      if(!confirm(cur ? 'このアカウントを復活します(ログイン可)。よろしいですか?' : 'このアカウントを停止します(ログイン不可。一覧・スケジュール入力・現場一覧には引き続き表示)。よろしいですか?')) return;
+      try{ await api(`/users/${id}`,{method:'PATCH',body:{suspended:cur?0:1}}); USERS_CACHE=null; popup(cur?'復活しました':'停止しました'); renderAccountList(); }
+      catch(e){ popup(e.message,'error'); }
+    });
+    area.querySelectorAll('[data-reset]').forEach(b => b.onclick = async () => {
+      if(!confirm('パスワードを初期化しますか?(登録番号でログインできるようになります)')) return;
+      await api(`/users/${b.dataset.reset}/resetpw`, { method:'POST' }); alert('初期化しました');
+    });
+    area.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+      if(!confirm('このアカウントを削除しますか?スケジュールも削除されます。')) return;
+      try{ await api('/users/'+b.dataset.del, { method:'DELETE' }); USERS_CACHE=null; render(); }
+      catch(e){ alert(e.message); }
+    });
+  };
+
   app.innerHTML = `
   <h2 style="margin-bottom:8px">アカウント管理</h2>
   <div class="adm-nav">
@@ -2533,41 +2623,19 @@ async function pageAdmin(app){
       </div>
     </div>`)}
 
-  ${sec('list',`👥 アカウント一覧 <span class="muted" style="font-weight:400">(${aList.length}名)</span>`, `
+  ${sec('list',`👥 アカウント一覧 <span class="muted" style="font-weight:400" id="ad-count">(${users.length}名)</span>`, `
     <div class="filter-bar">
       <input id="ad-search" class="search-input" placeholder="🔍 氏名・登録番号で検索" value="${h(st.q)}">
       <select id="ad-mgr" class="filter-select">
         <option value="">手配担当:すべて</option>
-        ${mgrs.map(m=>`<option value="${m.id}" ${String(admgr)===String(m.id)?'selected':''}>${h(m.name)}手配</option>`).join('')}
-        <option value="__chief" ${admgr==='__chief'?'selected':''}>チーフ手配</option>
+        ${mgrs.map(m=>`<option value="${m.id}" ${String(st.mgr)===String(m.id)?'selected':''}>${h(m.name)}手配</option>`).join('')}
+        <option value="__chief" ${st.mgr==='__chief'?'selected':''}>チーフ手配</option>
       </select>
-      ${(adq||admgr)?`<button class="btn ghost sm" id="ad-clear">クリア</button>`:''}
+      <button class="btn ghost sm" id="ad-clear" style="${(st.q||st.mgr)?'':'display:none'}">クリア</button>
     </div>
-    <div class="muted" style="margin:2px 0 10px">${aList.length}名 表示中</div>
-    <div class="sched-wrap pc-only"><table class="list">
-    <tr><th>登録番号</th><th>氏名</th><th>役割(管理者のみ変更可)</th><th>担当手配者</th><th>ランク</th><th>班</th><th>駅</th><th>操作</th></tr>
-    ${aList.map(u=>`<tr class="${u.suspended?'is-suspended':''}">
-      <td class="nowrap">${h(u.regno)}</td><td class="nowrap">${h(u.name)}${u.suspended?' <span class="susp-tag">停止</span>':''}</td>
-      <td><select data-role="${u.id}">${['member','chief','handler','admin'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${ROLE_JP[r]}</option>`).join('')}</select></td>
-      <td><select data-mgr="${u.id}"><option value="">(なし)</option>${mgrs.map(m=>`<option value="${m.id}" ${String(u.manager_id)===String(m.id)?'selected':''}>${h(m.name)}手配</option>`).join('')}</select></td>
-      <td class="nowrap">${h(u.rank)}</td><td class="nowrap">${h(u.han)}</td><td class="nowrap">${h(u.station)}</td>
-      <td class="nowrap"><a class="btn ghost sm" href="#/permissions/${u.id}" style="text-decoration:none;display:inline-block">権限</a>
-          <button class="btn ghost sm" data-suspend="${u.id}" data-cur="${u.suspended?1:0}">${u.suspended?'復活':'停止'}</button>
-          <button class="btn ghost sm" data-reset="${u.id}">PWリセット</button>
-          <button class="btn danger sm" data-del="${u.id}">削除</button></td>
-    </tr>`).join('') || '<tr><td colspan="8" class="muted" style="text-align:center;padding:16px">該当するアカウントはありません</td></tr>'}
-    </table></div>
-    <div class="cards sp-only">
-    ${aList.map(u=>`<div class="dcard ${u.suspended?'is-suspended':''}">
-      <div class="dcard-head"><span class="dcard-title">${h(u.name)}${u.suspended?' <span class="susp-tag">停止</span>':''}</span><span class="dcard-sub">${h(u.regno)}</span></div>
-      <div class="drow"><span class="dk">役割</span><span class="dv"><select data-role="${u.id}">${['member','chief','handler','admin'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${ROLE_JP[r]}</option>`).join('')}</select></span></div>
-      <div class="drow"><span class="dk">担当手配</span><span class="dv"><select data-mgr="${u.id}"><option value="">(なし)</option>${mgrs.map(m=>`<option value="${m.id}" ${String(u.manager_id)===String(m.id)?'selected':''}>${h(m.name)}手配</option>`).join('')}</select></span></div>
-      <div class="drow"><span class="dk">ランク/班</span><span class="dv">${h(u.rank)||'—'} / ${h(u.han)||'—'}</span></div>
-      <div class="drow"><span class="dk">最寄駅</span><span class="dv">${h(u.station)||'—'}</span></div>
-      <div class="dcard-actions"><a class="btn ghost sm" href="#/permissions/${u.id}" style="text-decoration:none;display:inline-block">権限</a><button class="btn ghost sm" data-suspend="${u.id}" data-cur="${u.suspended?1:0}">${u.suspended?'復活':'停止'}</button><button class="btn ghost sm" data-reset="${u.id}">PWリセット</button><button class="btn danger sm" data-del="${u.id}">削除</button></div>
-    </div>`).join('') || '<div class="muted" style="text-align:center;padding:16px">該当するアカウントはありません</div>'}
-    </div>
-    <div class="muted" style="margin-top:8px">権限の階層:管理者 → 手配チーム → チーフ → メンツ。「担当手配者」を設定すると、スケジュール閲覧・入力で担当ごとにメンバーを絞り込めます。手配チームは右上メニューからPIN入力で手配者モードに切り替えられます。個人ごとの追加権限は「権限」ボタンから、役割全員への一括権限は上部の「🛡️ 権限の一括設定」から設定できます。</div>`)}`;
+    <div id="ad-list-area"></div>`)}`;
+
+  renderAccountList();
 
   // 折りたたみの開閉状態を保持 / 目次ジャンプ
   app.querySelectorAll('.adm-sec').forEach(d => d.addEventListener('toggle', () => { st.open[d.dataset.sec] = d.open; }));
@@ -2618,32 +2686,15 @@ async function pageAdmin(app){
     catch(e){ popup(e.message,'error'); }
   });
   const adS=$('#ad-search');
-  if(adS){ adS.oninput=debounce(()=>{ st.q=adS.value; const pos=adS.selectionStart; pageAdmin(app).then(()=>{ const n=document.getElementById('ad-search'); if(n){ n.focus(); try{n.setSelectionRange(pos,pos);}catch(_){} } }); }); }
-  const adM=$('#ad-mgr'); if(adM) adM.onchange=()=>{ st.mgr=adM.value; pageAdmin(app); };
+  if(adS){
+    adS.oninput = () => {
+      st.q = adS.value;
+      const adC0 = $('#ad-clear'); if(adC0) adC0.style.display = (st.q||st.mgr) ? '' : 'none';
+      renderAccountList(); // input要素自体には触れず、リストだけ更新するのでキーボードは閉じない
+    };
+  }
+  const adM=$('#ad-mgr'); if(adM) adM.onchange=()=>{ st.mgr=adM.value; const adC0=$('#ad-clear'); if(adC0) adC0.style.display=(st.q||st.mgr)?'':'none'; renderAccountList(); };
   const adC=$('#ad-clear'); if(adC) adC.onclick=()=>{ st.q=''; st.mgr=''; pageAdmin(app); };
-  app.querySelectorAll('[data-role]').forEach(s => s.onchange = async () => {
-    try{ await api('/users/'+s.dataset.role, { method:'PATCH', body:{ role:s.value } }); USERS_CACHE=null; }
-    catch(e){ alert(e.message); render(); }
-  });
-  app.querySelectorAll('[data-mgr]').forEach(s => s.onchange = async () => {
-    try{ await api('/users/'+s.dataset.mgr, { method:'PATCH', body:{ manager_id: s.value?Number(s.value):null } }); USERS_CACHE=null; }
-    catch(e){ alert(e.message); render(); }
-  });
-  app.querySelectorAll('[data-suspend]').forEach(b => b.onclick = async () => {
-    const id = b.dataset.suspend, cur = b.dataset.cur === '1';
-    if(!confirm(cur ? 'このアカウントを復活します(ログイン可)。よろしいですか?' : 'このアカウントを停止します(ログイン不可。一覧・スケジュール入力・現場一覧には引き続き表示)。よろしいですか?')) return;
-    try{ await api(`/users/${id}`,{method:'PATCH',body:{suspended:cur?0:1}}); USERS_CACHE=null; popup(cur?'復活しました':'停止しました'); pageAdmin(app); }
-    catch(e){ popup(e.message,'error'); }
-  });
-  app.querySelectorAll('[data-reset]').forEach(b => b.onclick = async () => {
-    if(!confirm('パスワードを初期化しますか?(登録番号でログインできるようになります)')) return;
-    await api(`/users/${b.dataset.reset}/resetpw`, { method:'POST' }); alert('初期化しました');
-  });
-  app.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
-    if(!confirm('このアカウントを削除しますか?スケジュールも削除されます。')) return;
-    try{ await api('/users/'+b.dataset.del, { method:'DELETE' }); USERS_CACHE=null; render(); }
-    catch(e){ alert(e.message); }
-  });
 }
 
 /* ===== システム設定(PIN・連携・通知・台帳夜間再取込・時給。wage_settings権限のみ・専用ページ) ===== */
