@@ -2450,52 +2450,138 @@ async function pageDaicho(app){
   catch(e){ app.innerHTML = `<h2>🗂️ 台帳保管</h2><div class="card"><div class="msg err">${h(e.message)}</div></div>`; return; }
   const items = data.items || [];
   const fmtSize = n => { n=Number(n||0); if(n<1024) return n+'B'; if(n<1048576) return (n/1024).toFixed(0)+'KB'; return (n/1048576).toFixed(1)+'MB'; };
+  const st = PAGE_STATE.daicho || (PAGE_STATE.daicho = { name:'', person:'', dateFrom:'', dateTo:'', sortCol:'ts', sortDir:-1 });
+  const persons = [...new Set(items.map(it=>it.importer_name).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ja'));
+  const hasFilterOn = () => !!(st.name || st.person || st.dateFrom || st.dateTo);
+  const sortMark = col => st.sortCol===col ? (st.sortDir===1?'▲':'▼') : '<span class="muted">⇅</span>';
+  const sortOptions = [
+    ['ts',-1,'取り込み日時(新しい順)'], ['ts',1,'取り込み日時(古い順)'],
+    ['file_name',1,'ファイル名(A→Z/あ→ん)'], ['file_name',-1,'ファイル名(Z→A/ん→あ)'],
+    ['importer_name',1,'取り込んだ人(あ→ん)'], ['importer_name',-1,'取り込んだ人(ん→あ)'],
+    ['size',-1,'サイズ(大きい順)'], ['size',1,'サイズ(小さい順)'],
+    ['applied',-1,'反映件数(多い順)'], ['applied',1,'反映件数(少ない順)'],
+    ['sheets',-1,'シート数(多い順)'], ['sheets',1,'シート数(少ない順)'],
+  ];
+
+  // リスト部分だけを再構築する。フィルタ入力欄・並び替えプルダウンはここでは一切触らない
+  // (input/select要素をDOMから作り直すと、スマホでソフトウェアキーボードが閉じてしまうため)
+  const renderList = () => {
+    const nameQ = st.name.trim().toLowerCase();
+    let filtered = items.filter(it => {
+      if(nameQ && !(it.file_name||'').toLowerCase().includes(nameQ)) return false;
+      if(st.person && it.importer_name !== st.person) return false;
+      if(st.dateFrom && it.ts.slice(0,10) < st.dateFrom) return false;
+      if(st.dateTo && it.ts.slice(0,10) > st.dateTo) return false;
+      return true;
+    });
+    filtered = filtered.sort((a,b) => {
+      const av = a[st.sortCol], bv = b[st.sortCol];
+      if(av == null && bv == null) return 0;
+      if(av == null) return -1*st.sortDir; if(bv == null) return 1*st.sortDir;
+      if(typeof av === 'number' || typeof bv === 'number') return ((Number(av)||0)-(Number(bv)||0))*st.sortDir;
+      return String(av).localeCompare(String(bv), 'ja') * st.sortDir;
+    });
+    const area = $('#dc-list-area'); if(!area) return;
+    const cb = $('#dc-clear'); if(cb) cb.style.display = hasFilterOn() ? '' : 'none';
+    area.innerHTML = `
+      <div class="muted" style="margin-bottom:8px">${filtered.length}件 / 全${items.length}件${hasFilterOn()?' (絞り込み中)':''}</div>
+      ${filtered.length ? `
+      <div class="list-scroll pc-only">
+        <table class="list">
+          <tr>
+            <th class="dc-th" data-col="file_name" style="cursor:pointer;white-space:nowrap">ファイル名 ${sortMark('file_name')}</th>
+            <th class="dc-th" data-col="ts" style="cursor:pointer;white-space:nowrap">取り込み日時 ${sortMark('ts')}</th>
+            <th class="dc-th" data-col="importer_name" style="cursor:pointer;white-space:nowrap">取り込んだ人 ${sortMark('importer_name')}</th>
+            <th class="dc-th" data-col="applied" style="cursor:pointer;white-space:nowrap">反映件数 ${sortMark('applied')}</th>
+            <th class="dc-th" data-col="sheets" style="cursor:pointer;white-space:nowrap">シート数 ${sortMark('sheets')}</th>
+            <th class="dc-th" data-col="size" style="cursor:pointer;white-space:nowrap">サイズ ${sortMark('size')}</th>
+            <th></th><th></th>
+          </tr>
+          ${filtered.map(it=>`<tr>
+            <td style="white-space:nowrap;font-weight:600">${h(it.file_name||'(名称不明)')}</td>
+            <td style="white-space:nowrap">${h(it.ts)}</td>
+            <td style="white-space:nowrap">${h(it.importer_name||'—')}</td>
+            <td>${it.applied!=null?it.applied+'件':'—'}</td>
+            <td>${it.sheets!=null?it.sheets:'—'}</td>
+            <td style="white-space:nowrap">${fmtSize(it.size)}</td>
+            <td style="white-space:nowrap"><button class="btn ghost xs dc-dl" data-id="${it.id}" data-name="${h(it.file_name||'daicho.xlsx')}">⬇️ ダウンロード</button></td>
+            <td><button class="btn danger xs dc-del" data-id="${it.id}" data-ts="${h(it.ts)}">削除</button></td>
+          </tr>`).join('')}
+        </table>
+      </div>
+      <div class="cards sp-only">
+        ${filtered.map(it=>`<div class="dcard">
+          <div class="dcard-head"><span class="dcard-title">${h(it.file_name||'(名称不明)')}</span></div>
+          <div class="drow"><span class="dk">取り込み日時</span><span class="dv">${h(it.ts)}</span></div>
+          <div class="drow"><span class="dk">取り込んだ人</span><span class="dv">${h(it.importer_name||'—')}</span></div>
+          <div class="drow"><span class="dk">反映件数</span><span class="dv">${it.applied!=null?it.applied+'件':'—'} / シート${it.sheets!=null?it.sheets:'—'} / ${fmtSize(it.size)}</span></div>
+          <div class="dcard-actions">
+            <button class="btn ghost sm dc-dl" data-id="${it.id}" data-name="${h(it.file_name||'daicho.xlsx')}">⬇️ ダウンロード</button>
+            <button class="btn danger sm dc-del" data-id="${it.id}" data-ts="${h(it.ts)}">削除</button>
+          </div>
+        </div>`).join('')}
+      </div>
+      ` : `<div class="muted" style="padding:24px 0;text-align:center">${hasFilterOn()?'条件に一致する台帳はありません':'まだ保管された台帳はありません。スプレッドシートを取り込むと、ここに元Excelが保管されます。'}</div>`}`;
+    area.querySelectorAll('.dc-th').forEach(th => th.onclick = () => {
+      const c = th.dataset.col;
+      if(st.sortCol === c) st.sortDir *= -1;
+      else { st.sortCol = c; st.sortDir = c==='file_name'||c==='importer_name' ? 1 : -1; }
+      const sortSel = $('#dc-sort'); if(sortSel) sortSel.value = `${st.sortCol}:${st.sortDir}`;
+      renderList();
+    });
+    area.querySelectorAll('.dc-dl').forEach(b => b.onclick = async () => {
+      b.disabled=true; const old=b.textContent; b.textContent='取得中…';
+      try{ await downloadFile(`/daicho/${b.dataset.id}/download`, b.dataset.name); }
+      catch(e){ popup(e.message,'error'); }
+      finally{ b.disabled=false; b.textContent=old; }
+    });
+    area.querySelectorAll('.dc-del').forEach(b => b.onclick = async () => {
+      if(!confirm(`${b.dataset.ts} に取り込んだ台帳を削除しますか？\n\n※元Excelファイルが完全に削除されます。すでに登録済みのスケジュール・給与データは残ります。`)) return;
+      try{ await api(`/daicho/${b.dataset.id}/delete`,{method:'POST'}); popup('削除しました'); pageDaicho(app); }
+      catch(e){ popup(e.message,'error'); }
+    });
+  };
+
   app.innerHTML = `
   <h2 style="margin-bottom:8px">🗂️ 台帳保管</h2>
   <div class="card">
     <div class="muted" style="margin-bottom:12px">スプレッドシートを取り込むたびに、元のExcelがそのままサーバーに保管されます（給与計算の根拠・監査用）。ここから閲覧・ダウンロード・削除ができます。<b>管理者のみ</b>がアクセスできます。</div>
     ${items.length ? `
-    <div class="muted" style="margin-bottom:8px">保管件数: ${items.length}件</div>
-    <div class="list-scroll pc-only">
-      <table class="list">
-        <tr><th>ファイル名</th><th>取り込み日時</th><th>取り込んだ人</th><th>反映件数</th><th>シート数</th><th>サイズ</th><th></th><th></th></tr>
-        ${items.map(it=>`<tr>
-          <td style="white-space:nowrap;font-weight:600">${h(it.file_name||'(名称不明)')}</td>
-          <td style="white-space:nowrap">${h(it.ts)}</td>
-          <td style="white-space:nowrap">${h(it.importer_name||'—')}</td>
-          <td>${it.applied!=null?it.applied+'件':'—'}</td>
-          <td>${it.sheets!=null?it.sheets:'—'}</td>
-          <td style="white-space:nowrap">${fmtSize(it.size)}</td>
-          <td style="white-space:nowrap"><button class="btn ghost xs dc-dl" data-id="${it.id}" data-name="${h(it.file_name||'daicho.xlsx')}">⬇️ ダウンロード</button></td>
-          <td><button class="btn danger xs dc-del" data-id="${it.id}" data-ts="${h(it.ts)}">削除</button></td>
-        </tr>`).join('')}
-      </table>
+    <div class="filter-bar" style="flex-wrap:wrap;gap:8px">
+      <input id="dc-name" class="search-input" placeholder="🔍 ファイル名で検索" value="${h(st.name)}" style="min-width:160px;flex:1 1 160px">
+      <select id="dc-person" class="filter-select" style="flex:1 1 140px">
+        <option value="">取り込んだ人:すべて</option>
+        ${persons.map(p=>`<option value="${h(p)}" ${st.person===p?'selected':''}>${h(p)}</option>`).join('')}
+      </select>
+      <label class="muted" style="display:flex;align-items:center;gap:4px;font-size:13px;white-space:nowrap">開始<input type="date" id="dc-from" value="${h(st.dateFrom)}" style="max-width:150px"></label>
+      <label class="muted" style="display:flex;align-items:center;gap:4px;font-size:13px;white-space:nowrap">終了<input type="date" id="dc-to" value="${h(st.dateTo)}" style="max-width:150px"></label>
+      <button class="btn ghost sm" id="dc-clear" style="${hasFilterOn()?'':'display:none'}">クリア</button>
     </div>
-    <div class="cards sp-only">
-      ${items.map(it=>`<div class="dcard">
-        <div class="dcard-head"><span class="dcard-title">${h(it.file_name||'(名称不明)')}</span></div>
-        <div class="drow"><span class="dk">取り込み日時</span><span class="dv">${h(it.ts)}</span></div>
-        <div class="drow"><span class="dk">取り込んだ人</span><span class="dv">${h(it.importer_name||'—')}</span></div>
-        <div class="drow"><span class="dk">反映件数</span><span class="dv">${it.applied!=null?it.applied+'件':'—'} / シート${it.sheets!=null?it.sheets:'—'} / ${fmtSize(it.size)}</span></div>
-        <div class="dcard-actions">
-          <button class="btn ghost sm dc-dl" data-id="${it.id}" data-name="${h(it.file_name||'daicho.xlsx')}">⬇️ ダウンロード</button>
-          <button class="btn danger sm dc-del" data-id="${it.id}" data-ts="${h(it.ts)}">削除</button>
-        </div>
-      </div>`).join('')}
+    <div class="row" style="margin:8px 0;align-items:center;gap:6px">
+      <label class="muted" style="font-size:13px;white-space:nowrap">並び替え</label>
+      <select id="dc-sort" class="filter-select" style="flex:1 1 220px">
+        ${sortOptions.map(([col,dir,label])=>`<option value="${col}:${dir}" ${st.sortCol===col&&st.sortDir===dir?'selected':''}>${label}</option>`).join('')}
+      </select>
     </div>
+    <div id="dc-list-area"></div>
     ` : '<div class="muted" style="padding:24px 0;text-align:center">まだ保管された台帳はありません。スプレッドシートを取り込むと、ここに元Excelが保管されます。</div>'}
   </div>`;
-  app.querySelectorAll('.dc-dl').forEach(b => b.onclick = async () => {
-    b.disabled=true; const old=b.textContent; b.textContent='取得中…';
-    try{ await downloadFile(`/daicho/${b.dataset.id}/download`, b.dataset.name); }
-    catch(e){ popup(e.message,'error'); }
-    finally{ b.disabled=false; b.textContent=old; }
-  });
-  app.querySelectorAll('.dc-del').forEach(b => b.onclick = async () => {
-    if(!confirm(`${b.dataset.ts} に取り込んだ台帳を削除しますか？\n\n※元Excelファイルが完全に削除されます。すでに登録済みのスケジュール・給与データは残ります。`)) return;
-    try{ await api(`/daicho/${b.dataset.id}/delete`,{method:'POST'}); popup('削除しました'); pageDaicho(app); }
-    catch(e){ popup(e.message,'error'); }
-  });
+
+  if(items.length){
+    renderList();
+    const dn = $('#dc-name');
+    if(dn) dn.oninput = () => { st.name = dn.value; renderList(); }; // input要素自体には触れないのでキーボードは閉じない
+    const dp = $('#dc-person');
+    if(dp) dp.onchange = () => { st.person = dp.value; renderList(); };
+    const df = $('#dc-from');
+    if(df) df.onchange = () => { st.dateFrom = df.value; renderList(); };
+    const dt = $('#dc-to');
+    if(dt) dt.onchange = () => { st.dateTo = dt.value; renderList(); };
+    const ds = $('#dc-sort');
+    if(ds) ds.onchange = () => { const [col,dir] = ds.value.split(':'); st.sortCol = col; st.sortDir = Number(dir); renderList(); };
+    const dc = $('#dc-clear');
+    if(dc) dc.onclick = () => { st.name=''; st.person=''; st.dateFrom=''; st.dateTo=''; pageDaicho(app); };
+  }
 }
 
 /* ===== アカウント管理(管理者)===== */
