@@ -282,8 +282,9 @@ async function openSiteModal(date, site){
     const b = breakByUid[p.uid];
     if(!b || b.workMinutes <= 0) return '';
     const cls = b.short ? 'break-short' : 'break-ok';
-    const label = b.short ? `休憩${b.breakMinutes}分(目安${b.requiredMinutes}分未満)` : `休憩${b.breakMinutes}分`;
-    return `<span class="break-tag ${cls}">${b.short?'⚠️ ':''}${label}</span>`;
+    const label = b.short ? `⚠️${b.breakMinutes}/${b.requiredMinutes}分` : `休憩${b.breakMinutes}分`;
+    const tip = b.short ? `休憩不足の目安: ${b.breakMinutes}分(必要${b.requiredMinutes}分以上)` : `休憩${b.breakMinutes}分`;
+    return `<span class="break-tag ${cls}" title="${h(tip)}">${label}</span>`;
   };
   const card = p => `<div class="dcard ka-${p.ka==='1課'?'1':'2'} ${editable?'sm-edit':''}" ${editable?`data-uid="${p.uid}"`:''}>
     <div class="dcard-head"><span class="dcard-title">${nameHtml(p)} ${kaTag(p)}</span><span class="tag ${p.role}">${roleLabel(p)}</span></div>
@@ -293,7 +294,7 @@ async function openSiteModal(date, site){
     ${p.note?`<div class="drow"><span class="dk">備考</span><span class="dv">${h(p.note)}</span></div>`:''}
     ${editable?'<div class="sm-edit-hint">タップして編集 ✏️</div>':''}
   </div>`;
-  const row = p => `<tr class="ka-row-${p.ka==='1課'?'1':'2'} ${editable?'sm-edit':''}" ${editable?`data-uid="${p.uid}"`:''}><td>${nameHtml(p)} ${kaTag(p)}</td><td><span class="tag ${p.role}">${roleLabel(p)}</span></td><td>${h(p.rank)}</td><td>${h(p.han)}</td>${canPay?`<td>${h(p.tin)}</td><td>${h(p.tout)}</td>`:''}<td>${breakHtml(p)||''}</td><td>${h(p.note)}</td>${editable?'<td class="sm-edit-cell">✏️</td>':''}</tr>`;
+  const row = p => `<tr class="ka-row-${p.ka==='1課'?'1':'2'} ${editable?'sm-edit':''}" ${editable?`data-uid="${p.uid}"`:''}><td style="white-space:nowrap">${nameHtml(p)} ${kaTag(p)}</td><td style="white-space:nowrap"><span class="tag ${p.role}">${roleLabel(p)}</span></td><td style="white-space:nowrap">${h(p.rank)}</td><td style="white-space:nowrap">${h(p.han)}</td>${canPay?`<td style="white-space:nowrap">${h(p.tin)}</td><td style="white-space:nowrap">${h(p.tout)}</td>`:''}<td style="white-space:nowrap">${breakHtml(p)||''}</td><td style="min-width:150px">${h(p.note)}</td>${editable?'<td class="sm-edit-cell">✏️</td>':''}</tr>`;
   const tbl = arr => `<table class="list pc-only"><tr><th>氏名</th><th>役割</th><th>ランク</th><th>班</th>${canPay?'<th>IN</th><th>OUT</th>':''}<th>休憩</th><th>備考</th>${editable?'<th></th>':''}</tr>${arr.map(row).join('')}</table>
     <div class="cards sp-only">${arr.map(card).join('')}</div>`;
   modal(`<h3>現場情報</h3>
