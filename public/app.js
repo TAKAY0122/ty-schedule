@@ -680,7 +680,7 @@ function renderShell(hash){
     ]},
     { path:'#/sites', label:'🏟️ 現場一覧', show:isChief },
     { label:'👥 メンバー', show:isChief, children:[
-      ...(isHandlerRole ? [['#/members/mine','📋 自分の手配一覧']] : []),
+      ...(isHandlerRole ? [['#/members/mine',`📋 ${ME.name}手配`]] : []),
       ['#/members','👥 メンバー一覧'],
       ['#/summary','📊 稼働サマリー'],
     ]},
@@ -850,10 +850,13 @@ async function pageSchedule(app, hash){
   const canRecord = (uid === ME.id) || ME.role === 'admin'; // 現場記録は本人と管理者のみ閲覧・編集可
   const plans = d.plans || {};
   const multi = arr => arr.map(x=>h(x||'')||'&nbsp;').join('<br>'); // 複数現場を改行で重ねる
+  // 現場名・会場・備考・育成計画は、長くなるとセルが縦に伸びて崩れるため、1行を保ちつつ
+  // 一定の長さを超えたらフォントを少し小さくして読みやすさを保つ。
+  const longCls = (text, threshold) => (text && String(text).length > threshold) ? ' text-long' : '';
   // 育成計画セル(日単位)
   const planCell = (date) => {
     const pv = plans[date] || '';
-    return `<td class="plan-cell" data-date="${date}" data-plan="${h(pv)}" title="${canPlan?'タップで育成計画を編集':''}">${h(pv)}${canPlan?' <span class="plan-edit">✎</span>':''}</td>`;
+    return `<td class="plan-cell${longCls(pv,15)}" data-date="${date}" data-plan="${h(pv)}" title="${canPlan?'タップで育成計画を編集':''}">${h(pv)}${canPlan?' <span class="plan-edit">✎</span>':''}</td>`;
   };
   for(let i=1;i<=days;i++){
     const date = `${MONTH}-${pad(i)}`;
@@ -874,8 +877,8 @@ async function pageSchedule(app, hash){
       for(const e of list){
         sumH+=e.hours; sumOT+=e.overtime; sumPay+=e.pay;
         const rk = (LV[ME.role]>=1 ? (rookieMap[date+'|'+e.site]||[]) : []).map(n=>`<span class="rookie-badge">🔰${h(n)}</span>`).join('');
-        sites.push(`<span class="site-cell" data-date="${date}" data-site="${h(e.site)}" title="タップで同じ現場のメンバーを表示">${h(e.site)}${rk}</span>${canRecord?` <span class="rec-btn" data-date="${date}" data-site="${h(e.site)}" title="現場記録を記入${e.breakShort?'(休憩時間が目安に届いていません)':''}">📝${e.breakShort?'⚠️':''}</span>`:''}`);
-        venues.push(`<span class="venue-cell" data-venue="${h(e.venue)}" title="タップでGoogleマップ">${h(e.venue)}</span>`);
+        sites.push(`<span class="site-cell${longCls(e.site,10)}" data-date="${date}" data-site="${h(e.site)}" title="タップで同じ現場のメンバーを表示">${h(e.site)}${rk}</span>${canRecord?` <span class="rec-btn" data-date="${date}" data-site="${h(e.site)}" title="現場記録を記入${e.breakShort?'(休憩時間が目安に届いていません)':''}">📝${e.breakShort?'⚠️':''}</span>`:''}`);
+        venues.push(`<span class="venue-cell${longCls(e.venue,12)}" data-venue="${h(e.venue)}" title="タップでGoogleマップ">${h(e.venue)}</span>`);
         dutys.push(e.duty?h(e.duty):'<span class="muted">—</span>');
         tins.push(h(e.tin)); touts.push(h(e.tout));
         hrs.push(e.hours?e.hours.toFixed(2):''); ots.push(e.overtime?e.overtime.toFixed(2):'');
@@ -886,15 +889,15 @@ async function pageSchedule(app, hash){
         const payPart = canPay && e.pay ? `<div class="m-line"><span class="m-k">給与</span><span class="m-v">${yen(e.pay)}${e.overtime?` / 残業${e.overtime.toFixed(2)}h`:''}</span></div>` : '';
         const notePart = e.note ? `<div class="m-line"><span class="m-k">備考</span><span class="m-v">${h(e.note)}</span></div>` : '';
         mSites.push(`<div class="m-site">
-          <div class="m-sitename"><span class="site-cell" data-date="${date}" data-site="${h(e.site)}">${h(e.site)}</span>${rk}${canRecord?` <span class="rec-btn" data-date="${date}" data-site="${h(e.site)}">📝記録${e.breakShort?' ⚠️':''}</span>`:''}</div>
-          ${e.venue?`<div class="m-line"><span class="m-k">会場</span><span class="m-v"><span class="venue-cell" data-venue="${h(e.venue)}">${h(e.venue)}</span></span></div>`:''}
+          <div class="m-sitename${longCls(e.site,14)}"><span class="site-cell" data-date="${date}" data-site="${h(e.site)}">${h(e.site)}</span>${rk}${canRecord?` <span class="rec-btn" data-date="${date}" data-site="${h(e.site)}">📝記録${e.breakShort?' ⚠️':''}</span>`:''}</div>
+          ${e.venue?`<div class="m-line"><span class="m-k">会場</span><span class="m-v${longCls(e.venue,16)}"><span class="venue-cell" data-venue="${h(e.venue)}">${h(e.venue)}</span></span></div>`:''}
           ${dutyPart}${timePart}${payPart}${notePart}
         </div>`);
       }
       const payPart = canPay ? `<td class="c duty-col">${dutys.join('<br>')}</td><td class="c">${tins.join('<br>')}</td><td class="c">${touts.join('<br>')}</td>
         <td class="r">${hrs.join('<br>')}</td><td class="r">${ots.join('<br>')}</td><td class="r">${pays.join('<br>')}</td>` : '';
       cells = `<td class="site-multi">${sites.join('<br>')}</td><td class="venue-multi">${venues.join('<br>')}</td>
-        ${payPart}<td class="note-cell">${multi(notes.length?notes:[''])}</td>${planCell(date)}`;
+        ${payPart}<td class="note-cell${longCls(notes.join(''),15)}">${multi(notes.length?notes:[''])}</td>${planCell(date)}`;
       mCls = 'm-work';
       mBody = mSites.join('');
     } else {
@@ -904,7 +907,7 @@ async function pageSchedule(app, hash){
       sumH+=e.hours||0; sumPay+=e.pay||0;
       const payPart = canPay ? `<td></td><td class="c">${h(e.tin)}</td><td class="c">${h(e.tout)}</td>
         <td class="r">${e.hours?e.hours.toFixed(2):''}</td><td></td><td class="r">${e.pay?e.pay.toLocaleString():''}</td>` : '';
-      cells = `<td class="off-cell off-${e.type}">${label}</td><td></td>${payPart}<td class="note-cell">${h(e.note||'')}</td>${planCell(date)}`;
+      cells = `<td class="off-cell off-${e.type}">${label}</td><td></td>${payPart}<td class="note-cell${longCls(e.note,15)}">${h(e.note||'')}</td>${planCell(date)}`;
       mCls = 'm-off m-'+e.type;
       mBody = `<span class="m-off-label">${label}</span>${e.note?`<div class="m-line"><span class="m-k">備考</span><span class="m-v">${h(e.note)}</span></div>`:''}`;
     }

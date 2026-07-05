@@ -544,6 +544,12 @@ table.sched{min-width:940px}
 td.site-multi,td.venue-multi{max-width:none;white-space:nowrap}
 .sched td.duty-col{white-space:nowrap}
 .sched .site-cell,.sched .venue-cell{white-space:nowrap}
+/* 備考・育成計画も同様に1行を保つ(長い場合は横スクロール、またはJSでtext-longクラスが付き縮小表示) */
+td.note-cell,td.plan-cell{max-width:none;white-space:nowrap}
+td.note-cell.text-long,td.plan-cell.text-long{font-size:10px}
+.site-cell.text-long,.venue-cell.text-long{font-size:11.5px}
+.m-sitename.text-long{font-size:13px}
+.m-line .m-v.text-long{font-size:12px}
 /* 稼働サマリー: 担当名・各セルを1行に */
 .mgr-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sum-table td{white-space:nowrap}
