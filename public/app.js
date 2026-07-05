@@ -562,6 +562,8 @@ async function render(){
     else if(hash === '#/sites') await pageSites(app);
     else if(hash === '#/summary') await pageSummary(app);
     else if(hash === '#/edit') await pageEdit(app);
+    else if(hash.startsWith('#/edit/')) await pageEdit(app, hash.slice('#/edit/'.length));
+    else if(hash === '#/members/mine'){ const st0 = PAGE_STATE.members || (PAGE_STATE.members = { tab:'2課', q:'', mgr:'' }); st0.mgr = String(ME.id); await pageMembers(app); }
     else if(hash === '#/report') pageReportForm(app);
     else if(hash === '#/reports') await pageReports(app);
     else if(hash === '#/draft') await pageDraft(app);
@@ -653,6 +655,7 @@ function renderShell(hash){
   // 単純な startsWith だと "#/admin-settings" が "#/admin" にマッチしてしまう等の誤爆が起きるため使用。
   const hashIs = (h, p) => h === p || h.startsWith(p + '/');
   const isChief = LV[ME.role] >= 1;
+  const isHandlerRole = LV[ME.role] >= 2; // 手配担当者(role: handler以上)本人か
   const canEdit = ME.handler === 1;
   const canDraft = has('report_check');
   const canBlacklist = has('blacklist_manage');
@@ -677,6 +680,7 @@ function renderShell(hash){
     ]},
     { path:'#/sites', label:'🏟️ 現場一覧', show:isChief },
     { label:'👥 メンバー', show:isChief, children:[
+      ...(isHandlerRole ? [['#/members/mine','📋 自分の手配一覧']] : []),
       ['#/members','👥 メンバー一覧'],
       ['#/summary','📊 稼働サマリー'],
     ]},
@@ -1391,6 +1395,7 @@ async function pageMembers(app){
     ? `<button class="btn ghost sm" data-edit="${u.id}">✏️ 編集</button>`
     : `<button class="btn ghost sm" data-skill="${u.id}">できること編集</button>`;
   const schedBtn = (u,cls='gold') => `<button class="btn ${cls} sm go-sched" data-uid="${u.id}">📅 スケジュール</button>`;
+  const goEditBtn = u => isHandler ? `<button class="btn ghost sm go-edit" data-uid="${u.id}">✏️ 現場入力</button>` : '';
 
   // リスト部分だけを再構築する。検索欄などフォームのinput要素はここでは一切触らない
   // (input要素をDOMから作り直すと、スマホでソフトウェアキーボードが閉じてしまうため)
@@ -1415,7 +1420,7 @@ async function pageMembers(app){
         <td><span class="tag ${u.role}">${roleLabel(u)}</span></td>
         <td>${h(u.rank)}</td><td>${h(u.han)}</td><td>${h(managerName(u,users))}</td><td>${h(u.station)}</td>
         <td class="wrapcell">${h(u.skills)}</td>
-        <td>${editBtn(u)} ${schedBtn(u,'ghost')}</td>
+        <td>${editBtn(u)} ${schedBtn(u,'ghost')} ${goEditBtn(u)}</td>
       </tr>`).join('') || '<tr><td colspan="9" class="muted" style="text-align:center;padding:16px">該当するメンバーはいません</td></tr>'}
       </table>
       </div>
@@ -1430,12 +1435,19 @@ async function pageMembers(app){
         <div class="dcard-actions">
           ${editBtn(u)}
           ${schedBtn(u)}
+          ${goEditBtn(u)}
         </div>
       </div>`).join('') || '<div class="muted" style="text-align:center;padding:16px">該当するメンバーはいません</div>'}
       </div>
       <div class="muted" style="margin-top:8px">「できること」= 配置以外にできる業務(進行、買い出し など)</div>`;
     wireNameLinks(area);
     area.querySelectorAll('.go-sched').forEach(b=>b.onclick=()=>{ location.hash='#/schedule/'+b.dataset.uid; });
+    area.querySelectorAll('.go-edit').forEach(b=>b.onclick=()=>{
+      const uid = b.dataset.uid;
+      const proceed = () => { location.hash = '#/edit/' + uid; render(); };
+      if(ME.handler !== 1 && ME.role !== 'admin'){ openHandlerPin(proceed); return; }
+      proceed();
+    });
     area.querySelectorAll('[data-skill]').forEach(b => b.onclick = async () => {
       const u = users.find(x=>x.id==b.dataset.skill);
       const v = prompt(`${u.name} のできることリスト(カンマ区切り)`, u.skills||'');
@@ -1536,7 +1548,7 @@ function managerName(u, users){
 }
 
 /* ===== スケジュール入力(手配者モード)===== */
-async function pageEdit(app){
+async function pageEdit(app, initialUid){
   if(ME.handler !== 1){ notFound(app); return; }
   const [users, managers] = await Promise.all([getUsers(true), api('/managers')]);
   app.innerHTML = `
@@ -1586,7 +1598,7 @@ async function pageEdit(app){
         <option value="__none">チーフ手配</option>
       </select>
       <label>メンバー</label>
-      <select id="e-user" class="nowrap">${users.map(u=>`<option value="${u.id}">${h(u.name)}(${h(u.regno)})</option>`).join('')}</select>
+      <select id="e-user" class="nowrap">${users.map(u=>`<option value="${u.id}" ${initialUid && String(u.id)===String(initialUid)?'selected':''}>${h(u.name)}(${h(u.regno)})</option>`).join('')}</select>
       <label>対象月</label>
       <input type="month" id="e-month" value="${MONTH}">
     </div>
@@ -1845,6 +1857,7 @@ async function pageEdit(app){
 
   $('#e-load').onclick = load;
   $('#e-user').onchange = load;
+  if(initialUid) load(); // メンバー一覧などから遷移してきた場合、そのまま自動で読み込む
   $('#e-save').onclick = async () => {
     const uid = Number($('#e-user').value);
     const byDate = {};
