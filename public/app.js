@@ -66,7 +66,10 @@ function closeDrawerAnimated(dr){
   if(!bg && !nav){ dr.innerHTML=''; return; }
   if(bg) bg.classList.add('closing');
   if(nav) nav.classList.add('closing');
-  setTimeout(() => { dr.innerHTML=''; }, 180);
+  setTimeout(() => {
+    // このタイマーが発火するまでの間に、別の新しいドロワーが開かれていた場合は消さない
+    if(dr.querySelector('.closing')) dr.innerHTML='';
+  }, 180);
 }
 // 全データ閲覧(システム設定): テーブル表示・ソート・フィルタ・CSVダウンロードの状態
 const DV_STATE = { rows:[], cols:[], sortCol:null, sortDir:1, filters:{}, tableName:'' };
@@ -182,7 +185,11 @@ function closeModal(){
   if(!bg && !box){ layer.innerHTML=''; return; }
   if(bg) bg.classList.add('closing');
   if(box) box.classList.add('closing');
-  setTimeout(() => { layer.innerHTML=''; }, 160);
+  setTimeout(() => {
+    // このタイマーが発火するまでの間に、別の新しいモーダルが開かれていた場合は消さない
+    // (閉じるアニメーション中に次のモーダルを即座に開くケースがあるため)
+    if(layer.querySelector('.closing')) layer.innerHTML='';
+  }, 160);
 }
 
 // 保存・更新などの完了をOKボタン付きポップアップで知らせる
@@ -244,7 +251,9 @@ function conflictModal(conflicts){
 }
 
 // 手配者モードのPIN入力(prompt()はスマホで不安定なため自前モーダル)
-function openHandlerPin(){
+// PINが正しく手配モードに入れたら、通常は「スケジュール入力」ページへ移動する。
+// onSuccessを渡した場合はそちらを実行する(承認フローなど、元の操作をそのまま続行したい場合用)。
+function openHandlerPin(onSuccess){
   modal(`<h3>手配者モードに切り替え</h3>
     <div class="muted" style="margin-bottom:10px">手配者専用パスワード(PIN)を入力してください。</div>
     <input id="hp-pin" type="tel" inputmode="numeric" autocomplete="off" placeholder="PIN" style="width:100%;font-size:18px;letter-spacing:4px;text-align:center;padding:12px">
@@ -256,7 +265,9 @@ function openHandlerPin(){
     if(!v){ $('#hp-err').innerHTML='<div class="msg err">PINを入力してください</div>'; return; }
     try{
       await api('/handler-mode',{method:'POST',body:{pin:v}});
-      ME.handler=1; closeModal(); location.hash='#/edit'; render();
+      ME.handler=1; closeModal();
+      if(onSuccess) onSuccess();
+      else { location.hash='#/edit'; render(); }
     }catch(e){ $('#hp-err').innerHTML=`<div class="msg err">${h(e.message)}</div>`; }
   };
   $('#hp-go').onclick = go;
@@ -2167,7 +2178,7 @@ async function pageSelfReports(app){
 
   app.innerHTML = `
   <h2 style="margin-bottom:8px">📝 現場変更報告の承認</h2>
-  <div class="muted" style="margin-bottom:14px">メンツから「手配担当者以外に言われた現場変更」の報告があると、ここに表示されます。承認するとスケジュールに反映され、本人に通知されます。</div>
+  <div class="muted" style="margin-bottom:14px">メンツから「手配担当者以外に言われた現場変更」の報告があると、ここに表示されます。承認するとスケジュールに反映され、本人に通知されます。承認・見送りには手配者モードが必要です(未入力の場合はPIN入力が求められます)。</div>
   ${rows.length ? `
   <div class="cards" style="display:flex">
     ${rows.map(r=>`<div class="dcard" data-id="${r.id}">
@@ -2184,22 +2195,32 @@ async function pageSelfReports(app){
   </div>
   ` : '<div class="card"><div class="muted" style="text-align:center;padding:20px 0">承認待ちの報告はありません</div></div>'}`;
 
+  // 承認・却下は「手配モード」でのみ行える(通常の現場入力と同じ重みの操作のため)。
+  // 手配モードでなければ、その場でPIN入力してから、元の操作をそのまま続行する。
   app.querySelectorAll('.sr-approve').forEach(b => b.onclick = () => {
     const r = rows.find(x => String(x.id) === b.dataset.id);
     if(!r) return;
-    if(r.type === 'off'){
-      if(!confirm('休暇として承認しますか？')) return;
-      api(`/self-reports/${r.id}/approve`, { method:'POST' })
-        .then(()=>{ popup('承認しました'); pageSelfReports(app); })
-        .catch(e=>popup(e.message,'error'));
-      return;
-    }
-    openSelfReportApprove(r);
+    const proceed = () => {
+      if(r.type === 'off'){
+        if(!confirm('休暇として承認しますか？')) return;
+        api(`/self-reports/${r.id}/approve`, { method:'POST' })
+          .then(()=>{ popup('承認しました'); pageSelfReports(app); })
+          .catch(e=>popup(e.message,'error'));
+        return;
+      }
+      openSelfReportApprove(r);
+    };
+    if(ME.handler !== 1 && ME.role !== 'admin'){ openHandlerPin(proceed); return; }
+    proceed();
   });
-  app.querySelectorAll('.sr-reject').forEach(b => b.onclick = async () => {
-    if(!confirm('この報告を見送りますか？(スケジュールには反映されません)')) return;
-    try{ await api(`/self-reports/${b.dataset.id}/reject`, { method:'POST' }); popup('見送りました'); pageSelfReports(app); }
-    catch(e){ popup(e.message,'error'); }
+  app.querySelectorAll('.sr-reject').forEach(b => b.onclick = () => {
+    const proceed = async () => {
+      if(!confirm('この報告を見送りますか？(スケジュールには反映されません)')) return;
+      try{ await api(`/self-reports/${b.dataset.id}/reject`, { method:'POST' }); popup('見送りました'); pageSelfReports(app); }
+      catch(e){ popup(e.message,'error'); }
+    };
+    if(ME.handler !== 1 && ME.role !== 'admin'){ openHandlerPin(proceed); return; }
+    proceed();
   });
 }
 
