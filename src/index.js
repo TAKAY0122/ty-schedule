@@ -241,14 +241,29 @@ function stripRow(r) {
 }
 
 // 本人による現場変更の報告を、実際にscheduleへ反映する共通処理。
-// チーフ以上の即時反映と、メンツの承認完了時の反映の両方から呼ばれる。
-async function applySelfReportToSchedule(env, uid, date, toldBy, type, site, venue) {
+// チーフ以上の即時反映(詳細なし)と、承認時(手配担当者が現場名・時刻・業務名などを補って確定する)の両方から呼ばれる。
+// detail: { type:'work'|'off', site, venue, tin, tout, duty, load_end, show_end, multi, note }
+async function applySelfReportToSchedule(env, uid, date, toldBy, detail) {
   const before = (await env.DB.prepare('SELECT * FROM schedule WHERE user_id=? AND date=? ORDER BY slot').bind(uid, date).all()).results;
   const beforeJson = JSON.stringify(before.map(stripRow));
   await env.DB.prepare('DELETE FROM schedule WHERE user_id=? AND date=?').bind(uid, date).run();
-  const afterRow = type === 'off'
-    ? { type: 'off', site: '', venue: '', tin: '', tout: '', hours: 0, overtime: 0, pay: 0, note: '', duty: '', load_end: '', show_end: '', multi: 0 }
-    : { type: 'work', site, venue, tin: '', tout: '', hours: 0, overtime: 0, pay: 0, note: '', duty: '', load_end: '', show_end: '', multi: 0 };
+
+  let afterRow;
+  if (detail.type === 'off') {
+    afterRow = { type: 'off', site: '', venue: '', tin: '', tout: '', hours: 0, overtime: 0, pay: 0, note: '', duty: '', load_end: '', show_end: '', multi: 0 };
+  } else {
+    let hours = 0, overtime = 0, pay = 0;
+    if (detail.tin && detail.tout) {
+      const u = await env.DB.prepare('SELECT rank FROM users WHERE id=?').bind(uid).first();
+      const resolve = await loadWageResolver(env);
+      const c = calcPay({ rank: u ? u.rank : '', date, tin: detail.tin, tout: detail.tout, duty: detail.duty, loadEnd: detail.load_end, showEnd: detail.show_end, multi: detail.multi ? 1 : 0 }, resolve);
+      if (c) ({ hours, overtime, pay } = c);
+    }
+    afterRow = {
+      type: 'work', site: detail.site || '', venue: detail.venue || '', tin: detail.tin || '', tout: detail.tout || '',
+      hours, overtime, pay, note: detail.note || '', duty: detail.duty || '', load_end: detail.load_end || '', show_end: detail.show_end || '', multi: detail.multi ? 1 : 0,
+    };
+  }
   await env.DB.prepare('INSERT INTO schedule(user_id,date,slot,type,site,venue,tin,tout,hours,overtime,pay,note,duty,load_end,show_end,multi) VALUES(?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,?)')
     .bind(uid, date, afterRow.type, afterRow.site, afterRow.venue, afterRow.tin, afterRow.tout, afterRow.hours, afterRow.overtime, afterRow.pay, afterRow.note, afterRow.duty, afterRow.load_end, afterRow.show_end, afterRow.multi).run();
   await env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
@@ -1777,8 +1792,8 @@ async function api(req, env, url) {
       return J({ ok: 1, needsApproval: true });
     }
 
-    // チーフ以上: 承認不要で即時反映
-    await applySelfReportToSchedule(env, uid, date, toldBy, type, site, venue);
+    // チーフ以上: 承認不要で即時反映(詳細な時刻・業務名などはここでは入れず、後で手配担当者が編集できる)
+    await applySelfReportToSchedule(env, uid, date, toldBy, { type, site, venue });
     const msg2 = `📢 ${me.name}さんから、${date}のスケジュールが「${label}」に変更されたと報告がありました。(伝えた人: ${toldBy})`;
     const link2 = `#/schedule/${uid}?month=${date.slice(0, 7)}`;
     try {
@@ -1811,9 +1826,25 @@ async function api(req, env, url) {
     if (rep.status !== 'pending') return ERR('すでに処理されています');
     const tgt = await env.DB.prepare('SELECT manager_id FROM users WHERE id=?').bind(rep.user_id).first();
     if (me.role !== 'admin' && String(tgt ? tgt.manager_id : '') !== String(me.id)) return ERR('権限がありません', 403);
-    await applySelfReportToSchedule(env, rep.user_id, rep.date, rep.told_by, rep.type, rep.site, rep.venue);
+    // 承認時に、通常の現場入力と同じ項目(現場名・会場名・時刻・業務名など)を指定できる。
+    // 指定がなければ報告内容(現場名/会場名)のみで反映される。
+    const detail = rep.type === 'off'
+      ? { type: 'off' }
+      : {
+          type: 'work',
+          site: String(body.site ?? rep.site ?? '').trim(),
+          venue: String(body.venue ?? rep.venue ?? '').trim(),
+          tin: String(body.tin || '').trim(),
+          tout: String(body.tout || '').trim(),
+          duty: String(body.duty || '').trim(),
+          load_end: String(body.load_end || '').trim(),
+          show_end: String(body.show_end || '').trim(),
+          multi: body.multi ? 1 : 0,
+          note: String(body.note || '').trim(),
+        };
+    await applySelfReportToSchedule(env, rep.user_id, rep.date, rep.told_by, detail);
     await env.DB.prepare('UPDATE self_reports SET status=?, decided_at=?, decided_by=? WHERE id=?').bind('approved', jstTs(), me.id, id).run();
-    const label = rep.type === 'off' ? '休暇' : [rep.site, rep.venue].filter(Boolean).join('／');
+    const label = rep.type === 'off' ? '休暇' : [detail.site, detail.venue].filter(Boolean).join('／');
     try {
       await notify(env, [rep.user_id], 'self_report',
         `✅ ${rep.date}の「${label}」への変更報告が承認され、スケジュールに反映されました。`,

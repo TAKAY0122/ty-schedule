@@ -662,12 +662,12 @@ function renderShell(hash){
     { label:'📅 スケジュール', show:true, children:[
       ['#/schedule','📅 マイスケジュール'],
       ...(canEdit ? [['#/edit','✏️ スケジュール入力']] : []),
+      ...(isChief ? [['#/self-reports','📝 現場変更報告の承認']] : []),
     ]},
     { path:'#/sites', label:'🏟️ 現場一覧', show:isChief },
     { label:'👥 メンバー', show:isChief, children:[
       ['#/members','👥 メンバー一覧'],
       ['#/summary','📊 稼働サマリー'],
-      ['#/self-reports','📝 現場変更報告の承認'],
     ]},
     { label:'🆕 新人報告', show:true, children:[
       ['#/report','📝 新人報告'],
@@ -1063,12 +1063,10 @@ function isLockedDate(date){ const d=new Date(Date.now()+9*3600e3); d.setDate(d.
 // 保存すると必ず本来の手配担当者へ通知が届く。時刻・給与などの詳細はここでは入力しない
 // (速報用。正式な内容は後で手配担当者が入力する想定)。
 function openScheduleSelfReport(date){
-  const needsApproval = LV[ME.role] < 1; // メンツは承認が必要、チーフ以上は承認不要
   modal(`<h3>現場変更の報告</h3>
-    <div class="muted" style="margin-bottom:12px">手配担当者以外から直接聞いた現場変更を、その場で報告できます。${needsApproval ? '保存すると<b>手配担当者の承認後に</b>スケジュールへ反映されます。' : '保存するとスケジュールに反映され、<b>手配担当者に自動で通知</b>が届きます。'}</div>
     <div class="form-grid" style="max-width:480px">
       <label>現場日 *</label><input type="date" id="sr-date" value="${h(date)}">
-      <label>誰から言われたか *</label><input id="sr-toldby" placeholder="例: 田中チーフ">
+      <label>誰から言われたか *</label><input id="sr-toldby">
       <label>変更内容</label>
       <select id="sr-type">
         <option value="work">現場に変更</option>
@@ -2186,16 +2184,66 @@ async function pageSelfReports(app){
   </div>
   ` : '<div class="card"><div class="muted" style="text-align:center;padding:20px 0">承認待ちの報告はありません</div></div>'}`;
 
-  app.querySelectorAll('.sr-approve').forEach(b => b.onclick = async () => {
-    if(!confirm('この内容でスケジュールに反映しますか？')) return;
-    try{ await api(`/self-reports/${b.dataset.id}/approve`, { method:'POST' }); popup('承認しました'); pageSelfReports(app); }
-    catch(e){ popup(e.message,'error'); }
+  app.querySelectorAll('.sr-approve').forEach(b => b.onclick = () => {
+    const r = rows.find(x => String(x.id) === b.dataset.id);
+    if(!r) return;
+    if(r.type === 'off'){
+      if(!confirm('休暇として承認しますか？')) return;
+      api(`/self-reports/${r.id}/approve`, { method:'POST' })
+        .then(()=>{ popup('承認しました'); pageSelfReports(app); })
+        .catch(e=>popup(e.message,'error'));
+      return;
+    }
+    openSelfReportApprove(r);
   });
   app.querySelectorAll('.sr-reject').forEach(b => b.onclick = async () => {
     if(!confirm('この報告を見送りますか？(スケジュールには反映されません)')) return;
     try{ await api(`/self-reports/${b.dataset.id}/reject`, { method:'POST' }); popup('見送りました'); pageSelfReports(app); }
     catch(e){ popup(e.message,'error'); }
   });
+}
+
+// 現場変更報告の承認時に、通常の現場入力と同じ項目(現場名・会場・時刻・業務名など)を
+// 入力・修正してから反映できるモーダル。現場名/会場名は報告内容を初期値にする。
+function openSelfReportApprove(r){
+  modal(`<h3>${h(r.user_name)} さん / ${h(r.date)} の報告を承認</h3>
+    <div class="muted" style="margin-bottom:10px">伝えた人: ${h(r.told_by)}</div>
+    <div class="form-grid" style="grid-template-columns:64px 1fr;gap:6px 8px">
+      <label>現場名</label><input id="sra-site" value="${h(r.site||'')}" placeholder="例:NiziU">
+      <label>会場</label><input id="sra-venue" value="${h(r.venue||'')}" placeholder="例:京セラドーム大阪">
+      <label>業務名</label><select id="sra-duty">${DUTIES.map(d=>`<option ${d==='案内'?'selected':''}>${d}</option>`).join('')}</select>
+      <label>IN</label><input id="sra-in" placeholder="9:00">
+      <label>OUT</label><input id="sra-out" placeholder="18:00">
+      <label>搬入終了</label><input id="sra-le" placeholder="任意 例:10:30">
+      <label>終演</label><input id="sra-se" placeholder="任意 例:20:00">
+      <label>手当</label><label style="font-weight:400;font-size:13px;display:flex;align-items:center;gap:6px"><input type="checkbox" id="sra-multi" style="width:auto"> 2st(複数回公演 +¥500)</label>
+      <label>備考</label><input id="sra-note" placeholder="例:物販頭">
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button class="btn gold" id="sra-save" style="flex:1">承認して反映する</button>
+    </div>
+    <div class="muted" style="margin-top:8px">時刻は未入力でも承認できます(現場名だけを反映し、時刻は後から追加できます)。</div>`);
+
+  $('#sra-save').onclick = async () => {
+    const site = $('#sra-site').value.trim();
+    const venue = $('#sra-venue').value.trim();
+    if(!site && !venue){ popup('現場名か会場名を入力してください','error'); return; }
+    const body = {
+      site, venue,
+      duty: $('#sra-duty').value,
+      tin: $('#sra-in').value.trim(),
+      tout: $('#sra-out').value.trim(),
+      load_end: $('#sra-le').value.trim(),
+      show_end: $('#sra-se').value.trim(),
+      multi: $('#sra-multi').checked ? 1 : 0,
+      note: $('#sra-note').value.trim(),
+    };
+    try{
+      await api(`/self-reports/${r.id}/approve`, { method:'POST', body });
+      closeModal(); popup('承認しました');
+      if(location.hash === '#/self-reports') pageSelfReports(document.getElementById('app'));
+    }catch(e){ popup(e.message,'error'); }
+  };
 }
 
 async function pageHandlerStatus(app){
