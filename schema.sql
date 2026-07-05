@@ -110,7 +110,33 @@ CREATE TABLE IF NOT EXISTS notifications(
   ts TEXT,
   type TEXT DEFAULT '',
   message TEXT,
-  read INTEGER DEFAULT 0
+  read INTEGER DEFAULT 0,
+  link TEXT DEFAULT ''                   -- クリック時の遷移先(例: '#/schedule/12?month=2026-07')
+);
+
+-- プッシュ通知用デバイストークン(アプリ版・ブラウザ版どちらも共通で管理)
+CREATE TABLE IF NOT EXISTS push_tokens(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  token TEXT NOT NULL,
+  platform TEXT NOT NULL,        -- 'android' | 'ios' | 'web'
+  created_at TEXT,
+  UNIQUE(user_id, token)
+);
+
+-- 本人による現場変更の報告(メンツは承認が必要、チーフ以上は即時反映されるため通常はここに残らない)
+CREATE TABLE IF NOT EXISTS self_reports(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,       -- 報告した本人
+  date TEXT NOT NULL,             -- 現場日
+  told_by TEXT NOT NULL,          -- 誰から言われたか
+  type TEXT NOT NULL,             -- 'work' | 'off'
+  site TEXT DEFAULT '',
+  venue TEXT DEFAULT '',
+  status TEXT DEFAULT 'pending',  -- 'pending' | 'approved' | 'rejected'
+  created_at TEXT,
+  decided_at TEXT,
+  decided_by INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS settings(
@@ -191,3 +217,29 @@ CREATE TABLE IF NOT EXISTS sched_sources(
 
 -- 初期管理者(初期パスワードは登録番号と同じ: 323331)
 INSERT OR IGNORE INTO users(regno, name, role) VALUES('323331', '管理者', 'admin');
+
+-- 現場記録(個人が自分の現場ごとに残す、配置・休憩時間・自由記入のメモ)。
+-- 閲覧・編集は本人と管理者のみ。休憩時間の合計だけは現場一覧でチーフ以上に公開される(別途集計)。
+CREATE TABLE IF NOT EXISTS site_records(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  date TEXT NOT NULL,
+  site TEXT NOT NULL,
+  placement TEXT DEFAULT '',       -- 配置
+  breaks TEXT DEFAULT '[]',        -- 休憩時間 JSON配列 [{"start":"12:00","end":"12:45"}, ...]
+  memo TEXT DEFAULT '',            -- 自由記入欄(文字数制限なし)
+  updated_at TEXT,
+  UNIQUE(user_id, date, site)
+);
+
+-- スタッフ登録時のプルダウン選択肢(所属課・班)。管理ページから追加できる。
+CREATE TABLE IF NOT EXISTS option_lists(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  category TEXT NOT NULL,   -- 'ka'(所属課) | 'han'(班)
+  value TEXT NOT NULL,
+  sort_order INTEGER DEFAULT 0,
+  UNIQUE(category, value)
+);
+INSERT OR IGNORE INTO option_lists(category, value, sort_order) VALUES
+ ('ka','1課',1), ('ka','2課',2),
+ ('han','コンサート班',1), ('han','サンガ班',2);

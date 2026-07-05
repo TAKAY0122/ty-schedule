@@ -557,6 +557,7 @@ async function render(){
     else if(hash === '#/blacklist') await pageBlacklist(app);
     else if(hash === '#/import') await pageImport(app);
     else if(hash === '#/handler-status') await pageHandlerStatus(app);
+    else if(hash === '#/self-reports') await pageSelfReports(app);
     else if(hash === '#/admin') await pageAdmin(app);
     else if(hash === '#/admin-settings') await pageAdminSettings(app);
     else if(hash === '#/daicho') await pageDaicho(app);
@@ -666,6 +667,7 @@ function renderShell(hash){
     { label:'👥 メンバー', show:isChief, children:[
       ['#/members','👥 メンバー一覧'],
       ['#/summary','📊 稼働サマリー'],
+      ['#/self-reports','📝 現場変更報告の承認'],
     ]},
     { label:'🆕 新人報告', show:true, children:[
       ['#/report','📝 新人報告'],
@@ -1021,12 +1023,88 @@ async function pageSchedule(app, hash){
     hint.className='muted'; hint.style.marginTop='6px';
     hint.innerHTML='🛠 手配者モード:日付の行をタップ → この人のその日の現場を追加・編集できます';
     app.querySelector('.card').appendChild(hint);
+  } else if(uid === ME.id){
+    // 手配者モードでなくても、本人は自分の日付をタップして「現場変更の報告」ができる
+    // (手配担当者以外から直接「現場が変わった」と言われた場合の速報用。手配担当者へ自動で通知される)
+    const openSelfReport = (date) => openScheduleSelfReport(date);
+    app.querySelectorAll('table.sched tbody tr').forEach(tr => {
+      if(tr.classList.contains('total-row')) return;
+      const dcell = tr.querySelector('td.day');
+      if(!dcell) return;
+      const dnum = dcell.textContent.trim();
+      const date = `${MONTH}-${pad(Number(dnum))}`;
+      tr.classList.add('editable-row');
+      tr.querySelectorAll('td').forEach(td => {
+        if(td.classList.contains('site-multi')||td.classList.contains('plan-cell')) return;
+        td.style.cursor='pointer';
+        td.addEventListener('click', (ev)=>{ if(ev.target.closest('.venue-cell')||ev.target.closest('.rec-btn'))return; openSelfReport(date); });
+      });
+    });
+    app.querySelectorAll('.sched-mobile .m-day').forEach((md,idx) => {
+      const date = `${MONTH}-${pad(idx+1)}`;
+      md.classList.add('editable-row');
+      md.addEventListener('click', (ev)=>{
+        if(ev.target.closest('.site-cell')||ev.target.closest('.venue-cell')||ev.target.closest('.m-plan')||ev.target.closest('.rec-btn'))return;
+        openSelfReport(date);
+      });
+    });
+    const hint = document.createElement('div');
+    hint.className='muted'; hint.style.marginTop='6px';
+    hint.innerHTML='💬 日付をタップ → 手配担当者以外から言われた現場変更を報告できます(自動で手配担当者に通知されます)';
+    app.querySelector('.card').appendChild(hint);
   }
 }
 
 // 手配者モード:特定メンバーの特定日の現場を追加・編集
 const DUTIES = ['案内','受付・案内','準備','本部付','制作補助','運営補助','雑務','準備・設営','搬入','搬出','機材搬入','機材搬出','ステージハンド','搬入・案内','案内・搬出','パッケージ','ケータリング','物品販売'];
 function isLockedDate(date){ const d=new Date(Date.now()+9*3600e3); d.setDate(d.getDate()-LOCK_DAYS); return String(date) <= d.toISOString().slice(0,10); }
+
+// 本人が、手配担当者以外から直接聞いた現場変更をその場で報告する(自分のスケジュールのみ対象)。
+// 保存すると必ず本来の手配担当者へ通知が届く。時刻・給与などの詳細はここでは入力しない
+// (速報用。正式な内容は後で手配担当者が入力する想定)。
+function openScheduleSelfReport(date){
+  const needsApproval = LV[ME.role] < 1; // メンツは承認が必要、チーフ以上は承認不要
+  modal(`<h3>現場変更の報告</h3>
+    <div class="muted" style="margin-bottom:12px">手配担当者以外から直接聞いた現場変更を、その場で報告できます。${needsApproval ? '保存すると<b>手配担当者の承認後に</b>スケジュールへ反映されます。' : '保存するとスケジュールに反映され、<b>手配担当者に自動で通知</b>が届きます。'}</div>
+    <div class="form-grid" style="max-width:480px">
+      <label>現場日 *</label><input type="date" id="sr-date" value="${h(date)}">
+      <label>誰から言われたか *</label><input id="sr-toldby" placeholder="例: 田中チーフ">
+      <label>変更内容</label>
+      <select id="sr-type">
+        <option value="work">現場に変更</option>
+        <option value="off">休暇に変更</option>
+      </select>
+    </div>
+    <div id="sr-site-fields" class="form-grid" style="max-width:480px;margin-top:8px">
+      <label>現場名</label><input id="sr-site" placeholder="現場名(会場名とどちらか必須)">
+      <label>会場名</label><input id="sr-venue" placeholder="会場名(現場名とどちらか必須)">
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button class="btn gold" id="sr-save" style="flex:1">保存する</button>
+    </div>
+    <div class="muted" style="margin-top:8px">※時刻・給与などの詳細は、この報告のあとで手配担当者が入力します。</div>`);
+
+  const typeSel = $('#sr-type');
+  const siteFields = $('#sr-site-fields');
+  typeSel.onchange = () => { siteFields.style.display = typeSel.value === 'work' ? '' : 'none'; };
+
+  $('#sr-save').onclick = async () => {
+    const date2 = $('#sr-date').value;
+    const toldBy = $('#sr-toldby').value.trim();
+    const type = typeSel.value;
+    const site = $('#sr-site').value.trim();
+    const venue = $('#sr-venue').value.trim();
+    if(!date2){ popup('現場日を入力してください','error'); return; }
+    if(!toldBy){ popup('誰から言われたかを入力してください','error'); return; }
+    if(type==='work' && !site && !venue){ popup('現場名か会場名を入力してください','error'); return; }
+    try{
+      const r = await api('/schedule-self-report', { method:'POST', body:{ date:date2, toldBy, type, site, venue } });
+      closeModal();
+      popup(r.needsApproval ? '報告しました。手配担当者の承認後にスケジュールへ反映されます' : '報告しました。手配担当者に通知が届きます');
+      render();
+    }catch(e){ popup(e.message,'error'); }
+  };
+}
 
 async function openMemberDayEdit(uid, u, date){
   if(ME.handler !== 1){ return; }
@@ -2079,6 +2157,47 @@ async function pageImport(app){
 }
 
 /* ===== ログイン中メンバー・編集履歴(handler_tools権限・専用ページ) ===== */
+/* ===== 現場変更報告の承認(手配担当者・管理者向け) ===== */
+async function pageSelfReports(app){
+  if(LV[ME.role] < 1){ notFound(app); return; }
+  app.innerHTML = '<h2>📝 現場変更報告の承認</h2><div class="card"><div class="muted">読み込み中…</div></div>';
+  let rows;
+  try{ rows = await api('/self-reports'); }
+  catch(e){ app.innerHTML = `<h2>📝 現場変更報告の承認</h2><div class="card"><div class="msg err">${h(e.message)}</div></div>`; return; }
+
+  const labelOf = r => r.type==='off' ? '休暇' : [r.site, r.venue].filter(Boolean).join('／');
+
+  app.innerHTML = `
+  <h2 style="margin-bottom:8px">📝 現場変更報告の承認</h2>
+  <div class="muted" style="margin-bottom:14px">メンツから「手配担当者以外に言われた現場変更」の報告があると、ここに表示されます。承認するとスケジュールに反映され、本人に通知されます。</div>
+  ${rows.length ? `
+  <div class="cards" style="display:flex">
+    ${rows.map(r=>`<div class="dcard" data-id="${r.id}">
+      <div class="dcard-head"><span class="dcard-title">${h(r.user_name)}さん<span class="muted" style="font-size:12px"> (${h(r.user_regno)})</span></span></div>
+      <div class="drow"><span class="dk">現場日</span><span class="dv">${h(r.date)}</span></div>
+      <div class="drow"><span class="dk">変更内容</span><span class="dv"><b>${h(labelOf(r))}</b></span></div>
+      <div class="drow"><span class="dk">伝えた人</span><span class="dv">${h(r.told_by)}</span></div>
+      <div class="drow"><span class="dk">報告日時</span><span class="dv dcard-sub">${h(r.created_at)}</span></div>
+      <div class="dcard-actions">
+        <button class="btn gold sm sr-approve" data-id="${r.id}">✅ 承認する</button>
+        <button class="btn danger sm sr-reject" data-id="${r.id}">❌ 見送る</button>
+      </div>
+    </div>`).join('')}
+  </div>
+  ` : '<div class="card"><div class="muted" style="text-align:center;padding:20px 0">承認待ちの報告はありません</div></div>'}`;
+
+  app.querySelectorAll('.sr-approve').forEach(b => b.onclick = async () => {
+    if(!confirm('この内容でスケジュールに反映しますか？')) return;
+    try{ await api(`/self-reports/${b.dataset.id}/approve`, { method:'POST' }); popup('承認しました'); pageSelfReports(app); }
+    catch(e){ popup(e.message,'error'); }
+  });
+  app.querySelectorAll('.sr-reject').forEach(b => b.onclick = async () => {
+    if(!confirm('この報告を見送りますか？(スケジュールには反映されません)')) return;
+    try{ await api(`/self-reports/${b.dataset.id}/reject`, { method:'POST' }); popup('見送りました'); pageSelfReports(app); }
+    catch(e){ popup(e.message,'error'); }
+  });
+}
+
 async function pageHandlerStatus(app){
   if(!has('handler_tools')){ notFound(app); return; }
   const stHs = PAGE_STATE.handlerStatus || (PAGE_STATE.handlerStatus = { open:{ online:true } });
@@ -2325,7 +2444,7 @@ async function pageSchedSources(app){
 
   app.innerHTML = `
   <h2 style="margin-bottom:4px">📥 予定表ソース管理</h2>
-  <div class="muted" style="margin-bottom:16px">チーフ予定・1課予定など、自動で取り込む予定表を何個でも登録できます。取り込み日から<b>2日後以降の日付のみ</b>反映され(当日・翌日は台帳の実績取り込みを優先)、時刻情報のない表のため現場名・会場名・×・休暇のみ反映されます。反映があった場合、管理者へ通知が届きます。</div>
+  <div class="muted" style="margin-bottom:16px">チーフ予定・1課予定など、自動で取り込む予定表を何個でも登録できます。取り込み日から<b>2日後以降の日付のみ</b>反映され(当日・翌日は台帳の実績取り込みを優先)、時刻情報のない表のため現場名・会場名・×・休暇のみ反映されます。<b>その日すでに何か予定が入っている場合は上書きせず、まだ何もない日にだけ新しい予定を反映します</b>(アプリ上で編集した現場名などが消えないようにするため)。反映があった場合、管理者へ通知が届きます。</div>
 
   <div class="card" style="margin-bottom:16px">
     <h2 style="font-size:14px;margin-bottom:10px">＋ 新しい予定表ソースを追加</h2>
@@ -2863,7 +2982,7 @@ async function pageAdminSettings(app){
       <button class="btn ghost" id="imp-copy">コピー</button>
       <button class="btn danger" id="imp-regen">再発行</button><span id="imp-msg"></span>
     </div>
-    <div class="muted" style="margin-top:6px">このトークンをGoogleスプレッドシート側のスクリプト(同梱の gas-連携.gs)に貼り付けると、シートの内容がアプリのスケジュールに自動反映されます。再発行すると古いトークンは無効になります。</div>`)}
+    <div class="muted" style="margin-top:6px">このトークンをGoogleスプレッドシート側のスクリプト(同梱の gas-連携.gs)に貼り付けると、シートの内容がアプリのスケジュールに自動反映されます。<b>その日すでに何か予定が入っている場合は上書きせず、まだ何もない日にだけ反映されます</b>(アプリ上で編集した内容が消えないようにするため)。再発行すると古いトークンは無効になります。</div>`)}
 
   ${sec('daicho-reload','🌙 台帳の深夜自動再取り込み', `
     <div class="muted" style="margin-bottom:10px">手動で取り込んだ台帳URLを、<b>設定した時刻に毎日自動で再取り込み</b>します。手動取り込みが「事前の仮確認」、この自動処理が「その日の夜に確定版で上書き」という運用です。</div>

@@ -156,8 +156,10 @@ async function importScheduleSheet(env, source, url, editorId, fromDate) {
     rowsToApply.push(...byRegno[regno]);
   }
 
+  // 予定表ソースは「まだ確定していない予定」なので、既に何か入っている日は(手動編集・自動取込問わず)
+  // 一切上書きしない。まだ何も無い日にだけ新しい予定を反映する。
   const r = rowsToApply.length
-    ? await applyImportRows(env, rowsToApply, editorId, 'replace-person-day', source)
+    ? await applyImportRows(env, rowsToApply, editorId, 'skip-if-exists', source)
     : { applied: 0, skipped: 0, skippedUnregistered: 0, skippedUnchanged: 0, skippedInvalid: 0, errors: [] };
 
   // スナップショットを今回の内容で更新(前回データは上書きされ消える)
@@ -236,6 +238,21 @@ function longestStreak(dates) {
 // 履歴比較用に表示項目だけ抜き出す
 function stripRow(r) {
   return { type: r.type, site: r.site, venue: r.venue, tin: r.tin, tout: r.tout, pay: r.pay, note: r.note, duty: r.duty, load_end: r.load_end, show_end: r.show_end, multi: r.multi };
+}
+
+// 本人による現場変更の報告を、実際にscheduleへ反映する共通処理。
+// チーフ以上の即時反映と、メンツの承認完了時の反映の両方から呼ばれる。
+async function applySelfReportToSchedule(env, uid, date, toldBy, type, site, venue) {
+  const before = (await env.DB.prepare('SELECT * FROM schedule WHERE user_id=? AND date=? ORDER BY slot').bind(uid, date).all()).results;
+  const beforeJson = JSON.stringify(before.map(stripRow));
+  await env.DB.prepare('DELETE FROM schedule WHERE user_id=? AND date=?').bind(uid, date).run();
+  const afterRow = type === 'off'
+    ? { type: 'off', site: '', venue: '', tin: '', tout: '', hours: 0, overtime: 0, pay: 0, note: '', duty: '', load_end: '', show_end: '', multi: 0 }
+    : { type: 'work', site, venue, tin: '', tout: '', hours: 0, overtime: 0, pay: 0, note: '', duty: '', load_end: '', show_end: '', multi: 0 };
+  await env.DB.prepare('INSERT INTO schedule(user_id,date,slot,type,site,venue,tin,tout,hours,overtime,pay,note,duty,load_end,show_end,multi) VALUES(?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+    .bind(uid, date, afterRow.type, afterRow.site, afterRow.venue, afterRow.tin, afterRow.tout, afterRow.hours, afterRow.overtime, afterRow.pay, afterRow.note, afterRow.duty, afterRow.load_end, afterRow.show_end, afterRow.multi).run();
+  await env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
+    .bind(jstTs(), uid, uid, date, beforeJson, JSON.stringify({ slots: [stripRow(afterRow)], _src: `本人報告(伝えた人: ${toldBy})` })).run();
 }
 
 // 名前から姓(先頭の語)を取り出す。「吉崎 天晴」→「吉崎」/「吉崎天晴」→そのまま
@@ -374,6 +391,12 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
   for (const key of order) {
     const { uid, rank, name, date, items } = groups[key];
     const before = beforeMap[key] || [];
+    // 予定表ソース取込専用モード: その日すでに何かスケジュールが入っていれば
+    // (手動編集・自動取込問わず)一切触れずスキップする。既存の予定を保護するため。
+    // 予定表ソース取込専用モード: その日すでに「現場(work)」の予定が入っていれば
+    // (手動編集・自動取込問わず)一切触れずスキップする。休暇・×・1日OK・有給など
+    // まだ現場が決まっていない状態は、通常通り上書きしてよい。
+    if (mode === 'skip-if-exists' && before.some(b => b.type === 'work')) { skipped += items.length; skippedUnchanged += items.length; continue; }
     let baseSlots = [];
     if (mode === 'add') baseSlots = before.map(stripRow);
     // 同一(現場名)の行が複数ある場合は1つにマージする(台帳側で準備/搬入/本番などが
@@ -918,13 +941,70 @@ function parseFormatAB(rows, ym, cfg) {
   return { rows: out };
 }
 
+// ---- Firebase Cloud Messaging(プッシュ通知)送信 ----
+// Firebaseサービスアカウントの秘密鍵(JSON全体)をwrangler secretとして env.FCM_SERVICE_ACCOUNT に保存し、
+// それを使ってGoogleのOAuth2アクセストークンを取得してから、FCM HTTP v1 APIでプッシュを送る。
+// 未設定(secret未登録)の場合は何もしない(アプリ内お知らせ機能自体は従来通り動く)。
+let fcmAccessTokenCache = null; // { token, expiresAt } 同一Worker実行内でのみ再利用する軽いキャッシュ
+async function getFcmAccessToken(env) {
+  if (fcmAccessTokenCache && fcmAccessTokenCache.expiresAt > Date.now() + 60000) return fcmAccessTokenCache.token;
+  const sa = JSON.parse(env.FCM_SERVICE_ACCOUNT);
+  const now = Math.floor(Date.now() / 1000);
+  const b64url = obj => btoa(typeof obj === 'string' ? obj : JSON.stringify(obj)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const toSign = b64url({ alg: 'RS256', typ: 'JWT' }) + '.' + b64url({
+    iss: sa.client_email, scope: 'https://www.googleapis.com/auth/firebase.messaging',
+    aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600,
+  });
+  const pem = sa.private_key.replace(/-----BEGIN PRIVATE KEY-----/, '').replace(/-----END PRIVATE KEY-----/, '').replace(/\s/g, '');
+  const binaryDer = Uint8Array.from(atob(pem), c => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey('pkcs8', binaryDer.buffer, { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['sign']);
+  const sigBuffer = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, new TextEncoder().encode(toSign));
+  const sigB64 = btoa(String.fromCharCode(...new Uint8Array(sigBuffer))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${toSign}.${sigB64}`,
+  });
+  const data = await res.json();
+  if (!data.access_token) throw new Error('FCM認証失敗: ' + JSON.stringify(data));
+  fcmAccessTokenCache = { token: data.access_token, expiresAt: Date.now() + (data.expires_in - 60) * 1000 };
+  return data.access_token;
+}
+// 指定した複数ユーザーの、登録済み全デバイスへプッシュ通知を送る。個別の送信失敗は無視して次へ進む。
+async function sendPushToUsers(env, userIds, title, body, link) {
+  if (!env.FCM_SERVICE_ACCOUNT || !userIds.length) return;
+  try {
+    const sa = JSON.parse(env.FCM_SERVICE_ACCOUNT);
+    const accessToken = await getFcmAccessToken(env);
+    const ph = userIds.map(() => '?').join(',');
+    const rows = (await env.DB.prepare(`SELECT token FROM push_tokens WHERE user_id IN (${ph})`).bind(...userIds).all()).results;
+    for (const row of rows) {
+      try {
+        await fetch(`https://fcm.googleapis.com/v1/projects/${sa.project_id}/messages:send`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: {
+            token: row.token,
+            notification: { title, body },
+            data: link ? { link } : {},
+            webpush: link ? { fcm_options: { link } } : undefined,
+          } }),
+        });
+      } catch (e) {}
+    }
+  } catch (e) { console.error('sendPushToUsers failed:', e); }
+}
+
 async function notify(env, userIds, type, message, link = '') {
   const ts = jstTs();
+  const newlyNotified = [];
   for (const id of userIds) {
     const dup = await env.DB.prepare('SELECT 1 FROM notifications WHERE user_id=? AND message=? AND read=0').bind(id, message).first();
     if (dup) continue;
     await env.DB.prepare('INSERT INTO notifications(user_id,ts,type,message,link) VALUES(?,?,?,?,?)').bind(id, ts, type, message, link).run();
+    newlyNotified.push(id);
   }
+  // プッシュ送信は失敗してもアプリ内お知らせの保存自体には影響させない
+  if (newlyNotified.length) sendPushToUsers(env, newlyNotified, 'RB事業2課', message, link).catch(() => {});
 }
 
 async function notifyChiefs(env, type, message) {
@@ -982,7 +1062,8 @@ async function api(req, env, url) {
     if (!tok || body.token !== tok) return ERR('取り込みトークンが違います', 403);
     const rows = Array.isArray(body.rows) ? body.rows : [];
     if (!rows.length) return ERR('取り込むデータがありません(rowsが空です)');
-    const result = await applyImportRows(env, rows, 0, 'replace-person-day', 'spreadsheet');
+    // 台帳(実績)ではなく「予定」の連携なので、既に何か入っている日は上書きしない
+    const result = await applyImportRows(env, rows, 0, 'skip-if-exists', 'spreadsheet');
     return J({ ok: 1, ...result });
   }
 
@@ -1662,6 +1743,101 @@ async function api(req, env, url) {
     return J({ ok: 1 });
   }
 
+  // ---- 本人による現場変更の報告 ----
+  // 手配担当者以外(他のチーフ・手配者など)から直接「現場が変わった」と言われた場合に、
+  // 本人がその場で自分のスケジュールへ反映できる。時刻・給与などの詳細は入れず、
+  // 現場名/会場名(または休暇)だけを記録する。
+  // メンツ(役割が最下位)は手配担当者の承認を経てから反映、チーフ以上は承認不要で即時反映。
+  if (method === 'POST' && path === '/schedule-self-report') {
+    const date = String(body.date || '').trim();
+    const toldBy = String(body.toldBy || '').trim();
+    const type = body.type === 'off' ? 'off' : 'work';
+    const site = String(body.site || '').trim();
+    const venue = String(body.venue || '').trim();
+    if (!date) return ERR('現場日を入力してください');
+    if (!toldBy) return ERR('誰から言われたかを入力してください');
+    if (type === 'work' && !site && !venue) return ERR('現場名か会場名のいずれかを入力してください');
+
+    const uid = me.id;
+    const label = type === 'off' ? '休暇' : [site, venue].filter(Boolean).join('／');
+
+    if (lv(me) < 1) {
+      // メンツ: 承認が必要。self_reportsにpendingとして保存し、手配担当者に承認依頼を通知する
+      await env.DB.prepare(
+        'INSERT INTO self_reports(user_id,date,told_by,type,site,venue,status,created_at) VALUES(?,?,?,?,?,?,?,?)'
+      ).bind(uid, date, toldBy, type, site, venue, 'pending', jstTs()).run();
+      const msg = `📝 ${me.name}さんから、${date}のスケジュールを「${label}」に変更したいと報告がありました。(伝えた人: ${toldBy}) 承認をお願いします。`;
+      try {
+        if (me.manager_id) await notify(env, [Number(me.manager_id)], 'self_report', msg, '#/self-reports');
+        else {
+          const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
+          if (admins.length) await notify(env, admins.map(a => a.id), 'self_report', msg, '#/self-reports');
+        }
+      } catch (e) {}
+      return J({ ok: 1, needsApproval: true });
+    }
+
+    // チーフ以上: 承認不要で即時反映
+    await applySelfReportToSchedule(env, uid, date, toldBy, type, site, venue);
+    const msg2 = `📢 ${me.name}さんから、${date}のスケジュールが「${label}」に変更されたと報告がありました。(伝えた人: ${toldBy})`;
+    const link2 = `#/schedule/${uid}?month=${date.slice(0, 7)}`;
+    try {
+      if (me.manager_id) await notify(env, [Number(me.manager_id)], 'self_report', msg2, link2);
+      else {
+        const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
+        if (admins.length) await notify(env, admins.map(a => a.id), 'self_report', msg2, link2);
+      }
+    } catch (e) {}
+    return J({ ok: 1, needsApproval: false });
+  }
+
+  // 承認待ちの現場変更報告一覧(自分が手配担当している人からの分。管理者は全員分)
+  if (method === 'GET' && path === '/self-reports') {
+    if (lv(me) < 1) return ERR('ページが見つかりません', 404);
+    const rows = me.role === 'admin'
+      ? (await env.DB.prepare(
+          `SELECT sr.*, u.name AS user_name, u.regno AS user_regno FROM self_reports sr JOIN users u ON u.id=sr.user_id WHERE sr.status='pending' ORDER BY sr.created_at DESC`
+        ).all()).results
+      : (await env.DB.prepare(
+          `SELECT sr.*, u.name AS user_name, u.regno AS user_regno FROM self_reports sr JOIN users u ON u.id=sr.user_id WHERE sr.status='pending' AND u.manager_id=? ORDER BY sr.created_at DESC`
+        ).bind(me.id).all()).results;
+    return J(rows);
+  }
+  let srm;
+  if (method === 'POST' && (srm = path.match(/^\/self-reports\/(\d+)\/approve$/))) {
+    const id = Number(srm[1]);
+    const rep = await env.DB.prepare('SELECT * FROM self_reports WHERE id=?').bind(id).first();
+    if (!rep) return ERR('見つかりません', 404);
+    if (rep.status !== 'pending') return ERR('すでに処理されています');
+    const tgt = await env.DB.prepare('SELECT manager_id FROM users WHERE id=?').bind(rep.user_id).first();
+    if (me.role !== 'admin' && String(tgt ? tgt.manager_id : '') !== String(me.id)) return ERR('権限がありません', 403);
+    await applySelfReportToSchedule(env, rep.user_id, rep.date, rep.told_by, rep.type, rep.site, rep.venue);
+    await env.DB.prepare('UPDATE self_reports SET status=?, decided_at=?, decided_by=? WHERE id=?').bind('approved', jstTs(), me.id, id).run();
+    const label = rep.type === 'off' ? '休暇' : [rep.site, rep.venue].filter(Boolean).join('／');
+    try {
+      await notify(env, [rep.user_id], 'self_report',
+        `✅ ${rep.date}の「${label}」への変更報告が承認され、スケジュールに反映されました。`,
+        `#/schedule/${rep.user_id}?month=${rep.date.slice(0, 7)}`);
+    } catch (e) {}
+    return J({ ok: 1 });
+  }
+  if (method === 'POST' && (srm = path.match(/^\/self-reports\/(\d+)\/reject$/))) {
+    const id = Number(srm[1]);
+    const rep = await env.DB.prepare('SELECT * FROM self_reports WHERE id=?').bind(id).first();
+    if (!rep) return ERR('見つかりません', 404);
+    if (rep.status !== 'pending') return ERR('すでに処理されています');
+    const tgt = await env.DB.prepare('SELECT manager_id FROM users WHERE id=?').bind(rep.user_id).first();
+    if (me.role !== 'admin' && String(tgt ? tgt.manager_id : '') !== String(me.id)) return ERR('権限がありません', 403);
+    await env.DB.prepare('UPDATE self_reports SET status=?, decided_at=?, decided_by=? WHERE id=?').bind('rejected', jstTs(), me.id, id).run();
+    const label = rep.type === 'off' ? '休暇' : [rep.site, rep.venue].filter(Boolean).join('／');
+    try {
+      await notify(env, [rep.user_id], 'self_report',
+        `❌ ${rep.date}の「${label}」への変更報告は見送られました。手配担当者に確認してください。`,
+        `#/schedule/${rep.user_id}?month=${rep.date.slice(0, 7)}`);
+    } catch (e) {}
+    return J({ ok: 1 });
+  }
+
   // ---- 現場記録(配置・休憩時間・自由記入欄)。閲覧・編集は本人と管理者のみ ----
   // 対象の現場での自分の記録を取得。育成計画・備考(scheduleのnote)もあわせて返す。
   if (method === 'GET' && path === '/site-record') {
@@ -2039,6 +2215,23 @@ async function api(req, env, url) {
   let nrm;
   if (method === 'POST' && (nrm = path.match(/^\/notifications\/(\d+)\/read$/))) {
     await env.DB.prepare('UPDATE notifications SET read=1 WHERE id=? AND user_id=?').bind(Number(nrm[1]), me.id).run();
+    return J({ ok: 1 });
+  }
+
+  // ---- プッシュ通知用デバイストークン(アプリ版・ブラウザ版共通) ----
+  if (method === 'POST' && path === '/push-token') {
+    const token = String(body.token || '').trim();
+    const platform = ['android', 'ios', 'web'].includes(body.platform) ? body.platform : 'web';
+    if (!token) return ERR('トークンが必要です');
+    await env.DB.prepare(
+      `INSERT INTO push_tokens(user_id,token,platform,created_at) VALUES(?,?,?,?)
+       ON CONFLICT(user_id,token) DO UPDATE SET platform=excluded.platform, created_at=excluded.created_at`
+    ).bind(me.id, token, platform, jstTs()).run();
+    return J({ ok: 1 });
+  }
+  if (method === 'DELETE' && path === '/push-token') {
+    const token = String(body.token || '').trim();
+    if (token) await env.DB.prepare('DELETE FROM push_tokens WHERE user_id=? AND token=?').bind(me.id, token).run();
     return J({ ok: 1 });
   }
 
