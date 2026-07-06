@@ -781,23 +781,42 @@ function parseFormatC(rows, cfg, fileDate) {
     return v(a) >= v(b) ? a : b;
   };
   // メタ行群(直近ヘッダの手前12行)から日付・会場・搬入終了・終演・2st を拾う
+  // テンプレートには2種類ある:
+  //   旧形式:「日付/受注番号」のように1セルに結合されたラベルの右隣に "6/29(月)/192266"
+  //   新形式:「日付」「受注番号」「催物名」「会場名」がそれぞれ単独のラベルとして別行に並び、右隣に値だけが入る
   const scanMeta = (startRow, headerRow) => {
     let date = '', venue = '', loadEnd = '', showEnd = '', site = '', has2st = false;
     for (let r = startRow; r < headerRow; r++) {
       const line = rows[r] || [];
       for (let c = 0; c < line.length; c++) {
         const s = String(line[c] == null ? '' : line[c]);
-        // 「日付/受注番号」セルの右隣に "6/29(月)/192266"
+        const strim = s.trim();
+        // 「日付/受注番号」セルの右隣に "6/29(月)/192266"(旧形式)
         if (!date && /日付[\s\/]*受注番号/.test(s)) {
           const nx = String(line[c + 1] || '');
           const d = normSheetDate(nx, ym0); if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) date = d;
         }
-        // 「催物名/会場名」セルの右隣に "催物名/会場名"
+        // 「日付」単独ラベルの右隣に日付だけが入る(新形式)
+        if (!date && /^日付$/.test(strim)) {
+          const nx = String(line[c + 1] || '');
+          const d = normSheetDate(nx, ym0); if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) date = d;
+        }
+        // 「催物名/会場名」セルの右隣に "催物名/会場名"(旧形式)
         if (!site && /催物名[\s\/]*会場名/.test(s)) {
           const nx = String(line[c + 1] || '');
           const parts = nx.split('/');
           if (parts[0] && parts[0] !== '催物名') site = parts[0].trim();
           if (parts[1]) venue = parts[1].trim();
+        }
+        // 「催物名」単独ラベルの右隣に催物名だけが入る(新形式)
+        if (!site && /^催物名$/.test(strim)) {
+          const nx = String(line[c + 1] || '').trim();
+          if (nx) site = nx;
+        }
+        // 「会場名」単独ラベルの右隣に会場名だけが入る(新形式)
+        if (!venue && /^会場名$/.test(strim)) {
+          const nx = String(line[c + 1] || '').trim();
+          if (nx) venue = nx;
         }
         // 搬入終了 / 終演時間 は "搬入終了/11:00" か、セル"搬入終了"+右隣 の両対応
         let mm;
@@ -1820,6 +1839,7 @@ async function api(req, env, url) {
   }
   let srm;
   if (method === 'POST' && (srm = path.match(/^\/self-reports\/(\d+)\/approve$/))) {
+    if (!handlerMode && me.role !== 'admin') return ERR('手配者モードでのみ操作できます', 403);
     const id = Number(srm[1]);
     const rep = await env.DB.prepare('SELECT * FROM self_reports WHERE id=?').bind(id).first();
     if (!rep) return ERR('見つかりません', 404);
@@ -1853,6 +1873,7 @@ async function api(req, env, url) {
     return J({ ok: 1 });
   }
   if (method === 'POST' && (srm = path.match(/^\/self-reports\/(\d+)\/reject$/))) {
+    if (!handlerMode && me.role !== 'admin') return ERR('手配者モードでのみ操作できます', 403);
     const id = Number(srm[1]);
     const rep = await env.DB.prepare('SELECT * FROM self_reports WHERE id=?').bind(id).first();
     if (!rep) return ERR('見つかりません', 404);
