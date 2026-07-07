@@ -129,7 +129,7 @@ async function importScheduleSheet(env, source, url, editorId, fromDate) {
   // 人(登録番号)ごとにグルーピングし、比較用に内容を正規化してJSON化
   const byRegno = {};
   for (const r of allRows) {
-    const regno = String(r.regno || '').trim();
+    const regno = normRegno(r.regno);
     if (!regno) continue;
     (byRegno[regno] ||= []).push(r);
   }
@@ -160,7 +160,7 @@ async function importScheduleSheet(env, source, url, editorId, fromDate) {
   // 一切上書きしない。まだ何も無い日にだけ新しい予定を反映する。
   const r = rowsToApply.length
     ? await applyImportRows(env, rowsToApply, editorId, 'skip-if-exists', source)
-    : { applied: 0, skipped: 0, skippedUnregistered: 0, skippedUnchanged: 0, skippedInvalid: 0, errors: [] };
+    : { applied: 0, skipped: 0, skippedUnregistered: 0, skippedUnchanged: 0, skippedInvalid: 0, skippedOtherOrg: 0, errors: [] };
 
   // スナップショットを今回の内容で更新(前回データは上書きされ消える)
   const snapBatch = regnos.map(regno =>
@@ -236,6 +236,17 @@ function longestStreak(dates) {
 }
 
 // 履歴比較用に表示項目だけ抜き出す
+// 登録番号を比較可能な形に正規化する。
+// ・ゼロ幅スペース等の不可視文字(コピペ時に紛れ込むことがある)を除去
+// ・全角数字を半角に変換(Excel入力時に全角になっているケースがある)
+// ・前後の空白を除去し、末尾の".0"(数値セルの小数点化)を除去
+function normRegno(v) {
+  return String(v == null ? '' : v)
+    .replace(/[\u200B-\u200D\uFEFF\u00A0]/g, '')
+    .replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+    .trim()
+    .replace(/\.0+$/, '');
+}
 function stripRow(r) {
   return { type: r.type, site: r.site, venue: r.venue, tin: r.tin, tout: r.tout, pay: r.pay, note: r.note, duty: r.duty, load_end: r.load_end, show_end: r.show_end, multi: r.multi };
 }
@@ -311,7 +322,7 @@ async function clearAbsentFromDaicho(env, rows, editorId) {
   // 対象日ごとに、台帳に登場した登録番号の集合を作る
   const datesRegnos = {};
   for (const r of rows) {
-    const regno = String(r.regno || '').trim();
+    const regno = normRegno(r.regno);
     const date = String(r.date || '').trim();
     if (!regno || !date) continue;
     (datesRegnos[date] ||= new Set()).add(regno);
@@ -320,7 +331,7 @@ async function clearAbsentFromDaicho(env, rows, editorId) {
   if (!dates.length) return { clearedPeople: 0, clearedDays: 0 };
 
   const allUsers = (await env.DB.prepare('SELECT id, regno FROM users').all()).results;
-  const regnoById = {}; for (const u of allUsers) regnoById[u.id] = String(u.regno).trim();
+  const regnoById = {}; for (const u of allUsers) regnoById[u.id] = normRegno(u.regno);
 
   const ts = jstTs();
   const batch = [];
@@ -359,20 +370,23 @@ async function clearAbsentFromDaicho(env, rows, editorId) {
 async function applyImportRows(env, rows, editorId, mode = 'replace-person-day', srcLabel = 'spreadsheet') {
   const ts = jstTs();
   const resolve = await loadWageResolver(env);
-  let applied = 0, skipped = 0, skippedUnregistered = 0, skippedUnchanged = 0, skippedInvalid = 0; const errors = [];
+  let applied = 0, skipped = 0, skippedUnregistered = 0, skippedUnchanged = 0, skippedInvalid = 0, skippedOtherOrg = 0; const errors = [];
   // 登録番号→ユーザーの対応を1回のクエリで取得しておく(行ごとにSELECTするとAPIリクエスト数上限に達するため)
   const allUsers = (await env.DB.prepare('SELECT id, regno, rank, name FROM users').all()).results;
-  const userByRegno = {}; for (const u of allUsers) userByRegno[String(u.regno).trim()] = u;
+  const userByRegno = {}; for (const u of allUsers) userByRegno[normRegno(u.regno)] = u;
   // (uid,date) ごとにグルーピング
   const groups = {}; const order = [];
   for (const r of rows) {
-    const regno = String(r.regno || '').trim();
+    const regno = normRegno(r.regno);
     const date = String(r.date || '').trim();
     if (!regno || !date) {
       skipped++; skippedInvalid++;
       if (skippedInvalid <= 3) errors.push(`不正な行をスキップ: regno="${regno}" date="${date}" site="${r.site || ''}" duty="${r.duty || ''}"`);
       continue;
     }
+    // RB事業2課が管理する登録番号は "3" から始まるもののみ。台帳には他部署・関係者外のスタッフも
+    // 大量に混在しているため、それらはエラー扱いにせず静かに対象外とする(未登録として警告を出さない)。
+    if (!regno.startsWith('3')) { skippedOtherOrg++; continue; }
     const u = userByRegno[regno];
     if (!u) { errors.push(`登録番号 ${regno} は未登録(${date})`); skipped++; skippedUnregistered++; continue; }
     const key = u.id + '|' + date;
@@ -494,7 +508,7 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
       for (const rr of matches) await notify(env, [rc.uid], 'rookie', `🔰 ${rr.next_date} ${rr.next_site} に新人「${rr.candidate_name}」が入る予定です`);
     }
   }
-  return { applied, skipped, skippedUnregistered, skippedUnchanged, skippedInvalid, errors };
+  return { applied, skipped, skippedUnregistered, skippedUnchanged, skippedInvalid, skippedOtherOrg, errors };
 }
 
 // グリッドからフォーマットを推定。Cは勤務表(打刻/退勤/集合などの語)、それ以外はAB(月間表)
@@ -859,7 +873,7 @@ function parseFormatC(rows, cfg, fileDate) {
       // 次のブロックのヘッダに当たったら break(外ループが拾う)
       if (findHeaderCols(line)) { r = d - 1; break; }
       // Excelの数値セルは "122842.0" のように小数点付きで来ることがあるため整数化してから判定
-      const regno = String(line[cols.regno] || '').trim().replace(/\.0+$/, '');
+      const regno = normRegno(line[cols.regno]);
       if (!/^\d{3,}$/.test(regno)) {
         if (++blank > 8) break;           // FALSE埋めが続く=ブロック終端
         continue;
@@ -912,7 +926,7 @@ function parseChiefScheduleSheet(grid, fromDate) {
   const blocks = genbaCols.map(c => ({
     col: c,
     name: String(nameRow[c] || '').trim(),
-    regno: String(regnoRow[c] || '').trim().replace(/\.0+$/, ''),
+    regno: normRegno(regnoRow[c]),
   })).filter(b => /^\d{3,}$/.test(b.regno));
   if (!blocks.length) return [];
 
@@ -957,7 +971,7 @@ function parseFormatAB(rows, ym, cfg) {
   // 登録番号が入っている列を検出 → そこから3列が1メンバー(現場名,会場,備考)
   const reg = rows[regnoRow] || [];
   const memberCols = [];
-  for (let c = 0; c < reg.length; c++) { if (/^\d{3,}$/.test(String(reg[c]).trim())) memberCols.push({ regno: String(reg[c]).trim(), c }); }
+  for (let c = 0; c < reg.length; c++) { if (/^\d{3,}$/.test(normRegno(reg[c]))) memberCols.push({ regno: normRegno(reg[c]), c }); }
   const out = [];
   for (let r = firstDateRow; r < rows.length; r++) {
     const line = rows[r] || [];
@@ -2086,7 +2100,7 @@ async function api(req, env, url) {
         } catch (e) { archiveError = e.message; }
       }
 
-      results.push({ url: rawUrl, ok: true, sheetsRead: sheetReport.length, sheets: sheetReport, applied: r.applied, skipped: r.skipped, skippedUnregistered: r.skippedUnregistered, skippedUnchanged: r.skippedUnchanged, skippedInvalid: r.skippedInvalid, errors: r.errors, mode: fellBack ? '単一シート(全タブ取得に失敗)' : '全シート', archived, archiveError });
+      results.push({ url: rawUrl, ok: true, sheetsRead: sheetReport.length, sheets: sheetReport, applied: r.applied, skipped: r.skipped, skippedUnregistered: r.skippedUnregistered, skippedUnchanged: r.skippedUnchanged, skippedInvalid: r.skippedInvalid, skippedOtherOrg: r.skippedOtherOrg, errors: r.errors, mode: fellBack ? '単一シート(全タブ取得に失敗)' : '全シート', archived, archiveError });
     }
     if (body.save) {
       const saved = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
