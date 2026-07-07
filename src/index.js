@@ -384,9 +384,11 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
       if (skippedInvalid <= 3) errors.push(`不正な行をスキップ: regno="${regno}" date="${date}" site="${r.site || ''}" duty="${r.duty || ''}"`);
       continue;
     }
-    // RB事業2課が管理する登録番号は "3" から始まるもののみ。台帳には他部署・関係者外のスタッフも
-    // 大量に混在しているため、それらはエラー扱いにせず静かに対象外とする(未登録として警告を出さない)。
-    if (!regno.startsWith('3')) { skippedOtherOrg++; continue; }
+    // RB事業2課がアプリで管理するのは「登録番号が3から始まる」人のみ。台帳には同じ会社グループの
+    // 他拠点(BP・KB・SBなど)や外部委託(ACT)のスタッフも大量に混在しているため、これらはエラー
+    // 扱いにせず静かに対象外とする(未登録警告を出さない)。「所属」列が取得できる場合は、それが
+    // "RB"で始まることも合わせて確認する(念のための二重チェック。所属列が無い形式ではこちらは省略)。
+    if (!regno.startsWith('3') || (r.org !== undefined && r.org !== '' && !/^RB/i.test(r.org))) { skippedOtherOrg++; continue; }
     const u = userByRegno[regno];
     if (!u) { errors.push(`登録番号 ${regno} は未登録(${date})`); skipped++; skippedUnregistered++; continue; }
     const key = u.id + '|' + date;
@@ -540,6 +542,7 @@ function findHeaderCols(line) {
     tend: idxOf('終了予定時間', '終了予定'),
     tout: idxOf('退勤時間'),
     note: idxOf('備考'),
+    org: idxOf('所属'),
   };
 }
 
@@ -888,8 +891,9 @@ function parseFormatC(rows, cfg, fileDate) {
       const tin = normTime(line[cols.start]);
       const tout = laterTime(normTime(cols.tout >= 0 ? line[cols.tout] : ''), normTime(cols.tend >= 0 ? line[cols.tend] : ''));
       const note = cols.note >= 0 ? String(line[cols.note] || '').trim() : '';
+      const org = cols.org >= 0 ? String(line[cols.org] || '').trim() : '';
       if (!tin && !tout && !duty) continue;
-      out.push({ regno, date: blockDate, site, venue: venueCell, tin, tout, duty, load_end: blockLoadEnd, show_end: blockShowEnd, multi, note });
+      out.push({ regno, date: blockDate, site, venue: venueCell, tin, tout, duty, load_end: blockLoadEnd, show_end: blockShowEnd, multi, note, org });
     }
   }
   return { date: lastDate, venue: lastVenue, rows: out };
@@ -2056,18 +2060,24 @@ async function api(req, env, url) {
 
       // 各シートを解析して1つにまとめる。シート名では判定せず、実際に登録番号の列を持つ
       // (=社員データの表である)シートだけが結果的に件数を持つので、それ以外は自動的に0件になる。
+      // 1シートずつtry-catchし、あるシートの解析でエラーが起きても他のシート(最大20枚程度)の
+      // 取り込みが巻き添えにならないようにする(1シートあたり数百行になることもあるため)。
       let allRows = [];
       const sheetReport = [];
       for (const sh of sheets) {
         const nm = sh.name || '';
         const grid = sh.grid;
         if (!grid || !grid.length) { sheetReport.push({ name: nm, count: 0, note: '空シート' }); continue; }
-        const fmt = body.format && body.format !== 'auto' ? body.format : detectFormat(grid);
-        let parsed;
-        if (fmt === 'C') parsed = parseFormatC(grid, body.cfg, fileDate).rows;
-        else parsed = parseFormatAB(grid, month, body.cfg).rows;
-        if (parsed && parsed.length) { allRows = allRows.concat(parsed); sheetReport.push({ name: nm, count: parsed.length }); }
-        else sheetReport.push({ name: nm, count: 0 });
+        try {
+          const fmt = body.format && body.format !== 'auto' ? body.format : detectFormat(grid);
+          let parsed;
+          if (fmt === 'C') parsed = parseFormatC(grid, body.cfg, fileDate).rows;
+          else parsed = parseFormatAB(grid, month, body.cfg).rows;
+          if (parsed && parsed.length) { allRows = allRows.concat(parsed); sheetReport.push({ name: nm, count: parsed.length }); }
+          else sheetReport.push({ name: nm, count: 0 });
+        } catch (e) {
+          sheetReport.push({ name: nm, count: 0, note: `解析エラー: ${e.message}` });
+        }
       }
 
       if (!allRows.length) {
@@ -2342,11 +2352,15 @@ async function cronDaichoReload(env) {
       for (const sh of got.sheets) {
         const grid = sh.grid;
         if (!grid || !grid.length) continue;
-        const fmt = detectFormat(grid);
-        let parsed;
-        if (fmt === 'C') parsed = parseFormatC(grid, null, fileDate).rows;
-        else parsed = parseFormatAB(grid, jstDate().slice(0, 7)).rows;
-        if (parsed && parsed.length) { allRows = allRows.concat(parsed); sheetReport.push({ name: sh.name, count: parsed.length }); }
+        try {
+          const fmt = detectFormat(grid);
+          let parsed;
+          if (fmt === 'C') parsed = parseFormatC(grid, null, fileDate).rows;
+          else parsed = parseFormatAB(grid, jstDate().slice(0, 7)).rows;
+          if (parsed && parsed.length) { allRows = allRows.concat(parsed); sheetReport.push({ name: sh.name, count: parsed.length }); }
+        } catch (e) {
+          sheetReport.push({ name: sh.name, count: 0, note: `解析エラー: ${e.message}` });
+        }
       }
       if (!allRows.length) { results.push({ url: rawUrl, ok: false, error: 'データなし' }); continue; }
       const r = await applyImportRows(env, allRows, editorId, 'replace-person-day', '台帳自動再取り込み');

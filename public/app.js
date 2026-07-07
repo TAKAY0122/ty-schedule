@@ -2169,7 +2169,7 @@ async function pageImport(app){
         const arch = r.archived ? '<div class="muted" style="margin-top:4px">📦 台帳をサーバーに保管しました</div>' : (r.archiveError?`<div class="muted" style="margin-top:4px">⚠️保管失敗:${h(r.archiveError)}</div>`:'');
         const shList = r.sheets&&r.sheets.length ? `<div class="muted" style="margin-top:4px">シート: ${r.sheets.map(s=>`${h(s.name)}(${s.count})`).join(' / ')}</div>` : '';
         const skipDetail = (r.skippedUnregistered||r.skippedUnchanged||r.skippedInvalid) ? `<div class="muted" style="margin-top:4px">内訳: 未登録 ${r.skippedUnregistered||0}件 / 変更なし ${r.skippedUnchanged||0}件 / 不正な行 ${r.skippedInvalid||0}件</div>` : '';
-        const otherOrgDetail = r.skippedOtherOrg ? `<div class="muted" style="margin-top:4px">対象外(他部署等・登録番号が3から始まらない): ${r.skippedOtherOrg}件</div>` : '';
+        const otherOrgDetail = r.skippedOtherOrg ? `<div class="muted" style="margin-top:4px">対象外(登録番号が3から始まらない、または所属がRB以外): ${r.skippedOtherOrg}件</div>` : '';
         return `<div class="imp-card">
           <div class="imp-card-url">${h(short)}</div>
           <div class="msg ok" style="margin-top:4px">${r.sheetsRead||1}シート読込 / 反映 ${r.applied} / スキップ ${r.skipped}</div>
