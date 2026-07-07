@@ -2103,6 +2103,8 @@ async function pageBlacklist(app){
 /* ===== スプレッドシート取り込み(import_data権限・専用ページ) ===== */
 async function pageImport(app){
   if(!has('import_data')){ notFound(app); return; }
+  const canReloadSettings = has('wage_settings');
+  const daichoReloadSettings = canReloadSettings ? await api('/daicho-reload-settings').catch(()=>null) : null;
   app.innerHTML = `
   <h2 style="margin-bottom:8px">📥 スプレッドシートから取り込み <span class="muted" style="font-weight:400;font-size:13px">(IN/OUT・現場・会場)</span></h2>
   <div class="card">
@@ -2125,7 +2127,22 @@ async function pageImport(app){
     <div class="muted" style="margin-top:6px">💡 IN/OUT台帳は基本的に「1ファイル=1日分」です。シート内の日付が自動で読み取れない場合、この「対象日」がその日の日付として使われます。1ファイルに複数日が混在する場合は、日付ごとにURLを分けて取り込んでください。</div>
     <div id="imp-result" style="margin-top:10px"></div>
     <div id="imp-saved" class="muted" style="margin-top:8px"></div>
-  </div>`;
+  </div>
+  ${canReloadSettings ? `
+  <div class="card" style="margin-top:16px">
+    <h3 style="margin-bottom:8px">🌙 台帳の深夜自動再取り込み</h3>
+    <div class="muted" style="margin-bottom:10px">上記で「URLを保存する」にチェックして取り込んだ台帳URLを、<b>設定した時刻に毎日自動で再取り込み</b>します。手動取り込みが「事前の仮確認」、この自動処理が「その日の夜に確定版で上書き」という運用です。</div>
+    <div class="muted" style="margin-bottom:12px">実行後、保存済みURLは自動的に削除されます。またR2台帳は<b>同じファイルの古いバージョンが削除され、最新版1件だけが残ります</b>。</div>
+    <div class="form-grid" style="max-width:420px">
+      <label>実行時刻</label>
+      <select id="dr-hour" style="width:120px;max-width:100%">${Array.from({length:24},(_,i)=>`<option value="${i}" ${daichoReloadSettings&&daichoReloadSettings.hour===i?'selected':''}>${String(i).padStart(2,'0')}:00</option>`).join('')}</select>
+    </div>
+    <div class="row" style="margin-top:10px;gap:8px;align-items:center">
+      <button class="btn gold sm" id="dr-save">保存</button>
+      <span class="muted" id="dr-msg"></span>
+    </div>
+    <div id="daicho-reload-status" class="muted" style="margin-top:16px">読み込み中…</div>
+  </div>` : ''}`;
 
   const showSaved = async () => {
     try{
@@ -2133,9 +2150,13 @@ async function pageImport(app){
       const el = $('#imp-saved'); if(!el) return;
       if(!d.urls.length){ el.innerHTML = '保存済みURLはありません'; return; }
       el.innerHTML = `<div style="margin-bottom:6px">保存済みURL (${d.urls.length}件): <button class="btn ghost xs" id="imp-clear-all">すべて削除</button></div>` +
-        d.urls.map(u=>`<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
-          <span style="font-family:monospace;font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${h(u)}</span>
-          <button class="btn ghost xs imp-del-one" data-url="${h(u)}">削除</button>
+        d.urls.map(u=>`<div class="imp-saved-row" style="display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap">
+          <span style="flex:1;min-width:180px">
+            <span style="font-weight:600">${h(u.sheetTitle || '(シート名不明)')}</span>
+            <span class="muted" style="font-size:12px;display:block">登録日:${h(u.targetDate||'—')} / 読込:${h(u.savedAt||'—')}</span>
+            <span class="muted" style="font-size:11px;font-family:monospace;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%">${h(u.url)}</span>
+          </span>
+          <button class="btn ghost xs imp-del-one" data-url="${h(u.url)}">削除</button>
         </div>`).join('');
       const ca = $('#imp-clear-all');
       if(ca) ca.onclick = async () => {
@@ -2180,6 +2201,28 @@ async function pageImport(app){
     }catch(e){ $('#imp-result').innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
     $('#imp-run').disabled = false;
   };
+
+  if(canReloadSettings){
+    const dr = $('#dr-save');
+    if(dr) dr.onclick = async () => {
+      const hour = Number($('#dr-hour').value);
+      $('#dr-msg').textContent='保存中…';
+      try{ await api('/daicho-reload-settings',{method:'PUT',body:{hour}});
+        $('#dr-msg').textContent = `毎日 ${String(hour).padStart(2,'0')}:00 に自動再取り込み`;
+        popup('設定を保存しました'); }
+      catch(e){ $('#dr-msg').textContent=e.message; }
+    };
+    // 台帳自動再取り込みの最終実行結果と保存済みURLの件数を表示
+    api('/import-urls').then(d => {
+      const el = $('#daicho-reload-status'); if(!el) return;
+      api('/settings/daicho-reload-result').then(res => {
+        const savedCount = d.urls.length;
+        const r = res && res.result;
+        el.innerHTML = `<div style="margin-bottom:6px">現在の保存済みURL: <b>${savedCount}件</b>${savedCount?` <span class="muted">(次回0:00に自動再取り込み後、削除されます)</span>`:' <span class="muted">(再取り込み対象なし)</span>'}</div>`
+          + (r ? `<div class="muted">最終実行: ${h(r.ts)} / ${r.count}件のURLを再取り込み${r.clearedAbsent?` / 🏖️ どのファイルにも登場しなかった人の現場を${r.clearedAbsent}件、休暇に変更`:''}<br>${r.results.map(x=>`${x.ok?'✓':'✗'} ${h((x.url||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>')}</div>` : '<div class="muted">まだ自動実行されていません</div>');
+      }).catch(()=>{ el.textContent='設定を取得できませんでした'; });
+    }).catch(()=>{});
+  }
 }
 
 /* ===== ログイン中メンバー・編集履歴(handler_tools権限・専用ページ) ===== */
@@ -2704,6 +2747,7 @@ async function pageDaicho(app){
   const items = data.items || [];
   const fmtSize = n => { n=Number(n||0); if(n<1024) return n+'B'; if(n<1048576) return (n/1024).toFixed(0)+'KB'; return (n/1048576).toFixed(1)+'MB'; };
   const st = PAGE_STATE.daicho || (PAGE_STATE.daicho = { name:'', person:'', dateFrom:'', dateTo:'', sortCol:'ts', sortDir:-1 });
+  const selected = new Set(); // チェックボックスで選択中のid(複数ダウンロード・削除用)
   const persons = [...new Set(items.map(it=>it.importer_name).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ja'));
   const hasFilterOn = () => !!(st.name || st.person || st.dateFrom || st.dateTo);
   const sortMark = col => st.sortCol===col ? (st.sortDir===1?'▲':'▼') : '<span class="muted">⇅</span>';
@@ -2734,14 +2778,25 @@ async function pageDaicho(app){
       if(typeof av === 'number' || typeof bv === 'number') return ((Number(av)||0)-(Number(bv)||0))*st.sortDir;
       return String(av).localeCompare(String(bv), 'ja') * st.sortDir;
     });
+    // フィルタで隠れた項目の選択は解除しておく(見えていないものが選択されたままにならないように)
+    const visibleIds = new Set(filtered.map(it=>it.id));
+    for(const id of [...selected]) if(!visibleIds.has(id)) selected.delete(id);
     const area = $('#dc-list-area'); if(!area) return;
     const cb = $('#dc-clear'); if(cb) cb.style.display = hasFilterOn() ? '' : 'none';
+    const bulkBar = selected.size ? `<div class="row" style="margin-bottom:8px;gap:8px;align-items:center;background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:8px 10px">
+      <span class="muted" style="font-weight:600">${selected.size}件選択中</span>
+      <button class="btn ghost sm" id="dc-bulk-dl">⬇️ まとめてダウンロード</button>
+      <button class="btn danger sm" id="dc-bulk-del">選択した${selected.size}件を削除</button>
+      <button class="btn ghost sm" id="dc-bulk-clear">選択解除</button>
+    </div>` : '';
     area.innerHTML = `
       <div class="muted" style="margin-bottom:8px">${filtered.length}件 / 全${items.length}件${hasFilterOn()?' (絞り込み中)':''}</div>
+      ${bulkBar}
       ${filtered.length ? `
       <div class="list-scroll pc-only">
         <table class="list">
           <tr>
+            <th style="width:32px"><input type="checkbox" id="dc-check-all" ${filtered.length && filtered.every(it=>selected.has(it.id))?'checked':''}></th>
             <th class="dc-th" data-col="file_name" style="cursor:pointer;white-space:nowrap">ファイル名 ${sortMark('file_name')}</th>
             <th class="dc-th" data-col="ts" style="cursor:pointer;white-space:nowrap">取り込み日時 ${sortMark('ts')}</th>
             <th class="dc-th" data-col="importer_name" style="cursor:pointer;white-space:nowrap">取り込んだ人 ${sortMark('importer_name')}</th>
@@ -2751,6 +2806,7 @@ async function pageDaicho(app){
             <th></th><th></th>
           </tr>
           ${filtered.map(it=>`<tr>
+            <td><input type="checkbox" class="dc-check" data-id="${it.id}" ${selected.has(it.id)?'checked':''}></td>
             <td style="white-space:nowrap;font-weight:600">${h(it.file_name||'(名称不明)')}</td>
             <td style="white-space:nowrap">${h(it.ts)}</td>
             <td style="white-space:nowrap">${h(it.importer_name||'—')}</td>
@@ -2764,7 +2820,12 @@ async function pageDaicho(app){
       </div>
       <div class="cards sp-only">
         ${filtered.map(it=>`<div class="dcard">
-          <div class="dcard-head"><span class="dcard-title">${h(it.file_name||'(名称不明)')}</span></div>
+          <div class="dcard-head">
+            <label style="display:flex;align-items:center;gap:8px;flex:1">
+              <input type="checkbox" class="dc-check" data-id="${it.id}" ${selected.has(it.id)?'checked':''}>
+              <span class="dcard-title">${h(it.file_name||'(名称不明)')}</span>
+            </label>
+          </div>
           <div class="drow"><span class="dk">取り込み日時</span><span class="dv">${h(it.ts)}</span></div>
           <div class="drow"><span class="dk">取り込んだ人</span><span class="dv">${h(it.importer_name||'—')}</span></div>
           <div class="drow"><span class="dk">反映件数</span><span class="dv">${it.applied!=null?it.applied+'件':'—'} / シート${it.sheets!=null?it.sheets:'—'} / ${fmtSize(it.size)}</span></div>
@@ -2775,6 +2836,40 @@ async function pageDaicho(app){
         </div>`).join('')}
       </div>
       ` : `<div class="muted" style="padding:24px 0;text-align:center">${hasFilterOn()?'条件に一致する台帳はありません':'まだ保管された台帳はありません。スプレッドシートを取り込むと、ここに元Excelが保管されます。'}</div>`}`;
+    area.querySelectorAll('.dc-check').forEach(c => c.onchange = () => {
+      const id = Number(c.dataset.id);
+      if(c.checked) selected.add(id); else selected.delete(id);
+      renderList();
+    });
+    const checkAll = $('#dc-check-all');
+    if(checkAll) checkAll.onchange = () => {
+      if(checkAll.checked) filtered.forEach(it=>selected.add(it.id));
+      else filtered.forEach(it=>selected.delete(it.id));
+      renderList();
+    };
+    const bulkClear = $('#dc-bulk-clear');
+    if(bulkClear) bulkClear.onclick = () => { selected.clear(); renderList(); };
+    const bulkDl = $('#dc-bulk-dl');
+    if(bulkDl) bulkDl.onclick = async () => {
+      const targets = filtered.filter(it=>selected.has(it.id));
+      bulkDl.disabled = true; const old = bulkDl.textContent;
+      for(const it of targets){
+        bulkDl.textContent = `ダウンロード中…(${targets.indexOf(it)+1}/${targets.length})`;
+        try{ await downloadFile(`/daicho/${it.id}/download`, it.file_name||'daicho.xlsx'); }
+        catch(e){ popup(`${it.file_name}: ${e.message}`,'error'); }
+      }
+      bulkDl.disabled = false; bulkDl.textContent = old;
+    };
+    const bulkDel = $('#dc-bulk-del');
+    if(bulkDel) bulkDel.onclick = async () => {
+      const ids = [...selected];
+      if(!confirm(`選択した${ids.length}件の台帳を削除しますか？\n\n※元Excelファイルが完全に削除されます。すでに登録済みのスケジュール・給与データは残ります。`)) return;
+      try{
+        await api('/daicho/bulk-delete', { method:'POST', body:{ ids } });
+        popup(`${ids.length}件削除しました`);
+        pageDaicho(app);
+      }catch(e){ popup(e.message,'error'); }
+    };
     area.querySelectorAll('.dc-th').forEach(th => th.onclick = () => {
       const c = th.dataset.col;
       if(st.sortCol === c) st.sortDir *= -1;
@@ -3043,7 +3138,6 @@ async function pageAdminSettings(app){
   const importTok = (await api('/settings/import-token')).token;
   const wageData = await api('/wage-rates').catch(()=>null);
   const notifyData = await api('/notify-settings').catch(()=>null);
-  const daichoReloadSettings = await api('/daicho-reload-settings').catch(()=>null);
   const lockData = await api('/lock-settings').catch(()=>null);
   const stAs = PAGE_STATE.adminSettings || (PAGE_STATE.adminSettings = { open:{ pin:true } });
   const openSet = stAs.open;
@@ -3051,7 +3145,7 @@ async function pageAdminSettings(app){
   app.innerHTML = `
   <h2 style="margin-bottom:8px">🔧 システム設定</h2>
   <div class="adm-nav">
-    ${[['pin','🔑 PIN'],['link','🔗 連携'],['daicho-reload','🌙 台帳夜間再取込'],['notify','🔔 通知'],['wage','💴 時給']].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
+    ${[['pin','🔑 PIN'],['link','🔗 連携'],['notify','🔔 通知'],['wage','💴 時給']].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
   </div>
 
   ${sec('pin','🔑 手配者専用パスワード(PIN)', `
@@ -3069,19 +3163,6 @@ async function pageAdminSettings(app){
       <button class="btn danger" id="imp-regen">再発行</button><span id="imp-msg"></span>
     </div>
     <div class="muted" style="margin-top:6px">このトークンをGoogleスプレッドシート側のスクリプト(同梱の gas-連携.gs)に貼り付けると、シートの内容がアプリのスケジュールに自動反映されます。<b>その日すでに何か予定が入っている場合は上書きせず、まだ何もない日にだけ反映されます</b>(アプリ上で編集した内容が消えないようにするため)。再発行すると古いトークンは無効になります。</div>`)}
-
-  ${sec('daicho-reload','🌙 台帳の深夜自動再取り込み', `
-    <div class="muted" style="margin-bottom:10px">手動で取り込んだ台帳URLを、<b>設定した時刻に毎日自動で再取り込み</b>します。手動取り込みが「事前の仮確認」、この自動処理が「その日の夜に確定版で上書き」という運用です。</div>
-    <div class="muted" style="margin-bottom:12px">実行後、保存済みURLは自動的に削除されます。またR2台帳は<b>同じファイルの古いバージョンが削除され、最新版1件だけが残ります</b>。</div>
-    <div class="form-grid" style="max-width:420px">
-      <label>実行時刻</label>
-      <select id="dr-hour" style="width:120px;max-width:100%">${Array.from({length:24},(_,i)=>`<option value="${i}" ${daichoReloadSettings&&daichoReloadSettings.hour===i?'selected':''}>${String(i).padStart(2,'0')}:00</option>`).join('')}</select>
-    </div>
-    <div class="row" style="margin-top:10px;gap:8px;align-items:center">
-      <button class="btn gold sm" id="dr-save">保存</button>
-      <span class="muted" id="dr-msg"></span>
-    </div>
-    <div id="daicho-reload-status" class="muted" style="margin-top:16px">読み込み中…</div>`)}
 
   ${sec('notify','🔔 通知設定 <span class="muted" style="font-weight:400">(新人報告リマインド)</span>', notifyData ? `
     <div class="muted" style="margin-bottom:10px">その日<b>現場に入っている人</b>のうち、下記の対象条件に当てはまり、かつ<b>まだ本人が新人報告を提出していない人</b>にだけ、決まった時刻にリマインドのお知らせ（🔔）を送ります。役割に関わらず、個人ごとの追加・除外は各アカウントの「権限編集」ページから設定できます。</div>
@@ -3181,25 +3262,6 @@ async function pageAdminSettings(app){
       try{ await api('/notify-test',{method:'POST'}); $('#nt-msg').textContent='テスト通知を送りました（🔔を確認）'; popup('テスト通知を送信しました。画面上部の🔔を確認してください'); }
       catch(e){ $('#nt-msg').textContent=e.message; }
   }; }
-  { const dr = $('#dr-save'); if(dr) dr.onclick = async () => {
-      const hour = Number($('#dr-hour').value);
-      $('#dr-msg').textContent='保存中…';
-      try{ await api('/daicho-reload-settings',{method:'PUT',body:{hour}});
-        $('#dr-msg').textContent = `毎日 ${String(hour).padStart(2,'0')}:00 に自動再取り込み`;
-        popup('設定を保存しました'); }
-      catch(e){ $('#dr-msg').textContent=e.message; }
-  }; }
-
-  // 台帳自動再取り込みの最終実行結果と保存済みURLの件数を表示
-  api('/import-urls').then(d => {
-    const el = $('#daicho-reload-status'); if(!el) return;
-    api('/settings/daicho-reload-result').then(res => {
-      const savedCount = d.urls.length;
-      const r = res && res.result;
-      el.innerHTML = `<div style="margin-bottom:6px">現在の保存済みURL: <b>${savedCount}件</b>${savedCount?` <span class="muted">(次回0:00に自動再取り込み後、削除されます)</span>`:' <span class="muted">(再取り込み対象なし)</span>'}</div>`
-        + (r ? `<div class="muted">最終実行: ${h(r.ts)} / ${r.count}件のURLを再取り込み${r.clearedAbsent?` / 🏖️ どのファイルにも登場しなかった人の現場を${r.clearedAbsent}件、休暇に変更`:''}<br>${r.results.map(x=>`${x.ok?'✓':'✗'} ${h((x.url||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>')}</div>` : '<div class="muted">まだ自動実行されていません</div>');
-    }).catch(()=>{ el.textContent='設定を取得できませんでした'; });
-  }).catch(()=>{});
 
   $('#pin-save').onclick = async () => {
     const v = $('#pin-new').value.trim();

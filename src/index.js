@@ -2041,6 +2041,7 @@ async function api(req, env, url) {
     const userDate = body.date && /^\d{4}-\d{2}-\d{2}$/.test(body.date) ? body.date : '';
     const mode = body.add ? 'add' : 'replace-person-day';
     const results = [];
+    const urlMeta = {}; // url -> { sheetTitle, targetDate } (保存済みURL一覧の表示用)
     for (const rawUrl of urls) {
       const meta = parseSheetUrl(rawUrl);
       if (!meta) { results.push({ url: rawUrl, ok: false, error: 'URLの形式が正しくありません' }); continue; }
@@ -2095,6 +2096,7 @@ async function api(req, env, url) {
       const r = await applyImportRows(env, allRows, me.id, mode, 'スプレッドシートURL');
       // 台帳に登場しない人を休暇にする処理は、複数ファイル(URL)を横断して判定する必要があるため、
       // ここ(手動取り込み・1URLごと)では行わず、夜間の自動再取り込み(cronDaichoReload)でのみ実行する。
+      urlMeta[rawUrl] = { sheetTitle: sheetFileTitle || '', targetDate: fileDate || '' };
 
       // 監査・証拠用に、取り込んだ元Excel(xlsx)をR2へ保管しインデックスを記録する。
       let archived = false, archiveError = '';
@@ -2119,8 +2121,21 @@ async function api(req, env, url) {
       results.push({ url: rawUrl, ok: true, sheetsRead: sheetReport.length, sheets: sheetReport, applied: r.applied, skipped: r.skipped, skippedUnregistered: r.skippedUnregistered, skippedUnchanged: r.skippedUnchanged, skippedInvalid: r.skippedInvalid, skippedOtherOrg: r.skippedOtherOrg, errors: r.errors, mode: fellBack ? '単一シート(全タブ取得に失敗)' : '全シート', archived, archiveError });
     }
     if (body.save) {
-      const saved = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
-      for (const u of urls) if (!saved.includes(u)) saved.push(u);
+      const savedRaw = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
+      // 既存の保存データが単純な文字列だった場合(旧形式)は、オブジェクト形式に変換して引き継ぐ
+      const saved = savedRaw.map(x => typeof x === 'string' ? { url: x, sheetTitle: '', savedAt: '', targetDate: '' } : x);
+      const now = jstTs();
+      for (const u of urls) {
+        const meta = urlMeta[u] || {};
+        const existing = saved.find(x => x.url === u);
+        if (existing) {
+          if (meta.sheetTitle) existing.sheetTitle = meta.sheetTitle;
+          if (meta.targetDate) existing.targetDate = meta.targetDate;
+          existing.savedAt = now;
+        } else {
+          saved.push({ url: u, sheetTitle: meta.sheetTitle || '', targetDate: meta.targetDate || '', savedAt: now });
+        }
+      }
       await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('import_urls',?)").bind(JSON.stringify(saved.slice(-50))).run();
     }
     return J({ ok: 1, results });
@@ -2129,7 +2144,10 @@ async function api(req, env, url) {
   // 保存済み取り込みURL(手配担当以上)
   if (method === 'GET' && path === '/import-urls') {
     if (!has(me, 'import_data')) return ERR('ページが見つかりません', 404);
-    return J({ urls: JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]') });
+    const raw = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
+    // 旧形式(単純な文字列の配列)が残っている場合はオブジェクト形式に正規化して返す
+    const urls = raw.map(x => typeof x === 'string' ? { url: x, sheetTitle: '', savedAt: '', targetDate: '' } : x);
+    return J({ urls });
   }
   if (method === 'POST' && path === '/import-urls') {
     if (!has(me, 'import_data')) return ERR('ページが見つかりません', 404);
@@ -2177,15 +2195,29 @@ async function api(req, env, url) {
     await env.DB.prepare('DELETE FROM daicho_archive WHERE id=?').bind(Number(dm[1])).run();
     return J({ ok: 1 });
   }
+  // 台帳の複数選択削除(チェックボックスでまとめて選んだ分を一括削除)
+  if (method === 'POST' && path === '/daicho/bulk-delete') {
+    if (!has(me, 'daicho_manage')) return ERR('権限がありません', 403);
+    const ids = Array.isArray(body.ids) ? body.ids.map(Number).filter(n => n > 0) : [];
+    if (!ids.length) return ERR('削除するファイルを選択してください');
+    const ph = ids.map(() => '?').join(',');
+    const recs = (await env.DB.prepare(`SELECT id, r2_key FROM daicho_archive WHERE id IN (${ph})`).bind(...ids).all()).results;
+    if (env.DAICHO) {
+      for (const rec of recs) { try { await env.DAICHO.delete(rec.r2_key); } catch (e) {} }
+    }
+    await env.DB.prepare(`DELETE FROM daicho_archive WHERE id IN (${ph})`).bind(...ids).run();
+    return J({ ok: 1, deleted: recs.length });
+  }
 
   // 保存済み取り込みURLの削除(手配者以上)
   if (method === 'POST' && path === '/import-urls/delete') {
     if (!has(me, 'import_data')) return ERR('ページが見つかりません', 404);
-    const saved = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
+    const savedRaw = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
+    const saved = savedRaw.map(x => typeof x === 'string' ? { url: x, sheetTitle: '', savedAt: '', targetDate: '' } : x);
     let next;
     if (body.all) next = [];
-    else if (body.url) next = saved.filter(u => u !== body.url);
-    else if (Array.isArray(body.urls)) next = saved.filter(u => !body.urls.includes(u));
+    else if (body.url) next = saved.filter(x => x.url !== body.url);
+    else if (Array.isArray(body.urls)) next = saved.filter(x => !body.urls.includes(x.url));
     else next = saved;
     await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('import_urls',?)").bind(JSON.stringify(next)).run();
     return J({ ok: 1, urls: next });
@@ -2338,7 +2370,8 @@ async function cronDaichoReload(env) {
   if (lastRun === today) return; // 1日1回のみ
   await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_run',?)").bind(today).run();
 
-  const urls = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
+  const urlsRaw = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
+  const urls = urlsRaw.map(x => typeof x === 'string' ? x : x.url);
   if (!urls.length) return;
 
   const adminUser = await env.DB.prepare("SELECT id, name FROM users WHERE role='admin' LIMIT 1").first();
