@@ -878,7 +878,13 @@ function parseFormatC(rows, cfg, fileDate) {
       // Excelの数値セルは "122842.0" のように小数点付きで来ることがあるため整数化してから判定
       const regno = normRegno(line[cols.regno]);
       if (!/^\d{3,}$/.test(regno)) {
-        if (++blank > 8) break;           // FALSE埋めが続く=ブロック終端
+        // 登録番号が数値でなくても、業務名や時刻など他のデータがあれば、外部委託スタッフ
+        // (登録番号欄が「ウイリング」等の会社名になっている)の可能性が高い。この場合は
+        // ブロック終端とみなさず読み飛ばして次の行へ進む(このような行が20行以上連続する
+        // こともあるため)。行全体が本当に空の場合にのみ終端カウントを進める。
+        const dutyV = String(line[cols.gyomu] || '').trim();
+        const hasOtherData = dutyV || normTime(line[cols.start]) || normTime(cols.tend >= 0 ? line[cols.tend] : '') || normTime(cols.tout >= 0 ? line[cols.tout] : '');
+        if (!hasOtherData) { if (++blank > 8) break; }  // FALSE埋め(完全な空行)が続く=ブロック終端
         continue;
       }
       blank = 0;
