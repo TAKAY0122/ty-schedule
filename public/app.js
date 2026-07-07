@@ -2151,10 +2151,10 @@ async function pageImport(app){
       if(!d.urls.length){ el.innerHTML = '保存済みURLはありません'; return; }
       el.innerHTML = `<div style="margin-bottom:6px">保存済みURL (${d.urls.length}件): <button class="btn ghost xs" id="imp-clear-all">すべて削除</button></div>` +
         d.urls.map(u=>`<div class="imp-saved-row" style="display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap">
-          <span style="flex:1;min-width:180px">
+          <span style="flex:1 1 auto;min-width:0">
             <span style="font-weight:600">${h(u.sheetTitle || '(シート名不明)')}</span>
             <span class="muted" style="font-size:12px;display:block">登録日:${h(u.targetDate||'—')} / 読込:${h(u.savedAt||'—')}</span>
-            <span class="muted" style="font-size:11px;font-family:monospace;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%">${h(u.url)}</span>
+            <span class="muted" style="font-size:11px;font-family:monospace;display:block;word-break:break-all">${h(u.url)}</span>
           </span>
           <button class="btn ghost xs imp-del-one" data-url="${h(u.url)}">削除</button>
         </div>`).join('');
