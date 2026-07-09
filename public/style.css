@@ -160,7 +160,6 @@ td.wd{width:30px;text-align:center;font-weight:700}
 td.site-multi{background:var(--cell-site);font-weight:600;max-width:230px;line-height:1.5}
 .site-cell{cursor:pointer;border-radius:3px}
 .site-cell:hover{outline:2px solid var(--gold)}
-td.off-cell{background:var(--cell-off);color:#fff;font-weight:700}
 td.venue-multi{max-width:200px;line-height:1.5}
 .venue-cell{cursor:pointer;color:#1a4fb0}
 .venue-cell:hover{text-decoration:underline}
@@ -523,12 +522,13 @@ table.sched tbody tr.editable-row:hover td:not(.site-multi):not(.plan-cell){ bac
 /* ===== スケジュール状態(1日OK/休暇/有給/×) ===== */
 .off-cell{font-weight:700;text-align:center}
 .off-ok{color:#1f7a3d;background:#e7f6ec}
-.off-off{color:#555;background:#eef0f3}
+.off-off{color:#c0392b;background:#fdecea;font-weight:800}
 .off-paid{color:#1d5fa8;background:#e8f1fb}
-.off-x{color:#b03030;background:#fbeaea}
+.off-x{color:#c0392b;background:#fdecea;font-weight:800}
 .m-off.m-ok .m-off-label{color:#1f7a3d}
 .m-off.m-paid .m-off-label{color:#1d5fa8}
-.m-off.m-x .m-off-label{color:#b03030}
+.m-off.m-off .m-off-label{color:#c0392b}
+.m-off.m-x .m-off-label{color:#c0392b}
 /* ===== アカウント停止 ===== */
 .susp-tag{display:inline-block;font-size:10px;background:#b03030;color:#fff;border-radius:4px;padding:1px 6px;vertical-align:middle}
 tr.is-suspended{background:#fafafa;color:#999}

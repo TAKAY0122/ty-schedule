@@ -1080,15 +1080,17 @@ function isLockedDate(date){ const d=new Date(Date.now()+9*3600e3); d.setDate(d.
 // 本人が、手配担当者以外から直接聞いた現場変更をその場で報告する(自分のスケジュールのみ対象)。
 // 保存すると必ず本来の手配担当者へ通知が届く。時刻・給与などの詳細はここでは入力しない
 // (速報用。正式な内容は後で手配担当者が入力する想定)。
-function openScheduleSelfReport(date){
+async function openScheduleSelfReport(date){
+  let typeOptions;
+  try{ typeOptions = await api('/report-type-options'); }
+  catch(e){ typeOptions = [{type:'work',label:'現場に変更'},{type:'off',label:'休暇に変更'}]; }
   modal(`<h3>現場変更の報告</h3>
     <div class="form-grid" style="max-width:480px">
       <label>現場日 *</label><input type="date" id="sr-date" value="${h(date)}">
       <label>誰から言われたか *</label><input id="sr-toldby">
       <label>変更内容</label>
       <select id="sr-type">
-        <option value="work">現場に変更</option>
-        <option value="off">休暇に変更</option>
+        ${typeOptions.map(o=>`<option value="${h(o.type)}">${h(o.label)}</option>`).join('')}
       </select>
     </div>
     <div id="sr-site-fields" class="form-grid" style="max-width:480px;margin-top:8px">
@@ -2105,6 +2107,8 @@ async function pageImport(app){
   if(!has('import_data')){ notFound(app); return; }
   const canReloadSettings = has('wage_settings');
   const daichoReloadSettings = canReloadSettings ? await api('/daicho-reload-settings').catch(()=>null) : null;
+  const nskList = await api('/non-site-keywords').catch(()=>[]);
+  const NSK_TYPE_LABEL = { x:'×(欠勤)', off:'休暇', ok:'1日OK', paid:'有給', ignore:'現場としても状態としても扱わない(単に無視)' };
   app.innerHTML = `
   <h2 style="margin-bottom:8px">📥 スプレッドシートから取り込み <span class="muted" style="font-weight:400;font-size:13px">(IN/OUT・現場・会場)</span></h2>
   <div class="card">
@@ -2128,6 +2132,16 @@ async function pageImport(app){
     <div id="imp-result" style="margin-top:10px"></div>
     <div id="imp-saved" class="muted" style="margin-top:8px"></div>
   </div>
+  <div class="card" style="margin-top:16px">
+    <h3 style="margin-bottom:8px">🏷️ 現場として認識しない文言</h3>
+    <div class="muted" style="margin-bottom:10px">台帳・予定表のシートで、これらの文言が書かれているセルは「現場名」としてではなく、右側の種別として取り込まれます(現場名として扱ってほしくない×・休暇・1日OKなどを登録してください)。</div>
+    <div id="nsk-list"></div>
+    <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap;align-items:center">
+      <input id="nsk-keyword" placeholder="文言(例:公休)" style="width:140px">
+      <select id="nsk-type">${Object.entries(NSK_TYPE_LABEL).map(([k,l])=>`<option value="${k}">${h(l)}</option>`).join('')}</select>
+      <button class="btn gold sm" id="nsk-add">追加</button>
+    </div>
+  </div>
   ${canReloadSettings ? `
   <div class="card" style="margin-top:16px">
     <h3 style="margin-bottom:8px">🌙 台帳の深夜自動再取り込み</h3>
@@ -2143,6 +2157,30 @@ async function pageImport(app){
     </div>
     <div id="daicho-reload-status" class="muted" style="margin-top:16px">読み込み中…</div>
   </div>` : ''}`;
+
+  const renderNsk = (list) => {
+    const el = $('#nsk-list'); if(!el) return;
+    el.innerHTML = list.length ? `<table class="list"><tr><th>文言</th><th>種別</th><th></th></tr>
+      ${list.map(k=>`<tr><td>${h(k.keyword)}</td><td>${h(NSK_TYPE_LABEL[k.type]||k.type)}</td><td><button class="btn ghost xs nsk-del" data-id="${k.id}">削除</button></td></tr>`).join('')}
+    </table>` : '<div class="muted">登録されている文言はありません</div>';
+    el.querySelectorAll('.nsk-del').forEach(b=>b.onclick=async()=>{
+      if(!confirm('この文言を削除しますか？')) return;
+      try{ await api(`/non-site-keywords/${b.dataset.id}`,{method:'DELETE'}); const d=await api('/non-site-keywords'); renderNsk(d); }
+      catch(e){ popup(e.message,'error'); }
+    });
+  };
+  renderNsk(nskList);
+  $('#nsk-add').onclick = async () => {
+    const keyword = $('#nsk-keyword').value.trim();
+    const type = $('#nsk-type').value;
+    if(!keyword){ popup('文言を入力してください','error'); return; }
+    try{
+      await api('/non-site-keywords',{method:'POST',body:{keyword,type}});
+      $('#nsk-keyword').value='';
+      const d = await api('/non-site-keywords'); renderNsk(d);
+      popup('追加しました');
+    }catch(e){ popup(e.message,'error'); }
+  };
 
   const showSaved = async () => {
     try{
@@ -2219,7 +2257,7 @@ async function pageImport(app){
         const savedCount = d.urls.length;
         const r = res && res.result;
         el.innerHTML = `<div style="margin-bottom:6px">現在の保存済みURL: <b>${savedCount}件</b>${savedCount?` <span class="muted">(次回0:00に自動再取り込み後、削除されます)</span>`:' <span class="muted">(再取り込み対象なし)</span>'}</div>`
-          + (r ? `<div class="muted">最終実行: ${h(r.ts)} / ${r.count}件のURLを再取り込み${r.clearedAbsent?` / 🏖️ どのファイルにも登場しなかった人の現場を${r.clearedAbsent}件、休暇に変更`:''}<br>${r.results.map(x=>`${x.ok?'✓':'✗'} ${h((x.url||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>')}</div>` : '<div class="muted">まだ自動実行されていません</div>');
+          + (r ? `<div class="muted" style="word-break:break-all">最終実行: ${h(r.ts)} / ${r.count}件のURLを再取り込み${r.clearedAbsent?` / 🏖️ どのファイルにも登場しなかった人の現場を${r.clearedAbsent}件、休暇に変更`:''}<br>${r.results.map(x=>`${x.ok?'✓':'✗'} ${h((x.url||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>')}</div>` : '<div class="muted">まだ自動実行されていません</div>');
       }).catch(()=>{ el.textContent='設定を取得できませんでした'; });
     }).catch(()=>{});
   }
@@ -2230,11 +2268,12 @@ async function pageImport(app){
 async function pageSelfReports(app){
   if(LV[ME.role] < 1){ notFound(app); return; }
   app.innerHTML = '<h2>📝 現場変更報告の承認</h2><div class="card"><div class="muted">読み込み中…</div></div>';
-  let rows;
-  try{ rows = await api('/self-reports'); }
+  let rows, typeOptions;
+  try{ [rows, typeOptions] = await Promise.all([api('/self-reports'), api('/report-type-options').catch(()=>[])]); }
   catch(e){ app.innerHTML = `<h2>📝 現場変更報告の承認</h2><div class="card"><div class="msg err">${h(e.message)}</div></div>`; return; }
 
-  const labelOf = r => r.type==='off' ? '休暇' : [r.site, r.venue].filter(Boolean).join('／');
+  const typeLabelMap = {}; typeOptions.forEach(o=>typeLabelMap[o.type]=o.label);
+  const labelOf = r => r.type==='work' ? [r.site, r.venue].filter(Boolean).join('／') : (typeLabelMap[r.type] || r.type);
 
   app.innerHTML = `
   <h2 style="margin-bottom:8px">📝 現場変更報告の承認</h2>
@@ -2261,8 +2300,8 @@ async function pageSelfReports(app){
     const r = rows.find(x => String(x.id) === b.dataset.id);
     if(!r) return;
     const proceed = () => {
-      if(r.type === 'off'){
-        if(!confirm('休暇として承認しますか？')) return;
+      if(r.type !== 'work'){
+        if(!confirm(`「${labelOf(r)}」として承認しますか？`)) return;
         api(`/self-reports/${r.id}/approve`, { method:'POST' })
           .then(()=>{ popup('承認しました'); pageSelfReports(app); })
           .catch(e=>popup(e.message,'error'));
@@ -3139,13 +3178,14 @@ async function pageAdminSettings(app){
   const wageData = await api('/wage-rates').catch(()=>null);
   const notifyData = await api('/notify-settings').catch(()=>null);
   const lockData = await api('/lock-settings').catch(()=>null);
+  const rtoList = await api('/report-type-options').catch(()=>[]);
   const stAs = PAGE_STATE.adminSettings || (PAGE_STATE.adminSettings = { open:{ pin:true } });
   const openSet = stAs.open;
   const sec = (id,title,body)=>`<details class="adm-sec" id="asec-${id}" data-sec="${id}" ${openSet[id]?'open':''}><summary>${title}</summary><div class="adm-body">${body}</div></details>`;
   app.innerHTML = `
   <h2 style="margin-bottom:8px">🔧 システム設定</h2>
   <div class="adm-nav">
-    ${[['pin','🔑 PIN'],['link','🔗 連携'],['notify','🔔 通知'],['wage','💴 時給']].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
+    ${[['pin','🔑 PIN'],['link','🔗 連携'],['notify','🔔 通知'],['wage','💴 時給'],['report-type','📝 報告選択肢']].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
   </div>
 
   ${sec('pin','🔑 手配者専用パスワード(PIN)', `
@@ -3219,13 +3259,51 @@ async function pageAdminSettings(app){
       <span id="recalc-msg" class="muted"></span>
       <div class="muted" style="margin-top:6px">取り込み済みの全現場を、現在の時給・新ルール（残業9h／業務名）で計算し直します。確定ロックに関わらず再計算し、手動入力した給与も上書きされます。</div>
     </div>
-  ` : '<div class="muted">時給データを取得できませんでした</div>')}`;
+  ` : '<div class="muted">時給データを取得できませんでした</div>')}
+
+  ${sec('report-type','📝 「現場変更の報告」の選択肢', `
+    <div class="muted" style="margin-bottom:10px">本人が現場変更を報告する際の「変更内容」プルダウンの選択肢です。「現場に変更」は必ず1つ必要で、それ以外(休暇・1日OKなど)は追加・削除できます。</div>
+    <div id="rto-list"></div>
+    <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap;align-items:center">
+      <select id="rto-type"><option value="off">休暇</option><option value="ok">1日OK</option><option value="paid">有給</option><option value="x">×</option></select>
+      <input id="rto-label" placeholder="表示ラベル(例:1日OKに変更)" style="width:200px">
+      <button class="btn gold sm" id="rto-add">追加</button>
+    </div>`)}`;
 
   app.querySelectorAll('.adm-sec').forEach(d => d.addEventListener('toggle', () => { stAs.open[d.dataset.sec] = d.open; }));
   app.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => {
     const d = document.getElementById('asec-'+b.dataset.jump);
     if(d){ d.open = true; stAs.open[b.dataset.jump] = true; d.scrollIntoView({behavior:'smooth', block:'start'}); }
   });
+
+  const renderRto = (list) => {
+    const el = $('#rto-list'); if(!el) return;
+    el.innerHTML = `<table class="list"><tr><th>種別</th><th>表示ラベル</th><th></th></tr>
+      ${list.map(o=>`<tr><td>${h(o.type)}</td><td><input class="rto-label-edit" data-id="${o.id}" value="${h(o.label)}" style="width:180px"></td>
+        <td>${o.type==='work'?'<span class="muted">(必須)</span>':`<button class="btn ghost xs rto-del" data-id="${o.id}">削除</button>`}</td></tr>`).join('')}
+    </table>`;
+    el.querySelectorAll('.rto-label-edit').forEach(inp => inp.onchange = async () => {
+      try{ await api(`/report-type-options/${inp.dataset.id}`,{method:'PUT',body:{label:inp.value.trim()}}); popup('更新しました'); }
+      catch(e){ popup(e.message,'error'); }
+    });
+    el.querySelectorAll('.rto-del').forEach(b => b.onclick = async () => {
+      if(!confirm('この選択肢を削除しますか？')) return;
+      try{ await api(`/report-type-options/${b.dataset.id}`,{method:'DELETE'}); const d=await api('/report-type-options'); renderRto(d); }
+      catch(e){ popup(e.message,'error'); }
+    });
+  };
+  renderRto(rtoList);
+  { const rb = $('#rto-add'); if(rb) rb.onclick = async () => {
+      const type = $('#rto-type').value;
+      const label = $('#rto-label').value.trim();
+      if(!label){ popup('表示ラベルを入力してください','error'); return; }
+      try{
+        await api('/report-type-options',{method:'POST',body:{type,label}});
+        $('#rto-label').value='';
+        const d = await api('/report-type-options'); renderRto(d);
+        popup('追加しました');
+      }catch(e){ popup(e.message,'error'); }
+  }; }
 
   { const ws = $('#wage-save'); if(ws) ws.onclick = async () => {
       const rates = [...document.querySelectorAll('.wage-in')].map(i=>({effective_from:i.dataset.ef,rank:i.dataset.rank,kind:i.dataset.kind,amount:Number(i.value)})).filter(r=>Number.isFinite(r.amount)&&r.amount>=0);

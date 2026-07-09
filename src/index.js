@@ -34,6 +34,15 @@ async function getSetting(env, key, def) {
   return r ? r.value : def;
 }
 
+// 台帳・予定表の取り込み時に「現場名ではない」と判定する文言(×・休暇・1日OK等)を
+// キーワード→種別(x/off/ok/paid/ignore)のマップとして取得する。
+async function loadNonSiteKeywords(env) {
+  const rows = (await env.DB.prepare('SELECT keyword, type FROM non_site_keywords').all().catch(() => ({ results: [] }))).results || [];
+  const map = {};
+  for (const r of rows) map[r.keyword] = r.type;
+  return map;
+}
+
 const jstNow = () => new Date(Date.now() + 9 * 3600e3);
 const jstDate = () => jstNow().toISOString().slice(0, 10);
 const jstTs = () => jstNow().toISOString().slice(0, 19).replace('T', ' ');
@@ -118,10 +127,11 @@ async function importScheduleSheet(env, source, url, editorId, fromDate) {
   const meta = parseSheetUrl(url);
   if (!meta) throw new Error('スプレッドシートURLの形式が正しくありません');
   const got = await fetchXlsxSheets(meta.id);
+  const keywordMap = await loadNonSiteKeywords(env);
   let allRows = [];
   const sheetReport = [];
   for (const sh of got.sheets) {
-    const parsed = parseChiefScheduleSheet(sh.grid, fromDate);
+    const parsed = parseChiefScheduleSheet(sh.grid, fromDate, keywordMap);
     if (parsed.length) { allRows = allRows.concat(parsed); sheetReport.push({ name: sh.name, count: parsed.length }); }
   }
   if (!allRows.length) return { applied: 0, skipped: 0, sheets: sheetReport, unchangedPeople: 0, changedPeople: 0, errors: ['対象日以降の予定が見つかりませんでした'] };
@@ -260,8 +270,8 @@ async function applySelfReportToSchedule(env, uid, date, toldBy, detail) {
   await env.DB.prepare('DELETE FROM schedule WHERE user_id=? AND date=?').bind(uid, date).run();
 
   let afterRow;
-  if (detail.type === 'off') {
-    afterRow = { type: 'off', site: '', venue: '', tin: '', tout: '', hours: 0, overtime: 0, pay: 0, note: '', duty: '', load_end: '', show_end: '', multi: 0 };
+  if (detail.type !== 'work') {
+    afterRow = { type: detail.type, site: '', venue: '', tin: '', tout: '', hours: 0, overtime: 0, pay: 0, note: '', duty: '', load_end: '', show_end: '', multi: 0 };
   } else {
     let hours = 0, overtime = 0, pay = 0;
     if (detail.tin && detail.tout) {
@@ -920,7 +930,8 @@ function excelSerialToDate(v) {
 // 日付列はラベル行より前の列の中から、データ行でExcelシリアル値(40000〜60000程度)が入っている列を自動検出する
 // (表によって日付列の位置が異なる=チーフ表はB列、1課手配表はA列、など)。
 // fromDate(YYYY-MM-DD)以降の日付のみを対象に抽出する(それより前は台帳の実績を優先するため取り込まない)。
-function parseChiefScheduleSheet(grid, fromDate) {
+function parseChiefScheduleSheet(grid, fromDate, keywordMap) {
+  keywordMap = keywordMap || {};
   const out = [];
   // ラベル行("現場"または"現場名"を含むセルが複数並ぶ行)を探す
   let labelRow = -1, genbaCols = [];
@@ -961,10 +972,10 @@ function parseChiefScheduleSheet(grid, fromDate) {
     for (const b of blocks) {
       const site = String(line[b.col] || '').trim();
       const venue = String(line[b.col + 1] || '').trim();
-      if (!site || site === '未定') continue; // 空欄・未定はスキップ(現状維持)
-      if (site === '×') { out.push({ regno: b.regno, date, type: 'x' }); continue; }
-      if (site === '休暇') { out.push({ regno: b.regno, date, type: 'off' }); continue; }
-      // それ以外(現場名・"手配"含む)は予定ありとして登録。時刻情報はこの表にはない。
+      if (!site) continue; // 空欄はスキップ(現状維持)
+      const kw = keywordMap[site];
+      if (kw) { if (kw !== 'ignore') out.push({ regno: b.regno, date, type: kw }); continue; }
+      // 非現場キーワードに一致しない(=現場名・"手配"含む)は予定ありとして登録。時刻情報はこの表にはない。
       out.push({ regno: b.regno, date, type: 'work', site, venue, tin: '', tout: '', duty: '' });
     }
   }
@@ -974,7 +985,8 @@ function parseChiefScheduleSheet(grid, fromDate) {
 // フォーマットA/B(個人スケジュール月間表・横長)を解析
 // 3行目(idx2)に登録番号、メンバーごとに3列セット(現場名・会場・備考/入力)
 // 5行目以降(idx4+)に日付(B列)とデータ。ym='2026-06' を日付補完に使う
-function parseFormatAB(rows, ym, cfg) {
+function parseFormatAB(rows, ym, cfg, keywordMap) {
+  keywordMap = keywordMap || {};
   const regnoRow = (cfg && cfg.regnoRow) || 2;   // 0始まりで3行目
   const firstDateRow = (cfg && cfg.firstDateRow) || 4;
   const dayCol = (cfg && cfg.dayCol) != null ? cfg.dayCol : 1; // 日付が入る列(B=1)
@@ -992,8 +1004,9 @@ function parseFormatAB(rows, ym, cfg) {
       const venue = String(line[m.c + 1] || '').trim();
       const note = String(line[m.c + 2] || '').trim();
       if (!site) continue;
-      if (['×', '✕', 'x', 'X', '休暇', '○', '〇', '未定', '手配'].includes(site)) continue; // 非現場
-      out.push({ regno: m.regno, date, site, venue, note });
+      const kw = keywordMap[site];
+      if (kw) { if (kw !== 'ignore') out.push({ regno: m.regno, date, type: kw, site: '', venue: '', note }); continue; }
+      out.push({ regno: m.regno, date, type: 'work', site, venue, note });
     }
   }
   return { rows: out };
@@ -1461,6 +1474,70 @@ async function api(req, env, url) {
     return J({ ok: 1 });
   }
 
+  // ---- 非現場キーワード管理(台帳・予定表取り込み時に「現場名」として扱わない文言) ----
+  const NSK_TYPES = ['x', 'off', 'ok', 'paid', 'ignore'];
+  if (method === 'GET' && path === '/non-site-keywords') {
+    if (!has(me, 'import_data')) return ERR('ページが見つかりません', 404);
+    const rows = (await env.DB.prepare('SELECT * FROM non_site_keywords ORDER BY sort_order, keyword').all()).results;
+    return J(rows);
+  }
+  if (method === 'POST' && path === '/non-site-keywords') {
+    if (!has(me, 'import_data')) return ERR('権限がありません', 403);
+    const keyword = String(body.keyword || '').trim();
+    const type = NSK_TYPES.includes(body.type) ? body.type : '';
+    if (!keyword || !type) return ERR('文言と種別を入力してください');
+    try { await env.DB.prepare('INSERT INTO non_site_keywords(keyword,type,sort_order) VALUES(?,?,100)').bind(keyword, type).run(); }
+    catch (e) { return ERR('既に登録されている文言です'); }
+    return J({ ok: 1 });
+  }
+  let nskm;
+  if (method === 'PUT' && (nskm = path.match(/^\/non-site-keywords\/(\d+)$/))) {
+    if (!has(me, 'import_data')) return ERR('権限がありません', 403);
+    const keyword = String(body.keyword || '').trim();
+    const type = NSK_TYPES.includes(body.type) ? body.type : '';
+    if (!keyword || !type) return ERR('文言と種別を入力してください');
+    try { await env.DB.prepare('UPDATE non_site_keywords SET keyword=?, type=? WHERE id=?').bind(keyword, type, Number(nskm[1])).run(); }
+    catch (e) { return ERR('既に登録されている文言です'); }
+    return J({ ok: 1 });
+  }
+  if (method === 'DELETE' && (nskm = path.match(/^\/non-site-keywords\/(\d+)$/))) {
+    if (!has(me, 'import_data')) return ERR('権限がありません', 403);
+    await env.DB.prepare('DELETE FROM non_site_keywords WHERE id=?').bind(Number(nskm[1])).run();
+    return J({ ok: 1 });
+  }
+
+  // ---- 現場変更報告モーダルの「変更内容」選択肢管理 ----
+  const RTO_TYPES = ['work', 'off', 'ok', 'paid', 'x'];
+  if (method === 'GET' && path === '/report-type-options') {
+    // ログイン中の全員が使う画面(現場変更の報告)に使われるため、権限を問わず取得できる
+    const rows = (await env.DB.prepare('SELECT * FROM report_type_options ORDER BY sort_order, id').all()).results;
+    return J(rows);
+  }
+  if (method === 'POST' && path === '/report-type-options') {
+    if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
+    const type = RTO_TYPES.includes(body.type) ? body.type : '';
+    const label = String(body.label || '').trim();
+    if (!type || !label) return ERR('種別とラベルを入力してください');
+    try { await env.DB.prepare('INSERT INTO report_type_options(type,label,sort_order) VALUES(?,?,100)').bind(type, label).run(); }
+    catch (e) { return ERR('その種別は既に登録されています'); }
+    return J({ ok: 1 });
+  }
+  let rtom;
+  if (method === 'PUT' && (rtom = path.match(/^\/report-type-options\/(\d+)$/))) {
+    if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
+    const label = String(body.label || '').trim();
+    if (!label) return ERR('ラベルを入力してください');
+    await env.DB.prepare('UPDATE report_type_options SET label=? WHERE id=?').bind(label, Number(rtom[1])).run();
+    return J({ ok: 1 });
+  }
+  if (method === 'DELETE' && (rtom = path.match(/^\/report-type-options\/(\d+)$/))) {
+    if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
+    const cnt = await env.DB.prepare('SELECT COUNT(*) AS n FROM report_type_options').first();
+    if (cnt && cnt.n <= 1) return ERR('選択肢を1つも無くすことはできません');
+    await env.DB.prepare('DELETE FROM report_type_options WHERE id=?').bind(Number(rtom[1])).run();
+    return J({ ok: 1 });
+  }
+
   if (method === 'POST' && path === '/users') {
     if (!has(me, 'account_manage') && !has(me, 'site_manage')) return ERR('ページが見つかりません', 404);
     const { regno, name, rank = '', han = '', ka = '', station = '', role = 'member', manager_id = null } = body;
@@ -1809,7 +1886,8 @@ async function api(req, env, url) {
   if (method === 'POST' && path === '/schedule-self-report') {
     const date = String(body.date || '').trim();
     const toldBy = String(body.toldBy || '').trim();
-    const type = body.type === 'off' ? 'off' : 'work';
+    const validTypes = (await env.DB.prepare('SELECT type FROM report_type_options').all()).results.map(r => r.type);
+    const type = validTypes.includes(body.type) ? body.type : 'work';
     const site = String(body.site || '').trim();
     const venue = String(body.venue || '').trim();
     if (!date) return ERR('現場日を入力してください');
@@ -1817,7 +1895,8 @@ async function api(req, env, url) {
     if (type === 'work' && !site && !venue) return ERR('現場名か会場名のいずれかを入力してください');
 
     const uid = me.id;
-    const label = type === 'off' ? '休暇' : [site, venue].filter(Boolean).join('／');
+    const typeLabelRow = await env.DB.prepare('SELECT label FROM report_type_options WHERE type=?').bind(type).first();
+    const label = type === 'work' ? [site, venue].filter(Boolean).join('／') : ((typeLabelRow && typeLabelRow.label) || type);
 
     if (lv(me) < 1) {
       // メンツ: 承認が必要。self_reportsにpendingとして保存し、手配担当者に承認依頼を通知する
@@ -1872,8 +1951,8 @@ async function api(req, env, url) {
     if (me.role !== 'admin' && String(tgt ? tgt.manager_id : '') !== String(me.id)) return ERR('権限がありません', 403);
     // 承認時に、通常の現場入力と同じ項目(現場名・会場名・時刻・業務名など)を指定できる。
     // 指定がなければ報告内容(現場名/会場名)のみで反映される。
-    const detail = rep.type === 'off'
-      ? { type: 'off' }
+    const detail = rep.type !== 'work'
+      ? { type: rep.type }
       : {
           type: 'work',
           site: String(body.site ?? rep.site ?? '').trim(),
@@ -1888,7 +1967,8 @@ async function api(req, env, url) {
         };
     await applySelfReportToSchedule(env, rep.user_id, rep.date, rep.told_by, detail);
     await env.DB.prepare('UPDATE self_reports SET status=?, decided_at=?, decided_by=? WHERE id=?').bind('approved', jstTs(), me.id, id).run();
-    const label = rep.type === 'off' ? '休暇' : [detail.site, detail.venue].filter(Boolean).join('／');
+    const typeLabelRow1 = rep.type !== 'work' ? await env.DB.prepare('SELECT label FROM report_type_options WHERE type=?').bind(rep.type).first() : null;
+    const label = rep.type === 'work' ? [detail.site, detail.venue].filter(Boolean).join('／') : ((typeLabelRow1 && typeLabelRow1.label) || rep.type);
     try {
       await notify(env, [rep.user_id], 'self_report',
         `✅ ${rep.date}の「${label}」への変更報告が承認され、スケジュールに反映されました。`,
@@ -1905,7 +1985,8 @@ async function api(req, env, url) {
     const tgt = await env.DB.prepare('SELECT manager_id FROM users WHERE id=?').bind(rep.user_id).first();
     if (me.role !== 'admin' && String(tgt ? tgt.manager_id : '') !== String(me.id)) return ERR('権限がありません', 403);
     await env.DB.prepare('UPDATE self_reports SET status=?, decided_at=?, decided_by=? WHERE id=?').bind('rejected', jstTs(), me.id, id).run();
-    const label = rep.type === 'off' ? '休暇' : [rep.site, rep.venue].filter(Boolean).join('／');
+    const typeLabelRow2 = rep.type !== 'work' ? await env.DB.prepare('SELECT label FROM report_type_options WHERE type=?').bind(rep.type).first() : null;
+    const label = rep.type === 'work' ? [rep.site, rep.venue].filter(Boolean).join('／') : ((typeLabelRow2 && typeLabelRow2.label) || rep.type);
     try {
       await notify(env, [rep.user_id], 'self_report',
         `❌ ${rep.date}の「${label}」への変更報告は見送られました。手配担当者に確認してください。`,
@@ -2042,6 +2123,7 @@ async function api(req, env, url) {
     const mode = body.add ? 'add' : 'replace-person-day';
     const results = [];
     const urlMeta = {}; // url -> { sheetTitle, targetDate } (保存済みURL一覧の表示用)
+    const keywordMap = await loadNonSiteKeywords(env);
     for (const rawUrl of urls) {
       const meta = parseSheetUrl(rawUrl);
       if (!meta) { results.push({ url: rawUrl, ok: false, error: 'URLの形式が正しくありません' }); continue; }
@@ -2079,7 +2161,7 @@ async function api(req, env, url) {
           const fmt = body.format && body.format !== 'auto' ? body.format : detectFormat(grid);
           let parsed;
           if (fmt === 'C') parsed = parseFormatC(grid, body.cfg, fileDate).rows;
-          else parsed = parseFormatAB(grid, month, body.cfg).rows;
+          else parsed = parseFormatAB(grid, month, body.cfg, keywordMap).rows;
           if (parsed && parsed.length) { allRows = allRows.concat(parsed); sheetReport.push({ name: nm, count: parsed.length }); }
           else sheetReport.push({ name: nm, count: 0 });
         } catch (e) {
@@ -2379,6 +2461,7 @@ async function cronDaichoReload(env) {
   const editorName = adminUser ? adminUser.name : '自動';
   const results = [];
   const allRowsCombined = []; // 今夜取り込む全URL(全ファイル)を横断して集める。不在者判定はこれを使って最後にまとめて行う。
+  const keywordMap = await loadNonSiteKeywords(env);
 
   for (const rawUrl of urls) {
     const meta = parseSheetUrl(rawUrl);
@@ -2395,7 +2478,7 @@ async function cronDaichoReload(env) {
           const fmt = detectFormat(grid);
           let parsed;
           if (fmt === 'C') parsed = parseFormatC(grid, null, fileDate).rows;
-          else parsed = parseFormatAB(grid, jstDate().slice(0, 7)).rows;
+          else parsed = parseFormatAB(grid, jstDate().slice(0, 7), null, keywordMap).rows;
           if (parsed && parsed.length) { allRows = allRows.concat(parsed); sheetReport.push({ name: sh.name, count: parsed.length }); }
         } catch (e) {
           sheetReport.push({ name: sh.name, count: 0, note: `解析エラー: ${e.message}` });

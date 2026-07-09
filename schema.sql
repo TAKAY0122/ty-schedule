@@ -243,3 +243,27 @@ CREATE TABLE IF NOT EXISTS option_lists(
 INSERT OR IGNORE INTO option_lists(category, value, sort_order) VALUES
  ('ka','1課',1), ('ka','2課',2),
  ('han','コンサート班',1), ('han','サンガ班',2);
+
+-- 台帳・予定表の取り込み時、「現場名」としてではなく特別な状態として扱う文言(×・休暇・1日OK等)。
+-- type: 'x'(欠勤)|'off'(休暇)|'ok'(1日OK)|'paid'(有給)|'ignore'(現場としては扱わないが状態変換もしない=単純に読み飛ばす)
+CREATE TABLE IF NOT EXISTS non_site_keywords(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  keyword TEXT NOT NULL UNIQUE,
+  type TEXT NOT NULL,
+  sort_order INTEGER DEFAULT 0
+);
+INSERT OR IGNORE INTO non_site_keywords(keyword, type, sort_order) VALUES
+ ('×','x',1), ('✕','x',2), ('x','x',3), ('X','x',4),
+ ('休暇','off',10),
+ ('1日OK','ok',20), ('○','ok',21), ('〇','ok',22),
+ ('未定','ignore',30), ('手配','ignore',31);
+
+-- 「現場変更の報告」モーダルの変更内容プルダウンの選択肢。typeはschedule.typeに対応する値。
+CREATE TABLE IF NOT EXISTS report_type_options(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  type TEXT NOT NULL UNIQUE,
+  label TEXT NOT NULL,
+  sort_order INTEGER DEFAULT 0
+);
+INSERT OR IGNORE INTO report_type_options(type, label, sort_order) VALUES
+ ('work','現場に変更',1), ('off','休暇に変更',2);
