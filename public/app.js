@@ -2129,7 +2129,7 @@ async function pageImport(app){
   const canReloadSettings = has('wage_settings');
   const daichoReloadSettings = canReloadSettings ? await api('/daicho-reload-settings').catch(()=>null) : null;
   const nskList = await api('/non-site-keywords').catch(()=>[]);
-  const NSK_TYPE_LABEL = { x:'×(欠勤)', off:'休暇', ok:'1日OK', paid:'有給', ignore:'現場としても状態としても扱わない(単に無視)' };
+  const NSK_TYPE_LABEL = { x:'×(欠勤)', off:'休暇', ok:'1日OK', paid:'有給', ignore:'無視する(現場にも状態にもしない)' };
   app.innerHTML = `
   <h2 style="margin-bottom:8px">📥 スプレッドシートから取り込み <span class="muted" style="font-weight:400;font-size:13px">(IN/OUT・現場・会場)</span></h2>
   <div class="card">
@@ -2158,8 +2158,8 @@ async function pageImport(app){
     <div class="muted" style="margin-bottom:10px">台帳・予定表のシートで、これらの文言が書かれているセルは「現場名」としてではなく、右側の種別として取り込まれます(現場名として扱ってほしくない×・休暇・1日OKなどを登録してください)。</div>
     <div id="nsk-list"></div>
     <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap;align-items:center">
-      <input id="nsk-keyword" placeholder="文言(例:公休)" style="width:140px">
-      <select id="nsk-type">${Object.entries(NSK_TYPE_LABEL).map(([k,l])=>`<option value="${k}">${h(l)}</option>`).join('')}</select>
+      <input id="nsk-keyword" placeholder="文言(例:公休)" style="width:140px;max-width:100%">
+      <select id="nsk-type" style="max-width:100%">${Object.entries(NSK_TYPE_LABEL).map(([k,l])=>`<option value="${k}">${h(l)}</option>`).join('')}</select>
       <button class="btn gold sm" id="nsk-add">追加</button>
     </div>
   </div>
@@ -2181,9 +2181,12 @@ async function pageImport(app){
 
   const renderNsk = (list) => {
     const el = $('#nsk-list'); if(!el) return;
-    el.innerHTML = list.length ? `<table class="list"><tr><th>文言</th><th>種別</th><th></th></tr>
-      ${list.map(k=>`<tr><td>${h(k.keyword)}</td><td>${h(NSK_TYPE_LABEL[k.type]||k.type)}</td><td><button class="btn ghost xs nsk-del" data-id="${k.id}">削除</button></td></tr>`).join('')}
-    </table>` : '<div class="muted">登録されている文言はありません</div>';
+    el.innerHTML = list.length ? `<div class="nsk-chips">
+      ${list.map(k=>`<span class="nsk-chip">
+        <b>${h(k.keyword)}</b><span class="muted" style="font-size:11.5px">(${h(NSK_TYPE_LABEL[k.type]||k.type)})</span>
+        <button class="nsk-del" data-id="${k.id}" title="削除">✕</button>
+      </span>`).join('')}
+    </div>` : '<div class="muted">登録されている文言はありません</div>';
     el.querySelectorAll('.nsk-del').forEach(b=>b.onclick=async()=>{
       if(!confirm('この文言を削除しますか？')) return;
       try{ await api(`/non-site-keywords/${b.dataset.id}`,{method:'DELETE'}); const d=await api('/non-site-keywords'); renderNsk(d); }
@@ -3302,10 +3305,11 @@ async function pageAdminSettings(app){
 
   const renderRto = (list) => {
     const el = $('#rto-list'); if(!el) return;
-    el.innerHTML = `<table class="list"><tr><th>種別</th><th>表示ラベル</th><th></th></tr>
-      ${list.map(o=>`<tr><td>${h(o.type)}</td><td><input class="rto-label-edit" data-id="${o.id}" value="${h(o.label)}" style="width:180px"></td>
-        <td>${o.type==='work'?'<span class="muted">(必須)</span>':`<button class="btn ghost xs rto-del" data-id="${o.id}">削除</button>`}</td></tr>`).join('')}
-    </table>`;
+    el.innerHTML = list.map(o=>`<div class="rto-row">
+      <span class="rto-type-badge">${h(o.type)}</span>
+      <input class="rto-label-edit" data-id="${o.id}" value="${h(o.label)}">
+      ${o.type==='work'?'<span class="muted" style="font-size:12px;white-space:nowrap">(必須)</span>':`<button class="btn ghost xs rto-del" data-id="${o.id}">削除</button>`}
+    </div>`).join('');
     el.querySelectorAll('.rto-label-edit').forEach(inp => inp.onchange = async () => {
       try{ await api(`/report-type-options/${inp.dataset.id}`,{method:'PUT',body:{label:inp.value.trim()}}); popup('更新しました'); }
       catch(e){ popup(e.message,'error'); }
