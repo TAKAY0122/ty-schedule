@@ -833,6 +833,23 @@ async function pollBell(){
 }
 
 /* ===== スケジュール表(写真風)===== */
+// 個人スケジュール画面から、その人の変更履歴(誰が・いつ・どこを・どう変更したか)を見る。
+// 閲覧は手配者以上(pageSchedule側で呼び出しボタンの表示を制御済み)。
+async function openScheduleHistory(uid, name){
+  modal(`<h3>${h(name)} さんの変更履歴</h3><div class="muted" style="margin-bottom:10px">直近150件を新しい順に表示します</div><div id="sh-list" class="muted">読み込み中…</div>`);
+  try{
+    const hist = await api(`/history?uid=${uid}`);
+    const el = $('#sh-list'); if(!el) return;
+    el.innerHTML = hist.length ? hist.map(x=>`<div class="dcard" style="margin-bottom:8px">
+      <div class="dcard-head"><span class="dcard-title">${h(x.date)}</span><span class="dcard-sub">${h(x.editor_name)}</span></div>
+      <div class="drow"><span class="dk">変更</span><span class="dv">${h(summarizeHistory(x.before_json, x.after_json))}</span></div>
+      <div class="drow"><span class="dk">日時</span><span class="dv dcard-sub">${h(x.ts)}</span></div>
+    </div>`).join('') : '<div class="muted" style="text-align:center;padding:16px 0">変更履歴はありません</div>';
+  }catch(e){
+    const el = $('#sh-list'); if(el) el.innerHTML = `<div class="msg err">${h(e.message)}</div>`;
+  }
+}
+
 async function pageSchedule(app, hash){
   const m = hash.match(/^#\/schedule\/(\d+)/);
   const uid = m ? Number(m[1]) : ME.id;
@@ -923,6 +940,7 @@ async function pageSchedule(app, hash){
   }
 
   const others = LV[ME.role]>=1 ? `<button class="btn ghost sm" id="pick-user">他のメンバーを見る ▾</button>` : '';
+  const histBtn = LV[ME.role]>=2 ? `<button class="btn ghost sm" id="view-history">📝 変更履歴</button>` : '';
   app.innerHTML = `
   <h2>${h(u.name)} のスケジュール ${uid!==ME.id?'<span class="muted">(閲覧中)</span>':''}</h2>
   <div class="card">
@@ -934,6 +952,7 @@ async function pageSchedule(app, hash){
       </div>
       <div class="muted">${h(u.regno)} / ${h(u.rank)} / ${h(u.han)} / ${h(u.station)}</div>
       ${others}
+      ${histBtn}
     </div>
     <div class="sched-wrap pc-only">
       <table class="sched">
@@ -962,6 +981,8 @@ async function pageSchedule(app, hash){
 
   $('#prev-m').onclick = () => { MONTH = shiftMonth(MONTH,-1); render(); };
   $('#next-m').onclick = () => { MONTH = shiftMonth(MONTH, 1); render(); };
+  const vh = $('#view-history');
+  if(vh) vh.onclick = () => openScheduleHistory(uid, u.name);
   const pk = $('#pick-user');
   if(pk) pk.onclick = async () => {
     const [users, managers] = await Promise.all([getUsers(true), api('/managers')]);
@@ -2366,6 +2387,34 @@ function openSelfReportApprove(r){
   };
 }
 
+// スケジュール変更履歴の before_json/after_json を人間が読める短い文言に変換する。
+// (編集履歴一覧・個人スケジュールの変更履歴の両方から使う共通ロジック)
+function summarizeHistory(b, a){
+  const p = j => {
+    if (j == null) return {};
+    if (typeof j === 'object') return j;
+    try{ const v = JSON.parse(j); return (v && typeof v === 'object') ? v : {}; }catch(_){ return {}; }
+  };
+  const typeLabel = { off:'休暇', paid:'有給', ok:'1日OK', x:'×' };
+  const descSlot = s => {
+    if(!s || typeof s !== 'object') return '(空)';
+    if(!s.type) return '(空)';
+    if(s.type === 'work') return `現場「${String(s.site||'')}」${String(s.tin||'')}-${String(s.tout||'')}`;
+    return typeLabel[s.type] || '(その他)';
+  };
+  const desc = o => {
+    if(!o || typeof o !== 'object') return '(空)';
+    if(o.plan!==undefined && o.type===undefined) return `育成計画「${String(o.plan||'(空)').slice(0,200)}」`;
+    let slots = Array.isArray(o) ? o : (o.slots !== undefined ? (typeof o.slots==='string'?p(o.slots):o.slots) : (o.type?[o]:[]));
+    if(!Array.isArray(slots)) slots = [];
+    if(!slots.length) return '(空)';
+    return slots.map(descSlot).join(' / ');
+  };
+  const ao = p(a);
+  const src = (ao && typeof ao==='object' && ao._src) ? `[${String(ao._src).slice(0,60)}] ` : '';
+  return src + `${desc(p(b))} → ${desc(ao)}`;
+}
+
 async function pageHandlerStatus(app){
   if(!has('handler_tools')){ notFound(app); return; }
   const stHs = PAGE_STATE.handlerStatus || (PAGE_STATE.handlerStatus = { open:{ online:true } });
@@ -2386,32 +2435,7 @@ async function pageHandlerStatus(app){
   });
 
   const fmtAgo = ms => { const s = Math.floor((Date.now()-ms)/1000); return s<60?'たった今':Math.floor(s/60)+'分前'; };
-  const summarize = (b, a) => {
-    // 想定外の形式が来ても、生のJSON文字列やコードをそのまま表示しないよう、常に安全な文言にフォールバックする
-    const p = j => {
-      if (j == null) return {};
-      if (typeof j === 'object') return j; // 既にオブジェクトならそのまま
-      try{ const v = JSON.parse(j); return (v && typeof v === 'object') ? v : {}; }catch(_){ return {}; }
-    };
-    const typeLabel = { off:'休暇', paid:'有給', ok:'1日OK', x:'×' };
-    const descSlot = s => {
-      if(!s || typeof s !== 'object') return '(空)';
-      if(!s.type) return '(空)';
-      if(s.type === 'work') return `現場「${String(s.site||'')}」${String(s.tin||'')}-${String(s.tout||'')}`;
-      return typeLabel[s.type] || '(その他)';
-    };
-    const desc = o => {
-      if(!o || typeof o !== 'object') return '(空)';
-      if(o.plan!==undefined && o.type===undefined) return `育成計画「${String(o.plan||'(空)').slice(0,200)}」`;
-      let slots = Array.isArray(o) ? o : (o.slots !== undefined ? (typeof o.slots==='string'?p(o.slots):o.slots) : (o.type?[o]:[]));
-      if(!Array.isArray(slots)) slots = [];
-      if(!slots.length) return '(空)';
-      return slots.map(descSlot).join(' / ');
-    };
-    const ao = p(a);
-    const src = (ao && typeof ao==='object' && ao._src) ? `[${String(ao._src).slice(0,60)}] ` : '';
-    return src + `${desc(p(b))} → ${desc(ao)}`;
-  };
+  const summarize = summarizeHistory;
   const loadOnline = async () => {
     try{
       const rows = await api('/online');

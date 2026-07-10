@@ -2315,9 +2315,14 @@ async function api(req, env, url) {
   }
   if (method === 'GET' && path === '/history') {
     if (!handlerMode && !has(me, 'handler_tools')) return ERR('ページが見つかりません', 404);
-    const rows = (await env.DB.prepare(
-      "SELECT h.*, COALESCE(e.name, CASE WHEN h.editor_id=0 THEN 'スプレッドシート' ELSE '不明' END) AS editor_name, t.name AS target_name FROM schedule_history h LEFT JOIN users e ON e.id=h.editor_id LEFT JOIN users t ON t.id=h.target_id ORDER BY h.id DESC LIMIT 150"
-    ).all()).results;
+    const uidFilter = url.searchParams.get('uid');
+    const rows = uidFilter
+      ? (await env.DB.prepare(
+          "SELECT h.*, COALESCE(e.name, CASE WHEN h.editor_id=0 THEN 'スプレッドシート' ELSE '不明' END) AS editor_name, t.name AS target_name FROM schedule_history h LEFT JOIN users e ON e.id=h.editor_id LEFT JOIN users t ON t.id=h.target_id WHERE h.target_id=? ORDER BY h.id DESC LIMIT 150"
+        ).bind(Number(uidFilter)).all()).results
+      : (await env.DB.prepare(
+          "SELECT h.*, COALESCE(e.name, CASE WHEN h.editor_id=0 THEN 'スプレッドシート' ELSE '不明' END) AS editor_name, t.name AS target_name FROM schedule_history h LEFT JOIN users e ON e.id=h.editor_id LEFT JOIN users t ON t.id=h.target_id ORDER BY h.id DESC LIMIT 150"
+        ).all()).results;
     return J(rows);
   }
 
