@@ -43,6 +43,20 @@ async function loadNonSiteKeywords(env) {
   return map;
 }
 
+// after_json の内容が「現場(work)」を一切含まない場合(休暇・×・1日OK等のみへの変更)は true を返す。
+// このような変更(特に台帳の不在者休暇化・予定表の一括更新等)は大量に発生し履歴を埋め尽くしてしまうため、
+// スケジュール変更履歴には記録しない対象と判定する。育成計画の変更・現場を削除した(空にした)変更は、
+// 常に記録したい変更なので対象外(false)とする。
+function isNonWorkOnlyChange(afterJson) {
+  try {
+    const after = typeof afterJson === 'string' ? JSON.parse(afterJson) : afterJson;
+    if (after && typeof after === 'object' && after.plan !== undefined && after.type === undefined) return false;
+    const slots = Array.isArray(after) ? after : (after && after.slots !== undefined ? (typeof after.slots === 'string' ? JSON.parse(after.slots) : after.slots) : (after && after.type ? [after] : []));
+    if (!Array.isArray(slots) || !slots.length) return false;
+    return !slots.some(s => s && s.type === 'work');
+  } catch (e) { return false; }
+}
+
 const jstNow = () => new Date(Date.now() + 9 * 3600e3);
 const jstDate = () => jstNow().toISOString().slice(0, 10);
 const jstTs = () => jstNow().toISOString().slice(0, 19).replace('T', ' ');
@@ -287,8 +301,11 @@ async function applySelfReportToSchedule(env, uid, date, toldBy, detail) {
   }
   await env.DB.prepare('INSERT INTO schedule(user_id,date,slot,type,site,venue,tin,tout,hours,overtime,pay,note,duty,load_end,show_end,multi) VALUES(?,?,0,?,?,?,?,?,?,?,?,?,?,?,?,?)')
     .bind(uid, date, afterRow.type, afterRow.site, afterRow.venue, afterRow.tin, afterRow.tout, afterRow.hours, afterRow.overtime, afterRow.pay, afterRow.note, afterRow.duty, afterRow.load_end, afterRow.show_end, afterRow.multi).run();
-  await env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
-    .bind(jstTs(), uid, uid, date, beforeJson, JSON.stringify({ slots: [stripRow(afterRow)], _src: `本人報告(伝えた人: ${toldBy})` })).run();
+  const afterJsonStr = JSON.stringify({ slots: [stripRow(afterRow)], _src: `本人報告(伝えた人: ${toldBy})` });
+  if (!isNonWorkOnlyChange(afterJsonStr)) {
+    await env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
+      .bind(jstTs(), uid, uid, date, beforeJson, afterJsonStr).run();
+  }
 }
 
 // 名前から姓(先頭の語)を取り出す。「吉崎 天晴」→「吉崎」/「吉崎天晴」→そのまま
@@ -367,6 +384,8 @@ async function clearAbsentFromDaicho(env, rows, editorId) {
       batch.push(env.DB.prepare('DELETE FROM schedule WHERE user_id=? AND date=?').bind(wu.user_id, date));
       batch.push(env.DB.prepare('INSERT INTO schedule(user_id,date,slot,type,site,venue,tin,tout,hours,overtime,pay,note,duty,load_end,show_end,multi) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
         .bind(wu.user_id, date, 0, 'off', '', '', '', '', 0, 0, 0, '', '', '', '', 0));
+      // 台帳の不在者休暇化は「現場に入る予定だった人が急に休暇に変更された」という重要な変更のため、
+      // 他の休暇化処理とは異なり例外的に履歴へ記録する
       batch.push(env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
         .bind(ts, editorId, wu.user_id, date, beforeJson, JSON.stringify({ slots: JSON.parse(afterJson), _src: '台帳照合(不在のため休暇に変更)' })));
       clearedPeople++;
@@ -495,8 +514,12 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
       slot++;
       if (s.type === 'work' && s.site) rookieCheck.push({ uid, date, site: s.site });
     }
-    batch.push(env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
-      .bind(ts, editorId, uid, date, beforeJson, JSON.stringify({ slots: JSON.parse(afterJson), _src: srcLabel })));
+    // 現場(work)を含まない変更(休暇・×・1日OK等のみ)は変更履歴に記録しない(大量発生するため)
+    const afterJsonForHist = JSON.stringify({ slots: JSON.parse(afterJson), _src: srcLabel });
+    if (!isNonWorkOnlyChange(afterJsonForHist)) {
+      batch.push(env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
+        .bind(ts, editorId, uid, date, beforeJson, afterJsonForHist));
+    }
     applied += items.length;
     if (mergeNote) errors.push(`${name || uid}さん ${date}: 同一現場の重複行を統合しました ${mergeNote}`);
   }
@@ -1695,8 +1718,11 @@ async function api(req, env, url) {
           .bind(a.uid, date, slot, 'work', site, venue, tin, tout, c.hours, c.overtime, pay, withAuthor(a.note, me.name), duty, load_end, show_end, multi).run();
         added++;
         const after = (await env.DB.prepare('SELECT * FROM schedule WHERE user_id=? AND date=? ORDER BY slot').bind(a.uid, date).all()).results;
-        await env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
-          .bind(ts, me.id, a.uid, date, JSON.stringify(before.map(stripRow)), JSON.stringify(after.map(stripRow))).run();
+        const afterJsonBulk = JSON.stringify(after.map(stripRow));
+        if (!isNonWorkOnlyChange(afterJsonBulk)) {
+          await env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
+            .bind(ts, me.id, a.uid, date, JSON.stringify(before.map(stripRow)), afterJsonBulk).run();
+        }
         const rs = (await env.DB.prepare("SELECT * FROM reports WHERE next_date=? AND next_site=?").bind(date, site).all()).results;
         for (const r of rs) await notify(env, [a.uid], 'rookie', `🔰 ${r.next_date} ${r.next_site} に新人「${r.candidate_name}」が入る予定です`);
         // 手配チーム通知: 対象者の手配担当が自分以外なら、担当へ「更新しました」と知らせる(本人による自己更新は対象外)
@@ -1734,8 +1760,11 @@ async function api(req, env, url) {
       if (!before.some(b => b.site === site)) continue;
       await env.DB.prepare("DELETE FROM schedule WHERE user_id=? AND date=? AND site=?").bind(uid, date, site).run();
       const after = (await env.DB.prepare('SELECT * FROM schedule WHERE user_id=? AND date=? ORDER BY slot').bind(uid, date).all()).results;
-      await env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
-        .bind(ts, me.id, uid, date, JSON.stringify(before.map(stripRow)), JSON.stringify(after.map(stripRow))).run();
+      const afterJsonSe1 = JSON.stringify(after.map(stripRow));
+      if (!isNonWorkOnlyChange(afterJsonSe1)) {
+        await env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
+          .bind(ts, me.id, uid, date, JSON.stringify(before.map(stripRow)), afterJsonSe1).run();
+      }
       removed++;
     }
     const rankCache = {};
@@ -1833,13 +1862,16 @@ async function api(req, env, url) {
           if (!changedSite) changedSite = row.site;
         }
       }
-      // 変更があったら履歴に1件残す(当日まるごと before→after)
+      // 変更があったら履歴に1件残す(当日まるごと before→after)。ただし現場(work)を含まない
+      // 変更(休暇・×・1日OK等のみ)は記録しない(大量発生するため)
       const beforeJson = JSON.stringify(before.map(stripRow));
       const afterJson = JSON.stringify(saved.map(stripRow));
       if (beforeJson !== afterJson) {
         anyChanged = true;
-        await env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
-          .bind(ts, me.id, uid, date, beforeJson, afterJson).run();
+        if (!isNonWorkOnlyChange(afterJson)) {
+          await env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
+            .bind(ts, me.id, uid, date, beforeJson, afterJson).run();
+        }
       }
     }
     // 手配チーム通知: 対象者の手配担当が自分以外なら知らせる(本人による自己更新は対象外)
@@ -2318,10 +2350,10 @@ async function api(req, env, url) {
     const uidFilter = url.searchParams.get('uid');
     const rows = uidFilter
       ? (await env.DB.prepare(
-          "SELECT h.*, COALESCE(e.name, CASE WHEN h.editor_id=0 THEN 'スプレッドシート' ELSE '不明' END) AS editor_name, t.name AS target_name FROM schedule_history h LEFT JOIN users e ON e.id=h.editor_id LEFT JOIN users t ON t.id=h.target_id WHERE h.target_id=? ORDER BY h.id DESC LIMIT 150"
+          "SELECT h.*, COALESCE(e.name, CASE WHEN h.editor_id=0 THEN 'スプレッドシート' ELSE '不明' END) AS editor_name, t.name AS target_name FROM schedule_history h LEFT JOIN users e ON e.id=h.editor_id LEFT JOIN users t ON t.id=h.target_id WHERE h.target_id=? ORDER BY h.id DESC LIMIT 500"
         ).bind(Number(uidFilter)).all()).results
       : (await env.DB.prepare(
-          "SELECT h.*, COALESCE(e.name, CASE WHEN h.editor_id=0 THEN 'スプレッドシート' ELSE '不明' END) AS editor_name, t.name AS target_name FROM schedule_history h LEFT JOIN users e ON e.id=h.editor_id LEFT JOIN users t ON t.id=h.target_id ORDER BY h.id DESC LIMIT 150"
+          "SELECT h.*, COALESCE(e.name, CASE WHEN h.editor_id=0 THEN 'スプレッドシート' ELSE '不明' END) AS editor_name, t.name AS target_name FROM schedule_history h LEFT JOIN users e ON e.id=h.editor_id LEFT JOIN users t ON t.id=h.target_id ORDER BY h.id DESC LIMIT 500"
         ).all()).results;
     return J(rows);
   }

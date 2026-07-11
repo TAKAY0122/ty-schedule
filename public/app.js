@@ -836,7 +836,7 @@ async function pollBell(){
 // 個人スケジュール画面から、その人の変更履歴(誰が・いつ・どこを・どう変更したか)を見る。
 // 閲覧は手配者以上(pageSchedule側で呼び出しボタンの表示を制御済み)。
 async function openScheduleHistory(uid, name){
-  modal(`<h3>${h(name)} さんの変更履歴</h3><div class="muted" style="margin-bottom:10px">直近150件を新しい順に表示します</div><div id="sh-list" class="muted">読み込み中…</div>`);
+  modal(`<h3>${h(name)} さんの変更履歴</h3><div class="muted" style="margin-bottom:10px">直近500件を新しい順に表示します</div><div id="sh-list" class="muted">読み込み中…</div>`);
   try{
     const hist = await api(`/history?uid=${uid}`);
     const el = $('#sh-list'); if(!el) return;
@@ -2429,7 +2429,7 @@ async function pageHandlerStatus(app){
     ${[['online','🟢 ログイン中'],['hist','📝 編集履歴']].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
   </div>
   ${sec('online','🟢 現在ログイン中のメンバー <span class="muted" style="font-weight:400">(10秒ごとに自動更新)</span>', `<div id="hd-online" class="muted">読み込み中…</div>`)}
-  ${sec('hist','📝 スケジュール編集履歴 <span class="muted" style="font-weight:400">(直近150件)</span>', `<div id="hd-history" class="muted">読み込み中…</div>`)}`;
+  ${sec('hist','📝 スケジュール編集履歴 <span class="muted" style="font-weight:400">(直近500件)</span>', `<div id="hd-history" class="muted">読み込み中…</div>`)}`;
 
   app.querySelectorAll('.adm-sec').forEach(d => d.addEventListener('toggle', () => { stHs.open[d.dataset.sec] = d.open; }));
   app.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => {
