@@ -2256,20 +2256,24 @@ async function api(req, env, url) {
     if (lv(me) < 1) return ERR('ページが見つかりません', 404);
     const month = url.searchParams.get('month') || jstDate().slice(0, 7);
     const rows = (await env.DB.prepare(
-      "SELECT user_id, date, hours, overtime FROM schedule WHERE type='work' AND site<>'' AND date LIKE ? ORDER BY user_id, date"
+      "SELECT user_id, date, site, hours, overtime FROM schedule WHERE type='work' AND site<>'' AND date LIKE ? ORDER BY user_id, date"
     ).bind(month + '%').all()).results;
     const users = (await env.DB.prepare('SELECT id,name,regno,role,rank,han,ka,manager_id FROM users ORDER BY regno').all()).results;
     const umap = {}; for (const u of users) umap[u.id] = u;
     const agg = {};
     for (const r of rows) {
-      const a = agg[r.user_id] ||= { dates: [], shifts: 0, hours: 0, overtime: 0 };
+      const a = agg[r.user_id] ||= { dates: [], shifts: 0, hours: 0, overtime: 0, siteCounts: {} };
       a.dates.push(r.date); a.shifts++; a.hours += r.hours || 0; a.overtime += r.overtime || 0;
+      if (r.site) a.siteCounts[r.site] = (a.siteCounts[r.site] || 0) + 1;
     }
     const canPay = has(me, 'site_pay'); // 時間・残業を閲覧できるか
     // 手配担当未設定はチーフ手配(課)として扱う
     const chiefLabel = u => `チーフ手配(${u.ka || '未設定'})`;
     const items = users.map(u => {
-      const a = agg[u.id] || { dates: [], shifts: 0, hours: 0, overtime: 0 };
+      const a = agg[u.id] || { dates: [], shifts: 0, hours: 0, overtime: 0, siteCounts: {} };
+      // 今月最も多く入った現場(「同じ現場ばかり」検知用)
+      let topSite = '', topSiteCount = 0;
+      for (const [site, cnt] of Object.entries(a.siteCounts)) { if (cnt > topSiteCount) { topSite = site; topSiteCount = cnt; } }
       return {
         uid: u.id, name: u.name, regno: u.regno, role: u.role, rank: u.rank, han: u.han, ka: u.ka || '',
         manager_id: u.manager_id,
@@ -2278,7 +2282,8 @@ async function api(req, env, url) {
         shifts: a.shifts,
         maxStreak: longestStreak(a.dates),
         hours: canPay ? Math.round(a.hours * 10) / 10 : null,
-        overtime: canPay ? Math.round(a.overtime * 10) / 10 : null
+        overtime: canPay ? Math.round(a.overtime * 10) / 10 : null,
+        topSite, topSiteCount,
       };
     });
     // 手配担当ごとの偏り(担当未設定はチーフ手配(課)単位でまとめる)

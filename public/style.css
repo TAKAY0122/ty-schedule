@@ -421,6 +421,8 @@ table.sched tbody tr.editable-row:hover td:not(.site-multi):not(.plan-cell){ bac
 .sum-stat.st-streak .sum-num{color:var(--warn)}
 .sum-stat.st-few{background:#eef3fb;border-color:var(--sat)}
 .sum-stat.st-few .sum-num{color:var(--sat)}
+.sum-stat.st-samesite{background:#f3edf9;border-color:#8e5fc7}
+.sum-stat.st-samesite .sum-num{color:#8e5fc7}
 @media(max-width:560px){.sum-stats{grid-template-columns:repeat(3,1fr)}}
 
 .mgr-row{margin-bottom:8px}
@@ -444,6 +446,7 @@ table.sched tbody tr.editable-row:hover td:not(.site-multi):not(.plan-cell){ bac
 .sum-badge.streak{background:var(--warn);color:#fff}
 .sum-badge.few{background:var(--sat);color:#fff}
 .sum-badge.zero{background:#bbb;color:#fff}
+.sum-badge.samesite{background:#8e5fc7;color:#fff}
 .btn.xs.on{background:var(--gold);color:#fff;border-color:var(--gold)}
 
 /* ===== 今日のハイライト(マイスケジュール) ===== */

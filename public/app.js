@@ -1634,7 +1634,7 @@ function shiftMonth(m, d){
 
 /* ===== 稼働サマリー(チーフ以上)。月間の出勤数・現場数・最長連勤と手配偏りを可視化 ===== */
 // しきい値(運用に合わせて調整可)
-const SUM_TH = { over: 18, streak: 6, few: 3 }; // 出勤18日以上=働きすぎ / 連勤6日以上=注意 / 出勤3日以下=機会少
+const SUM_TH = { over: 18, streak: 6, few: 3, sameSiteCount: 3, sameSiteRatio: 0.6 }; // 出勤18日以上=働きすぎ / 連勤6日以上=注意 / 出勤3日以下=機会少 / 同じ現場が3回以上かつ全体の60%以上=偏り
 let SUMMARY_SORT = 'workDays';
 let SUMMARY_MEMBERS_ONLY = false;
 let SUMMARY_MGR = null; // 選択中の手配担当(絞り込み)。null=全体
@@ -1647,12 +1647,14 @@ async function pageSummary(app){
   try{ data = await api(`/summary?month=${month}`); }
   catch(e){ app.innerHTML = `<div class="msg err">${h(e.message)}</div>`; return; }
 
+  const isSameSite = it => it.shifts>0 && it.topSiteCount>=SUM_TH.sameSiteCount && (it.topSiteCount/it.shifts)>=SUM_TH.sameSiteRatio;
   const badge = it => {
     const b=[];
     if(it.maxStreak>=SUM_TH.streak) b.push(`<span class="sum-badge streak">連勤${it.maxStreak}</span>`);
     if(it.workDays>=SUM_TH.over) b.push(`<span class="sum-badge over">働きすぎ</span>`);
     if(it.workDays<=SUM_TH.few && it.workDays>0) b.push(`<span class="sum-badge few">機会少</span>`);
     if(it.workDays===0) b.push(`<span class="sum-badge zero">稼働なし</span>`);
+    if(isSameSite(it)) b.push(`<span class="sum-badge samesite" title="「${h(it.topSite)}」に${it.topSiteCount}回(全${it.shifts}回中)">同じ現場ばかり</span>`);
     return b.join(' ');
   };
   const rowcls = it => it.workDays>=SUM_TH.over?'r-over':it.maxStreak>=SUM_TH.streak?'r-streak':it.workDays<=SUM_TH.few?'r-few':'';
@@ -1677,6 +1679,7 @@ async function pageSummary(app){
   const overN = view.filter(it=>it.workDays>=SUM_TH.over).length;
   const streakN = view.filter(it=>it.maxStreak>=SUM_TH.streak).length;
   const fewN = view.filter(it=>it.workDays<=SUM_TH.few && it.workDays>0).length;
+  const sameSiteN = view.filter(isSameSite).length;
 
   // 手配の偏り(タップで絞り込み)。ランキング順=現場数降順は維持
   const maxShifts = Math.max(1, ...data.managers.map(m=>m.shifts));
@@ -1731,6 +1734,7 @@ async function pageSummary(app){
     <div class="sum-stat ${overN?'st-over':''}"><div class="sum-num">${overN}</div><div class="sum-lbl">働きすぎ</div></div>
     <div class="sum-stat ${streakN?'st-streak':''}"><div class="sum-num">${streakN}</div><div class="sum-lbl">連勤注意</div></div>
     <div class="sum-stat ${fewN?'st-few':''}"><div class="sum-num">${fewN}</div><div class="sum-lbl">機会少</div></div>
+    <div class="sum-stat ${sameSiteN?'st-samesite':''}"><div class="sum-num">${sameSiteN}</div><div class="sum-lbl">同じ現場ばかり</div></div>
   </div>
 
   <div class="card" style="margin-top:12px">
