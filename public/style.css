@@ -571,3 +571,35 @@ td.sm-edit-cell{text-align:center;color:var(--gold);font-size:15px}
 .imp-card{background:#fff;border:1px solid #ccc;border-radius:6px;padding:10px 12px;margin-bottom:10px;font-size:13px;overflow-wrap:break-word;word-break:break-all}
 .imp-card-err{border-color:#d99;background:#fff6f6}
 .imp-card-url{font-family:monospace;font-size:11px;color:#555;overflow-wrap:break-word;word-break:break-all}
+
+/* ===== 非現場キーワード(現場として認識しない文言)一覧: テーブルではなく折り返すチップ形式 ===== */
+.nsk-chips{display:flex;flex-wrap:wrap;gap:8px}
+.nsk-chip{display:inline-flex;align-items:center;gap:6px;background:#f7f5ef;border:1px solid var(--line);border-radius:20px;padding:5px 4px 5px 12px;font-size:13px;max-width:100%}
+.nsk-chip b{word-break:break-word;min-width:0}
+.nsk-chip .nsk-del{background:none;border:none;color:#999;cursor:pointer;font-size:13px;padding:3px 7px;border-radius:50%;line-height:1;transition:background .15s ease,color .15s ease}
+.nsk-chip .nsk-del:hover{background:#e5e0d0;color:#b03030}
+.nsk-chip .nsk-del:active{transform:scale(.9)}
+
+/* ===== 現場変更報告の選択肢一覧: テーブルではなくフレックス行(スマホでも崩れない) ===== */
+.rto-row{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.rto-type-badge{background:var(--ink);color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;flex:none}
+.rto-row .rto-label-edit{flex:1 1 140px;min-width:0}
+
+/* ===== ホーム画面(ログイン後の最初の画面) ===== */
+.home-top-cards{display:grid;grid-template-columns:1.3fr 1fr;gap:14px;margin-bottom:20px}
+@media(max-width:640px){ .home-top-cards{grid-template-columns:1fr} }
+.home-days{display:flex;flex-direction:column;gap:12px}
+.home-day-label{font-weight:700;font-size:14px;margin-bottom:6px;color:var(--ink)}
+.home-day-site{font-size:13.5px;padding:6px 0;border-top:1px solid var(--line)}
+.home-day-site:first-of-type{border-top:none}
+.home-stat-card{display:flex;flex-direction:column;gap:10px;justify-content:center}
+.home-stat{display:flex;align-items:center;gap:12px;text-decoration:none;color:inherit;padding:10px 12px;border-radius:10px;background:#f7f5ef;transition:background .15s ease,transform .1s ease}
+.home-stat:hover{background:#f0ece0}
+.home-stat:active{transform:scale(.98)}
+.home-stat-num{font-size:26px;font-weight:800;color:var(--gold);min-width:36px;text-align:center}
+.home-stat-label{font-size:13px;color:#444;font-weight:600}
+.home-menu{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:10px}
+.home-menu-btn{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px 8px;text-decoration:none;color:var(--ink);font-size:12.5px;font-weight:600;text-align:center;transition:background .15s ease,transform .1s ease,box-shadow .15s ease}
+.home-menu-btn:hover{background:#faf8f2;box-shadow:0 2px 6px rgba(0,0,0,.08)}
+.home-menu-btn:active{transform:scale(.95)}
+.home-menu-icon{font-size:26px}

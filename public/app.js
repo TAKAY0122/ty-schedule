@@ -553,11 +553,12 @@ async function render(){
   if(ME.must_change){ renderForcedPassword(); return; }
   // 給与ロック日数を取得(手配者以上のみ。表示用の目安。最終判定はサーバー側)
   if(LV[ME.role] >= 2){ try{ const ls = await api('/lock-settings'); if(ls && typeof ls.days==='number') LOCK_DAYS = ls.days; }catch(_){} }
-  const hash = location.hash || '#/schedule';
+  const hash = location.hash || '#/home';
   renderShell(hash);
   const app = $('#app');
   try{
-    if(hash.startsWith('#/schedule')) await pageSchedule(app, hash);
+    if(hash === '#/home') await pageHome(app);
+    else if(hash.startsWith('#/schedule')) await pageSchedule(app, hash);
     else if(hash === '#/members') await pageMembers(app);
     else if(hash === '#/sites') await pageSites(app);
     else if(hash === '#/summary') await pageSummary(app);
@@ -578,7 +579,7 @@ async function render(){
     else if(hash.startsWith('#/permissions/')) await pagePermissions(app, hash);
     else if(hash === '#/role-permissions') await pageRolePermissions(app);
     else if(hash === '#/password') pagePassword(app);
-    else { location.hash='#/schedule'; }
+    else { location.hash='#/home'; }
   }catch(e){ app.innerHTML = `<div class="msg err">${h(e.message)}</div>`; }
   // 「氏名をタップ→スケジュールへ」を全ページ共通で有効化(各ページが個別にワイヤリングする必要はない)
   app.querySelectorAll('.name-link[data-goto-uid]').forEach(el => {
@@ -606,7 +607,7 @@ function renderLogin(err){
     try{
       const d = await api('/login', { method:'POST', body:{ regno:$('#l-regno').value.trim(), password:$('#l-pw').value } });
       TOKEN = d.token; localStorage.setItem('tk', TOKEN); ME = d.user;
-      location.hash = '#/schedule'; render();
+      location.hash = '#/home'; render();
     }catch(e){ $('#l-err').innerHTML = `<div class="msg err">${h(e.message)}</div>`; }
   };
   $('#l-btn').onclick = go;
@@ -641,7 +642,7 @@ function renderForcedPassword(){
       await api('/password', { method:'POST', body:{ oldpw, newpw } });
       ME.must_change = 0;
       popup('パスワードを変更しました');
-      location.hash = '#/schedule'; render();
+      location.hash = '#/home'; render();
     }catch(e){ err(e.message); }
   };
   $('#fp-btn').onclick = go;
@@ -673,6 +674,7 @@ function renderShell(hash){
   // 持たない項目は単独ページへのリンク。権限がない機能は、グループ内の子としても一切出現しない
   // (グループ自体も、中身が1つも無ければ表示されない)。
   const nav = [
+    { path:'#/home', label:'🏠 ホーム', show:true },
     { label:'📅 スケジュール', show:true, children:[
       ['#/schedule','📅 マイスケジュール'],
       ...(canEdit ? [['#/edit','✏️ スケジュール入力']] : []),
@@ -848,6 +850,76 @@ async function openScheduleHistory(uid, name){
   }catch(e){
     const el = $('#sh-list'); if(el) el.innerHTML = `<div class="msg err">${h(e.message)}</div>`;
   }
+}
+
+/* ===== ホーム画面(ログイン後の最初の画面) ===== */
+async function pageHome(app){
+  app.innerHTML = '<div class="card"><div class="muted">読み込み中…</div></div>';
+  const today = jstToday();
+  const tomorrow = new Date(Date.now() + 9*3600e3 + 24*3600e3).toISOString().slice(0,10);
+  const month = today.slice(0,7);
+  const isChief = LV[ME.role] >= 1;
+  const isHandlerRole = LV[ME.role] >= 2;
+
+  const [schedData, notifData, selfReports] = await Promise.all([
+    api(`/schedule?uid=${ME.id}&month=${month}`).catch(()=>null),
+    api('/notifications').catch(()=>[]),
+    isChief ? api('/self-reports').catch(()=>[]) : Promise.resolve([]),
+  ]);
+
+  const entries = (schedData && schedData.entries) || {};
+  const dayCard = (date, label) => {
+    const list = entries[date] || [];
+    const works = list.filter(e => e.type === 'work');
+    if (!works.length) {
+      const off = list[0];
+      const label2 = off && off.type !== 'work' ? ({off:'休暇',paid:'有給',ok:'1日OK',x:'×'}[off.type] || '') : '予定なし';
+      return `<div class="home-day"><div class="home-day-label">${label}<span class="muted" style="font-weight:400"> ${h(date.slice(5))}</span></div><div class="muted">${h(label2)}</div></div>`;
+    }
+    return `<div class="home-day"><div class="home-day-label">${label}<span class="muted" style="font-weight:400"> ${h(date.slice(5))}</span></div>
+      ${works.map(e=>`<div class="home-day-site">${h(e.site)}${e.venue?`<span class="muted"> ／ ${h(e.venue)}</span>`:''}${e.tin?`<span class="muted"> ${h(e.tin)}〜${h(e.tout||'')}</span>`:''}</div>`).join('')}
+    </div>`;
+  };
+
+  const unreadCount = notifData.filter(n=>!n.read).length;
+  const pendingCount = selfReports.length;
+
+  const menuItems = [
+    ['#/schedule','📅','マイスケジュール', true],
+    ['#/edit','✏️','スケジュール入力', ME.handler===1],
+    ['#/sites','🏟️','現場一覧', isChief],
+    ['#/members/mine','📋',`${h(ME.name)}手配`, isHandlerRole],
+    ['#/members','👥','メンバー一覧', isChief],
+    ['#/summary','📊','稼働サマリー', isChief],
+    ['#/self-reports','📝','現場変更報告の承認', isChief],
+    ['#/report','🆕','新人報告', true],
+    ['#/reports','📋','新人報告一覧', true],
+    ['#/import','📥','スプレッドシート取込', has('import_data')],
+    ['#/admin','⚙️','アカウント管理', has('account_manage')],
+  ].filter(m=>m[3]);
+
+  app.innerHTML = `
+    <h2 style="margin-bottom:4px">こんにちは、${h(ME.name)}さん</h2>
+    <div class="muted" style="margin-bottom:16px">${h(today)} (${h('日月火水木金土'[new Date(today+'T00:00:00+09:00').getDay()])})</div>
+
+    <div class="home-top-cards">
+      <div class="card home-days">
+        ${dayCard(today, '今日')}
+        ${dayCard(tomorrow, '明日')}
+      </div>
+      <div class="card home-stat-card">
+        <a href="#/schedule" class="home-stat">
+          <span class="home-stat-num">${unreadCount}</span><span class="home-stat-label">🔔 未読の通知</span>
+        </a>
+        ${isChief ? `<a href="#/self-reports" class="home-stat">
+          <span class="home-stat-num">${pendingCount}</span><span class="home-stat-label">📝 承認待ちの現場変更報告</span>
+        </a>` : ''}
+      </div>
+    </div>
+
+    <div class="home-menu">
+      ${menuItems.map(([hash,icon,label])=>`<a href="${hash}" class="home-menu-btn"><span class="home-menu-icon">${icon}</span><span>${h(label)}</span></a>`).join('')}
+    </div>`;
 }
 
 async function pageSchedule(app, hash){
