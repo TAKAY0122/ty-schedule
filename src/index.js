@@ -1918,6 +1918,53 @@ async function api(req, env, url) {
     return J({ ok: 1 });
   }
 
+  // ---- 本人による休み希望・稼働可能時間の提出 ----
+  // 本人が「この日は休みたい」「この日はこの時間帯なら稼働できる(どこから何時発〜何時まで)」を
+  // 提出し、手配担当者が配置を組む際の参考にする。あくまで「希望」であり、実際のスケジュール
+  // (schedule テーブル)には影響しない。
+  if (method === 'GET' && path === '/availability') {
+    const uid = Number(url.searchParams.get('uid')) || me.id;
+    if (uid !== me.id && lv(me) < 1) return ERR('権限がありません', 403);
+    const month = url.searchParams.get('month') || jstDate().slice(0, 7);
+    const rows = (await env.DB.prepare(
+      "SELECT * FROM availability_requests WHERE user_id=? AND date LIKE ? ORDER BY date"
+    ).bind(uid, month + '%').all()).results;
+    return J(rows);
+  }
+  if (method === 'PUT' && path === '/availability') {
+    const date = String(body.date || '').trim();
+    const type = body.type === 'available' ? 'available' : 'off';
+    if (!date) return ERR('日付を指定してください');
+    const fromTime = String(body.fromTime || '').trim();
+    const toTime = String(body.toTime || '').trim();
+    const departure = String(body.departure || '').trim();
+    const note = String(body.note || '').trim();
+    await env.DB.prepare(
+      `INSERT INTO availability_requests(user_id,date,type,from_time,to_time,departure,note,updated_at) VALUES(?,?,?,?,?,?,?,?)
+       ON CONFLICT(user_id,date) DO UPDATE SET type=excluded.type, from_time=excluded.from_time, to_time=excluded.to_time, departure=excluded.departure, note=excluded.note, updated_at=excluded.updated_at`
+    ).bind(me.id, date, type, fromTime, toTime, departure, note, jstTs()).run();
+    return J({ ok: 1 });
+  }
+  if (method === 'DELETE' && path === '/availability') {
+    const date = String(body.date || '').trim();
+    if (!date) return ERR('日付を指定してください');
+    await env.DB.prepare('DELETE FROM availability_requests WHERE user_id=? AND date=?').bind(me.id, date).run();
+    return J({ ok: 1 });
+  }
+  // 手配担当者向け:自分が担当するメンバー(管理者は全員)の、指定月の希望一覧をまとめて取得
+  if (method === 'GET' && path === '/availability/team') {
+    if (lv(me) < 2) return ERR('ページが見つかりません', 404);
+    const month = url.searchParams.get('month') || jstDate().slice(0, 7);
+    const rows = me.role === 'admin'
+      ? (await env.DB.prepare(
+          `SELECT a.*, u.name AS user_name, u.regno AS user_regno FROM availability_requests a JOIN users u ON u.id=a.user_id WHERE a.date LIKE ? ORDER BY a.date, u.regno`
+        ).bind(month + '%').all()).results
+      : (await env.DB.prepare(
+          `SELECT a.*, u.name AS user_name, u.regno AS user_regno FROM availability_requests a JOIN users u ON u.id=a.user_id WHERE a.date LIKE ? AND u.manager_id=? ORDER BY a.date, u.regno`
+        ).bind(month + '%', me.id).all()).results;
+    return J(rows);
+  }
+
   // ---- 本人による現場変更の報告 ----
   // 手配担当者以外(他のチーフ・手配者など)から直接「現場が変わった」と言われた場合に、
   // 本人がその場で自分のスケジュールへ反映できる。時刻・給与などの詳細は入れず、

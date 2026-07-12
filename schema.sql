@@ -267,3 +267,18 @@ CREATE TABLE IF NOT EXISTS report_type_options(
 );
 INSERT OR IGNORE INTO report_type_options(type, label, sort_order) VALUES
  ('work','現場に変更',1), ('off','休暇に変更',2);
+
+-- 本人が提出する「休み希望」「稼働可能時間の希望」。手配担当者が配置を組む際の参考にする。
+-- type: 'off'(休み希望) | 'available'(この時間帯なら稼働可能)
+CREATE TABLE IF NOT EXISTS availability_requests(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  date TEXT NOT NULL,
+  type TEXT NOT NULL,
+  from_time TEXT DEFAULT '',   -- 稼働可能な開始時刻(例: 9:00)
+  to_time TEXT DEFAULT '',     -- 稼働可能な終了時刻(例: 20:00)
+  departure TEXT DEFAULT '',   -- どこから出発できるか(自宅/最寄り駅など、任意)
+  note TEXT DEFAULT '',
+  updated_at TEXT,
+  UNIQUE(user_id, date)
+);

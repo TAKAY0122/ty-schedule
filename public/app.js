@@ -558,6 +558,8 @@ async function render(){
   const app = $('#app');
   try{
     if(hash === '#/home') await pageHome(app);
+    else if(hash === '#/availability') await pageAvailability(app);
+    else if(hash === '#/availability-team') await pageAvailabilityTeam(app);
     else if(hash.startsWith('#/schedule')) await pageSchedule(app, hash);
     else if(hash === '#/members') await pageMembers(app);
     else if(hash === '#/sites') await pageSites(app);
@@ -677,7 +679,9 @@ function renderShell(hash){
     { path:'#/home', label:'🏠 ホーム', show:true },
     { label:'📅 スケジュール', show:true, children:[
       ['#/schedule','📅 マイスケジュール'],
+      ['#/availability','🙋 休み希望・稼働時間の提出'],
       ...(canEdit ? [['#/edit','✏️ スケジュール入力']] : []),
+      ...(isHandlerRole ? [['#/availability-team','🙋 チームの希望一覧']] : []),
       ...(isChief ? [['#/self-reports','📝 現場変更報告の承認']] : []),
     ]},
     { path:'#/sites', label:'🏟️ 現場一覧', show:isChief },
@@ -853,6 +857,120 @@ async function openScheduleHistory(uid, name){
 }
 
 /* ===== ホーム画面(ログイン後の最初の画面) ===== */
+/* ===== 休み希望・稼働可能時間の提出(本人用) ===== */
+async function pageAvailability(app){
+  app.innerHTML = '<h2>🙋 休み希望・稼働可能時間の提出</h2><div class="card"><div class="muted">読み込み中…</div></div>';
+  let rows;
+  try{ rows = await api(`/availability?month=${MONTH}`); }
+  catch(e){ app.innerHTML = `<h2>🙋 休み希望・稼働可能時間の提出</h2><div class="card"><div class="msg err">${h(e.message)}</div></div>`; return; }
+  const byDate = {}; rows.forEach(r => byDate[r.date] = r);
+
+  const [y, mo] = MONTH.split('-').map(Number);
+  const days = new Date(y, mo, 0).getDate();
+  const dateList = Array.from({length:days}, (_,i) => `${MONTH}-${pad(i+1)}`);
+  const wd = d => '日月火水木金土'[new Date(d+'T00:00:00+09:00').getDay()];
+
+  app.innerHTML = `
+  <h2 style="margin-bottom:4px">🙋 休み希望・稼働可能時間の提出</h2>
+  <div class="muted" style="margin-bottom:14px">手配担当者が配置を組む際の参考になります。実際のスケジュールが自動で入るわけではありません。</div>
+  <div class="card" style="margin-bottom:14px">
+    <div class="row" style="align-items:center;gap:10px">
+      <button class="btn ghost sm" id="av-prev">◀</button>
+      <div class="mtitle" style="margin:0">${y}年 ${mo}月</div>
+      <button class="btn ghost sm" id="av-next">▶</button>
+    </div>
+  </div>
+  <div id="av-list"></div>`;
+
+  const TYPE_LABEL = { none:'未設定', off:'休み希望', available:'稼働可能' };
+  const renderList = () => {
+    const el = $('#av-list'); if(!el) return;
+    el.innerHTML = dateList.map(d => {
+      const r = byDate[d];
+      const type = r ? r.type : 'none';
+      const isToday = d === jstToday();
+      return `<div class="av-row ${isToday?'av-today':''}" data-date="${d}">
+        <div class="av-date">${h(d.slice(8))}<span class="muted"> (${wd(d)})</span></div>
+        <select class="av-type" data-date="${d}">
+          ${Object.entries(TYPE_LABEL).map(([k,l])=>`<option value="${k}" ${type===k?'selected':''}>${l}</option>`).join('')}
+        </select>
+        <div class="av-detail" data-date="${d}" style="${type==='available'?'':'display:none'}">
+          <input type="time" class="av-from" data-date="${d}" value="${h(r&&r.from_time||'')}" placeholder="開始">
+          <span class="muted">〜</span>
+          <input type="time" class="av-to" data-date="${d}" value="${h(r&&r.to_time||'')}" placeholder="終了">
+          <input class="av-departure" data-date="${d}" value="${h(r&&r.departure||'')}" placeholder="どこから出発できるか(任意)">
+        </div>
+      </div>`;
+    }).join('');
+
+    const save = async (d) => {
+      const row = el.querySelector(`.av-row[data-date="${d}"]`);
+      const type = row.querySelector('.av-type').value;
+      if(type === 'none'){
+        try{ await api('/availability', { method:'DELETE', body:{ date:d } }); byDate[d] = undefined; }
+        catch(e){ popup(e.message,'error'); }
+        return;
+      }
+      const fromTime = row.querySelector('.av-from') ? row.querySelector('.av-from').value : '';
+      const toTime = row.querySelector('.av-to') ? row.querySelector('.av-to').value : '';
+      const departure = row.querySelector('.av-departure') ? row.querySelector('.av-departure').value : '';
+      try{
+        await api('/availability', { method:'PUT', body:{ date:d, type, fromTime, toTime, departure } });
+        byDate[d] = { date:d, type, from_time:fromTime, to_time:toTime, departure };
+      }catch(e){ popup(e.message,'error'); }
+    };
+
+    el.querySelectorAll('.av-type').forEach(sel => sel.onchange = () => {
+      const d = sel.dataset.date;
+      const detail = el.querySelector(`.av-detail[data-date="${d}"]`);
+      if(detail) detail.style.display = sel.value === 'available' ? '' : 'none';
+      save(d);
+    });
+    el.querySelectorAll('.av-from, .av-to, .av-departure').forEach(inp => inp.onchange = () => save(inp.dataset.date));
+  };
+  renderList();
+
+  $('#av-prev').onclick = () => { MONTH = shiftMonth(MONTH,-1); pageAvailability(app); };
+  $('#av-next').onclick = () => { MONTH = shiftMonth(MONTH, 1); pageAvailability(app); };
+}
+
+/* ===== チームの休み希望・稼働可能時間の一覧(手配担当者向け) ===== */
+async function pageAvailabilityTeam(app){
+  if(LV[ME.role] < 2){ notFound(app); return; }
+  app.innerHTML = '<h2>🙋 チームの希望一覧</h2><div class="card"><div class="muted">読み込み中…</div></div>';
+  let rows;
+  try{ rows = await api(`/availability/team?month=${MONTH}`); }
+  catch(e){ app.innerHTML = `<h2>🙋 チームの希望一覧</h2><div class="card"><div class="msg err">${h(e.message)}</div></div>`; return; }
+
+  const byDate = {};
+  rows.forEach(r => { (byDate[r.date] ||= []).push(r); });
+  const dates = Object.keys(byDate).sort();
+  const [y, mo] = MONTH.split('-').map(Number);
+  const wd = d => '日月火水木金土'[new Date(d+'T00:00:00+09:00').getDay()];
+
+  app.innerHTML = `
+  <h2 style="margin-bottom:4px">🙋 チームの希望一覧</h2>
+  <div class="muted" style="margin-bottom:14px">自分が担当するメンバーの、休み希望・稼働可能時間の提出状況です。配置を組む際の参考にしてください。</div>
+  <div class="card" style="margin-bottom:14px">
+    <div class="row" style="align-items:center;gap:10px">
+      <button class="btn ghost sm" id="avt-prev">◀</button>
+      <div class="mtitle" style="margin:0">${y}年 ${mo}月</div>
+      <button class="btn ghost sm" id="avt-next">▶</button>
+    </div>
+  </div>
+  ${dates.length ? dates.map(d => `<div class="card" style="margin-bottom:10px">
+    <div style="font-weight:700;margin-bottom:8px">${h(d)} <span class="muted">(${wd(d)})</span></div>
+    ${byDate[d].map(r => `<div class="drow">
+      <span class="dk name-link" data-goto-uid="${r.user_id}">${h(r.user_name)}</span>
+      <span class="dv">${r.type==='off' ? '🙅 休み希望' : `🙆 稼働可能 ${h(r.from_time||'?')}〜${h(r.to_time||'?')}${r.departure?`<span class="muted">(${h(r.departure)}発)</span>`:''}`}</span>
+    </div>`).join('')}
+  </div>`).join('') : '<div class="card"><div class="muted" style="text-align:center;padding:20px 0">この月の希望はまだ提出されていません</div></div>'}`;
+  wireNameLinks(app);
+
+  $('#avt-prev').onclick = () => { MONTH = shiftMonth(MONTH,-1); pageAvailabilityTeam(app); };
+  $('#avt-next').onclick = () => { MONTH = shiftMonth(MONTH, 1); pageAvailabilityTeam(app); };
+}
+
 async function pageHome(app){
   app.innerHTML = '<div class="card"><div class="muted">読み込み中…</div></div>';
   const today = jstToday();
@@ -863,7 +981,7 @@ async function pageHome(app){
 
   const [schedData, notifData, selfReports] = await Promise.all([
     api(`/schedule?uid=${ME.id}&month=${month}`).catch(()=>null),
-    api('/notifications').catch(()=>[]),
+    api('/notifications').catch(()=>({ items:[], unread:0 })),
     isChief ? api('/self-reports').catch(()=>[]) : Promise.resolve([]),
   ]);
 
@@ -881,12 +999,14 @@ async function pageHome(app){
     </div>`;
   };
 
-  const unreadCount = notifData.filter(n=>!n.read).length;
+  const unreadCount = notifData.unread || 0;
   const pendingCount = selfReports.length;
 
   const menuItems = [
     ['#/schedule','📅','マイスケジュール', true],
+    ['#/availability','🙋','休み希望・稼働時間', true],
     ['#/edit','✏️','スケジュール入力', ME.handler===1],
+    ['#/availability-team','🙋','チームの希望一覧', isHandlerRole],
     ['#/sites','🏟️','現場一覧', isChief],
     ['#/members/mine','📋',`${h(ME.name)}手配`, isHandlerRole],
     ['#/members','👥','メンバー一覧', isChief],

@@ -603,3 +603,13 @@ td.sm-edit-cell{text-align:center;color:var(--gold);font-size:15px}
 .home-menu-btn:hover{background:#faf8f2;box-shadow:0 2px 6px rgba(0,0,0,.08)}
 .home-menu-btn:active{transform:scale(.95)}
 .home-menu-icon{font-size:26px}
+
+/* ===== 休み希望・稼働可能時間の提出 ===== */
+.av-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px;border-bottom:1px solid var(--line)}
+.av-row:last-child{border-bottom:none}
+.av-row.av-today{background:#fbf7ea}
+.av-date{font-weight:700;font-size:14px;min-width:64px;flex:none}
+.av-type{flex:none}
+.av-detail{display:flex;align-items:center;gap:6px;flex-wrap:wrap;flex:1 1 260px;min-width:0}
+.av-detail input[type=time]{width:100px}
+.av-detail .av-departure{flex:1 1 140px;min-width:0}
