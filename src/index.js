@@ -308,6 +308,27 @@ async function applySelfReportToSchedule(env, uid, date, toldBy, detail) {
   }
 }
 
+// チーフによるメンバー指名の承認時、対象者のその日のスケジュールに現場を「追加」する
+// (既存の予定は消さない。ただし休暇・×等(現場を含まない)のみの場合はそれらを消してから追加する)。
+// 備考欄に「誰が希望したか」を記載する。
+async function addNominatedSite(env, uid, date, site, venue, nominatorName) {
+  const before = (await env.DB.prepare('SELECT * FROM schedule WHERE user_id=? AND date=? ORDER BY slot').bind(uid, date).all()).results;
+  const beforeJson = JSON.stringify(before.map(stripRow));
+  const hasWork = before.some(b => b.type === 'work');
+  let nextSlot = 0;
+  if (hasWork) {
+    nextSlot = Math.max(...before.map(b => b.slot)) + 1;
+  } else if (before.length) {
+    await env.DB.prepare('DELETE FROM schedule WHERE user_id=? AND date=?').bind(uid, date).run();
+  }
+  const note = `${nominatorName}が希望`;
+  await env.DB.prepare('INSERT INTO schedule(user_id,date,slot,type,site,venue,tin,tout,hours,overtime,pay,note,duty,load_end,show_end,multi) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+    .bind(uid, date, nextSlot, 'work', site, venue, '', '', 0, 0, 0, note, '', '', '', 0).run();
+  const after = (await env.DB.prepare('SELECT * FROM schedule WHERE user_id=? AND date=? ORDER BY slot').bind(uid, date).all()).results;
+  await env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
+    .bind(jstTs(), uid, uid, date, beforeJson, JSON.stringify({ slots: after.map(stripRow), _src: `メンバー指名(${nominatorName})` })).run();
+}
+
 // 名前から姓(先頭の語)を取り出す。「吉崎 天晴」→「吉崎」/「吉崎天晴」→そのまま
 function surname(name) {
   const n = String(name || '').trim();
@@ -1963,6 +1984,79 @@ async function api(req, env, url) {
           `SELECT a.*, u.name AS user_name, u.regno AS user_regno FROM availability_requests a JOIN users u ON u.id=a.user_id WHERE a.date LIKE ? AND u.manager_id=? ORDER BY a.date, u.regno`
         ).bind(month + '%', me.id).all()).results;
     return J(rows);
+  }
+
+  // ---- チーフによるメンバー指名 ----
+  // チーフ以上が、自分の行く現場に「この人が欲しい」と指名する。対象者の手配担当者に通知が届き、
+  // 承認するとその日のスケジュールに現場が追加され(既存の予定は保持)、備考に「誰が希望したか」が残る。
+  if (method === 'POST' && path === '/site-nominations') {
+    if (lv(me) < 1) return ERR('権限がありません', 403);
+    const date = String(body.date || '').trim();
+    const site = String(body.site || '').trim();
+    const venue = String(body.venue || '').trim();
+    const targetId = Number(body.targetId) || 0;
+    if (!date || !site) return ERR('現場日と現場名を入力してください');
+    if (!targetId) return ERR('希望する人を選んでください');
+    if (targetId === me.id) return ERR('自分自身は指名できません');
+    const target = await env.DB.prepare('SELECT id, name, manager_id FROM users WHERE id=?').bind(targetId).first();
+    if (!target) return ERR('対象のユーザーが見つかりません');
+    await env.DB.prepare(
+      'INSERT INTO site_nominations(nominator_id,target_id,date,site,venue,status,created_at) VALUES(?,?,?,?,?,?,?)'
+    ).bind(me.id, targetId, date, site, venue, 'pending', jstTs()).run();
+    const msg = `🙋 ${me.name}さんから、${date}の現場「${[site, venue].filter(Boolean).join('／')}」に${target.name}さんを希望する報告がありました。承認をお願いします。`;
+    try {
+      if (target.manager_id) await notify(env, [Number(target.manager_id)], 'nomination', msg, '#/nominations');
+      else {
+        const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
+        if (admins.length) await notify(env, admins.map(a => a.id), 'nomination', msg, '#/nominations');
+      }
+    } catch (e) {}
+    return J({ ok: 1 });
+  }
+  // 承認待ちの指名一覧(自分が手配担当している人への指名。管理者は全員分)
+  if (method === 'GET' && path === '/site-nominations') {
+    if (lv(me) < 1) return ERR('ページが見つかりません', 404);
+    const rows = me.role === 'admin'
+      ? (await env.DB.prepare(
+          `SELECT sn.*, nom.name AS nominator_name, t.name AS target_name, t.regno AS target_regno FROM site_nominations sn JOIN users nom ON nom.id=sn.nominator_id JOIN users t ON t.id=sn.target_id WHERE sn.status='pending' ORDER BY sn.created_at DESC`
+        ).all()).results
+      : (await env.DB.prepare(
+          `SELECT sn.*, nom.name AS nominator_name, t.name AS target_name, t.regno AS target_regno FROM site_nominations sn JOIN users nom ON nom.id=sn.nominator_id JOIN users t ON t.id=sn.target_id WHERE sn.status='pending' AND t.manager_id=? ORDER BY sn.created_at DESC`
+        ).bind(me.id).all()).results;
+    return J(rows);
+  }
+  let snm;
+  if (method === 'POST' && (snm = path.match(/^\/site-nominations\/(\d+)\/approve$/))) {
+    const id = Number(snm[1]);
+    const nom = await env.DB.prepare('SELECT * FROM site_nominations WHERE id=?').bind(id).first();
+    if (!nom) return ERR('見つかりません', 404);
+    if (nom.status !== 'pending') return ERR('すでに処理されています');
+    const target = await env.DB.prepare('SELECT manager_id FROM users WHERE id=?').bind(nom.target_id).first();
+    if (me.role !== 'admin' && String(target ? target.manager_id : '') !== String(me.id)) return ERR('権限がありません', 403);
+    const nominator = await env.DB.prepare('SELECT name FROM users WHERE id=?').bind(nom.nominator_id).first();
+    await addNominatedSite(env, nom.target_id, nom.date, nom.site, nom.venue, nominator ? nominator.name : '');
+    await env.DB.prepare('UPDATE site_nominations SET status=?, decided_at=?, decided_by=? WHERE id=?').bind('approved', jstTs(), me.id, id).run();
+    try {
+      await notify(env, [nom.target_id], 'nomination',
+        `✅ ${nom.date}の現場「${[nom.site, nom.venue].filter(Boolean).join('／')}」への指名が承認され、スケジュールに追加されました。(${nominator ? nominator.name : ''}さんの希望)`,
+        `#/schedule/${nom.target_id}?month=${nom.date.slice(0, 7)}`);
+    } catch (e) {}
+    return J({ ok: 1 });
+  }
+  if (method === 'POST' && (snm = path.match(/^\/site-nominations\/(\d+)\/reject$/))) {
+    const id = Number(snm[1]);
+    const nom = await env.DB.prepare('SELECT * FROM site_nominations WHERE id=?').bind(id).first();
+    if (!nom) return ERR('見つかりません', 404);
+    if (nom.status !== 'pending') return ERR('すでに処理されています');
+    const target = await env.DB.prepare('SELECT manager_id FROM users WHERE id=?').bind(nom.target_id).first();
+    if (me.role !== 'admin' && String(target ? target.manager_id : '') !== String(me.id)) return ERR('権限がありません', 403);
+    await env.DB.prepare('UPDATE site_nominations SET status=?, decided_at=?, decided_by=? WHERE id=?').bind('rejected', jstTs(), me.id, id).run();
+    try {
+      await notify(env, [nom.nominator_id], 'nomination',
+        `❌ ${nom.date}の現場「${[nom.site, nom.venue].filter(Boolean).join('／')}」への指名は見送られました。`,
+        `#/nominations`);
+    } catch (e) {}
+    return J({ ok: 1 });
   }
 
   // ---- 本人による現場変更の報告 ----

@@ -282,3 +282,18 @@ CREATE TABLE IF NOT EXISTS availability_requests(
   updated_at TEXT,
   UNIQUE(user_id, date)
 );
+
+-- チーフ以上が、自分の現場に「この人が欲しい」と指名する制度。承認すると対象者のその日の
+-- スケジュールに現場が追加され、備考に「誰が希望したか」が記載される。
+CREATE TABLE IF NOT EXISTS site_nominations(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  nominator_id INTEGER NOT NULL,   -- 指名したチーフ
+  target_id INTEGER NOT NULL,      -- 指名された人
+  date TEXT NOT NULL,
+  site TEXT NOT NULL,
+  venue TEXT DEFAULT '',
+  status TEXT DEFAULT 'pending',   -- pending | approved | rejected
+  created_at TEXT,
+  decided_at TEXT,
+  decided_by INTEGER
+);

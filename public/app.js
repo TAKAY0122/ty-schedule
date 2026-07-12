@@ -560,6 +560,8 @@ async function render(){
     if(hash === '#/home') await pageHome(app);
     else if(hash === '#/availability') await pageAvailability(app);
     else if(hash === '#/availability-team') await pageAvailabilityTeam(app);
+    else if(hash === '#/nominate') await pageNominate(app);
+    else if(hash === '#/nominations') await pageNominationsApprove(app);
     else if(hash.startsWith('#/schedule')) await pageSchedule(app, hash);
     else if(hash === '#/members') await pageMembers(app);
     else if(hash === '#/sites') await pageSites(app);
@@ -682,6 +684,8 @@ function renderShell(hash){
       ['#/availability','🙋 休み希望・稼働時間の提出'],
       ...(canEdit ? [['#/edit','✏️ スケジュール入力']] : []),
       ...(isHandlerRole ? [['#/availability-team','🙋 チームの希望一覧']] : []),
+      ...(isChief ? [['#/nominate','🙋 メンバーを希望する']] : []),
+      ...(isChief ? [['#/nominations','🙋 メンバー指名の承認']] : []),
       ...(isChief ? [['#/self-reports','📝 現場変更報告の承認']] : []),
     ]},
     { path:'#/sites', label:'🏟️ 現場一覧', show:isChief },
@@ -971,6 +975,102 @@ async function pageAvailabilityTeam(app){
   $('#avt-next').onclick = () => { MONTH = shiftMonth(MONTH, 1); pageAvailabilityTeam(app); };
 }
 
+/* ===== メンバーを希望する(チーフ以上) ===== */
+async function pageNominate(app){
+  if(LV[ME.role] < 1){ notFound(app); return; }
+  app.innerHTML = '<h2>🙋 メンバーを希望する</h2><div class="card"><div class="muted">読み込み中…</div></div>';
+  let schedData, users;
+  try{
+    [schedData, users] = await Promise.all([
+      api(`/schedule?uid=${ME.id}&month=${MONTH}`),
+      getUsers(true),
+    ]);
+  }catch(e){ app.innerHTML = `<h2>🙋 メンバーを希望する</h2><div class="card"><div class="msg err">${h(e.message)}</div></div>`; return; }
+
+  const entries = (schedData && schedData.entries) || {};
+  const mySites = [];
+  Object.keys(entries).sort().forEach(d => {
+    (entries[d]||[]).forEach(e => { if(e.type==='work') mySites.push({date:d, site:e.site, venue:e.venue}); });
+  });
+  const others = users.filter(u=>u.id!==ME.id).sort((a,b)=>(a.regno||'').localeCompare(b.regno||''));
+
+  app.innerHTML = `
+  <h2 style="margin-bottom:4px">🙋 メンバーを希望する</h2>
+  <div class="muted" style="margin-bottom:14px">自分が行く現場に、この人に来てほしい、という希望を出せます。相手の手配担当者が承認すると、その人のスケジュールに現場が追加されます。</div>
+  <div class="card">
+    ${mySites.length ? `
+    <div class="form-grid" style="max-width:480px">
+      <label>現場 *</label>
+      <select id="nm-site">
+        <option value="">選択してください</option>
+        ${mySites.map((s,i)=>`<option value="${i}">${h(s.date)} ${h(s.site)}${s.venue?`／${h(s.venue)}`:''}</option>`).join('')}
+      </select>
+      <label>希望する人 *</label>
+      <select id="nm-target">
+        <option value="">選択してください</option>
+        ${others.map(u=>`<option value="${u.id}">${h(u.name)}(${h(u.regno)})</option>`).join('')}
+      </select>
+    </div>
+    <div class="row" style="margin-top:14px"><button class="btn gold" id="nm-save" style="flex:1">希望を送る</button></div>
+    ` : `<div class="muted" style="text-align:center;padding:16px 0">今月、あなたが入っている現場が見つかりませんでした。まず自分のスケジュールに現場が登録されている必要があります。</div>`}
+  </div>`;
+
+  const sv = $('#nm-save');
+  if(sv) sv.onclick = async () => {
+    const siteIdx = $('#nm-site').value;
+    const targetId = $('#nm-target').value;
+    if(siteIdx===''){ popup('現場を選んでください','error'); return; }
+    if(!targetId){ popup('希望する人を選んでください','error'); return; }
+    const s = mySites[Number(siteIdx)];
+    try{
+      await api('/site-nominations', { method:'POST', body:{ date:s.date, site:s.site, venue:s.venue, targetId:Number(targetId) } });
+      popup('希望を送りました。手配担当者に通知が届きます');
+      $('#nm-site').value=''; $('#nm-target').value='';
+    }catch(e){ popup(e.message,'error'); }
+  };
+}
+
+/* ===== メンバー指名の承認(手配担当者向け) ===== */
+async function pageNominationsApprove(app){
+  if(LV[ME.role] < 1){ notFound(app); return; }
+  app.innerHTML = '<h2>🙋 メンバー指名の承認</h2><div class="card"><div class="muted">読み込み中…</div></div>';
+  let rows;
+  try{ rows = await api('/site-nominations'); }
+  catch(e){ app.innerHTML = `<h2>🙋 メンバー指名の承認</h2><div class="card"><div class="msg err">${h(e.message)}</div></div>`; return; }
+
+  app.innerHTML = `
+  <h2 style="margin-bottom:8px">🙋 メンバー指名の承認</h2>
+  <div class="muted" style="margin-bottom:14px">チーフから「この人が欲しい」という指名があると、ここに表示されます。承認するとスケジュールに追加されます。承認・見送りには手配者モードが必要です。</div>
+  ${rows.length ? `
+  <div class="cards" style="display:flex">
+    ${rows.map(r=>`<div class="dcard" data-id="${r.id}">
+      <div class="dcard-head"><span class="dcard-title">${h(r.target_name)}さん<span class="muted" style="font-size:12px"> (${h(r.target_regno)})</span></span></div>
+      <div class="drow"><span class="dk">現場日</span><span class="dv">${h(r.date)}</span></div>
+      <div class="drow"><span class="dk">現場</span><span class="dv"><b>${h([r.site,r.venue].filter(Boolean).join('／'))}</b></span></div>
+      <div class="drow"><span class="dk">指名した人</span><span class="dv">${h(r.nominator_name)}</span></div>
+      <div class="dcard-actions">
+        <button class="btn gold sm sn-approve" data-id="${r.id}">✅ 承認する</button>
+        <button class="btn danger sm sn-reject" data-id="${r.id}">❌ 見送る</button>
+      </div>
+    </div>`).join('')}
+  </div>
+  ` : '<div class="card"><div class="muted" style="text-align:center;padding:20px 0">承認待ちの指名はありません</div></div>'}`;
+
+  const proceed = async (id, action) => {
+    if(!confirm(action==='approve' ? 'この内容でスケジュールに追加しますか？' : '見送りますか？')) return;
+    try{ await api(`/site-nominations/${id}/${action}`, { method:'POST' }); popup(action==='approve'?'承認しました':'見送りました'); pageNominationsApprove(app); }
+    catch(e){ popup(e.message,'error'); }
+  };
+  app.querySelectorAll('.sn-approve').forEach(b => b.onclick = () => {
+    if(ME.handler !== 1 && ME.role !== 'admin'){ openHandlerPin(() => proceed(b.dataset.id,'approve')); return; }
+    proceed(b.dataset.id,'approve');
+  });
+  app.querySelectorAll('.sn-reject').forEach(b => b.onclick = () => {
+    if(ME.handler !== 1 && ME.role !== 'admin'){ openHandlerPin(() => proceed(b.dataset.id,'reject')); return; }
+    proceed(b.dataset.id,'reject');
+  });
+}
+
 async function pageHome(app){
   app.innerHTML = '<div class="card"><div class="muted">読み込み中…</div></div>';
   const today = jstToday();
@@ -1007,6 +1107,8 @@ async function pageHome(app){
     ['#/availability','🙋','休み希望・稼働時間', true],
     ['#/edit','✏️','スケジュール入力', ME.handler===1],
     ['#/availability-team','🙋','チームの希望一覧', isHandlerRole],
+    ['#/nominate','🙋','メンバーを希望する', isChief],
+    ['#/nominations','🙋','メンバー指名の承認', isChief],
     ['#/sites','🏟️','現場一覧', isChief],
     ['#/members/mine','📋',`${h(ME.name)}手配`, isHandlerRole],
     ['#/members','👥','メンバー一覧', isChief],
