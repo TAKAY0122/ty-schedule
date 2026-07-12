@@ -1581,6 +1581,14 @@ async function api(req, env, url) {
         if (LV[body.role] == null) return ERR('不正な役割です');
         await env.DB.prepare('UPDATE users SET role=? WHERE id=?').bind(body.role, uid).run();
       }
+      if (body.regno !== undefined) { // 登録番号の変更(管理者のみ)
+        if (me.role !== 'admin') return ERR('登録番号の変更には管理者権限が必要です', 403);
+        const newRegno = normRegno(body.regno);
+        if (!newRegno) return ERR('登録番号を入力してください');
+        const dup = await env.DB.prepare('SELECT id FROM users WHERE regno=? AND id!=?').bind(newRegno, uid).first();
+        if (dup) return ERR('その登録番号は既に使われています');
+        await env.DB.prepare('UPDATE users SET regno=? WHERE id=?').bind(newRegno, uid).run();
+      }
       if (body.suspended !== undefined) { // アカウント停止/復活
         if (!has(me, 'account_manage')) return ERR('アカウント停止には権限が必要です', 403);
         const sv = body.suspended ? 1 : 0;

@@ -2999,6 +2999,30 @@ async function pageDaicho(app){
 }
 
 /* ===== アカウント管理(管理者)===== */
+// アカウントの登録番号(ログインIDを兼ねる)を変更する。管理者のみ。
+// 変更後は、本人が次回ログインする際に新しい登録番号を使う必要があるため、その旨を案内する。
+function openRegnoEdit(uid, name, current, onDone){
+  modal(`<h3>登録番号の変更</h3>
+    <div class="muted" style="margin-bottom:10px">${h(name)} さんの登録番号を変更します。ログインIDも兼ねているため、<b>次回ログイン時からは新しい番号を使う</b>必要があります。本人への周知をお願いします。</div>
+    <div class="form-grid" style="max-width:320px">
+      <label>現在</label><span class="muted">${h(current)}</span>
+      <label>新しい番号 *</label><input id="rn-new" value="${h(current)}">
+    </div>
+    <div class="row" style="margin-top:14px"><button class="btn gold" id="rn-save" style="flex:1">変更する</button></div>`);
+  $('#rn-save').onclick = async () => {
+    const v = $('#rn-new').value.trim();
+    if(!v){ popup('登録番号を入力してください','error'); return; }
+    if(v === current){ closeModal(); return; }
+    if(!confirm(`登録番号を「${current}」→「${v}」に変更します。よろしいですか？`)) return;
+    try{
+      await api(`/users/${uid}`, { method:'PATCH', body:{ regno:v } });
+      USERS_CACHE = null;
+      closeModal(); popup('登録番号を変更しました');
+      if(onDone) onDone();
+    }catch(e){ popup(e.message,'error'); }
+  };
+}
+
 async function pageAdmin(app){
   if(!has('account_manage')){ notFound(app); return; }
   const users = await getUsers(true);
@@ -3024,7 +3048,7 @@ async function pageAdmin(app){
       <div class="sched-wrap pc-only"><table class="list">
       <tr><th>登録番号</th><th>氏名</th><th>役割(管理者のみ変更可)</th><th>担当手配者</th><th>ランク</th><th>班</th><th>駅</th><th>操作</th></tr>
       ${aList.map(u=>`<tr class="${u.suspended?'is-suspended':''}">
-        <td class="nowrap">${h(u.regno)}</td><td class="nowrap">${h(u.name)}${u.suspended?' <span class="susp-tag">停止</span>':''}</td>
+        <td class="nowrap">${h(u.regno)}${ME.role==='admin'?` <button class="btn ghost xs regno-edit" data-id="${u.id}" data-cur="${h(u.regno)}" data-name="${h(u.name)}" title="登録番号を変更">✏️</button>`:''}</td><td class="nowrap">${h(u.name)}${u.suspended?' <span class="susp-tag">停止</span>':''}</td>
         <td><select data-role="${u.id}">${['member','chief','handler','admin'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${ROLE_JP[r]}</option>`).join('')}</select></td>
         <td><select data-mgr="${u.id}"><option value="">(なし)</option>${mgrs.map(m=>`<option value="${m.id}" ${String(u.manager_id)===String(m.id)?'selected':''}>${h(m.name)}手配</option>`).join('')}</select></td>
         <td class="nowrap">${h(u.rank)}</td><td class="nowrap">${h(u.han)}</td><td class="nowrap">${h(u.station)}</td>
@@ -3036,7 +3060,7 @@ async function pageAdmin(app){
       </table></div>
       <div class="cards sp-only">
       ${aList.map(u=>`<div class="dcard ${u.suspended?'is-suspended':''}">
-        <div class="dcard-head"><span class="dcard-title">${h(u.name)}${u.suspended?' <span class="susp-tag">停止</span>':''}</span><span class="dcard-sub">${h(u.regno)}</span></div>
+        <div class="dcard-head"><span class="dcard-title">${h(u.name)}${u.suspended?' <span class="susp-tag">停止</span>':''}</span><span class="dcard-sub">${h(u.regno)}${ME.role==='admin'?` <button class="btn ghost xs regno-edit" data-id="${u.id}" data-cur="${h(u.regno)}" data-name="${h(u.name)}" title="登録番号を変更">✏️</button>`:''}</span></div>
         <div class="drow"><span class="dk">役割</span><span class="dv"><select data-role="${u.id}">${['member','chief','handler','admin'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${ROLE_JP[r]}</option>`).join('')}</select></span></div>
         <div class="drow"><span class="dk">担当手配</span><span class="dv"><select data-mgr="${u.id}"><option value="">(なし)</option>${mgrs.map(m=>`<option value="${m.id}" ${String(u.manager_id)===String(m.id)?'selected':''}>${h(m.name)}手配</option>`).join('')}</select></span></div>
         <div class="drow"><span class="dk">ランク/班</span><span class="dv">${h(u.rank)||'—'} / ${h(u.han)||'—'}</span></div>
@@ -3049,6 +3073,7 @@ async function pageAdmin(app){
       try{ await api('/users/'+s.dataset.role, { method:'PATCH', body:{ role:s.value } }); USERS_CACHE=null; }
       catch(e){ alert(e.message); render(); }
     });
+    area.querySelectorAll('.regno-edit').forEach(b => b.onclick = () => openRegnoEdit(b.dataset.id, b.dataset.name, b.dataset.cur, () => pageAdmin(app)));
     area.querySelectorAll('[data-mgr]').forEach(s => s.onchange = async () => {
       try{ await api('/users/'+s.dataset.mgr, { method:'PATCH', body:{ manager_id: s.value?Number(s.value):null } }); USERS_CACHE=null; }
       catch(e){ alert(e.message); render(); }
