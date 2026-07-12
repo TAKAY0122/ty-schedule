@@ -2,6 +2,8 @@
 'use strict';
 const $ = s => document.querySelector(s);
 const h = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// <input type="time">はHH:MM(2桁ゼロ埋め)でないと値を認識しないため、DBの値をこの形式に正規化する
+const timeInputVal = t => { const m = String(t||'').match(/^(\d{1,2}):(\d{2})$/); return m ? `${m[1].padStart(2,'0')}:${m[2]}` : ''; };
 const pad = n => String(n).padStart(2, '0');
 const WD = ['日','月','火','水','木','金','土'];
 const ROLE_JP = { admin:'チーフ(管理者)', handler:'チーフ(手配者)', chief:'チーフ', member:'メンツ' };
@@ -361,9 +363,9 @@ async function openSiteRecord(uid, uname, date, site){
   catch(e){ popup(e.message,'error'); return; }
 
   const breakRow = (b={}, i=0) => `<div class="sr-break" data-i="${i}">
-    <input type="time" class="sr-break-start" value="${h(b.start||'')}">
+    <input type="time" class="sr-break-start" value="${timeInputVal(b.start)}">
     <span class="sr-break-sep">〜</span>
-    <input type="time" class="sr-break-end" value="${h(b.end||'')}">
+    <input type="time" class="sr-break-end" value="${timeInputVal(b.end)}">
     <button class="btn ghost xs sr-break-del" type="button">✕</button>
   </div>`;
 
@@ -899,9 +901,9 @@ async function pageAvailability(app){
           ${Object.entries(TYPE_LABEL).map(([k,l])=>`<option value="${k}" ${type===k?'selected':''}>${l}</option>`).join('')}
         </select>
         <div class="av-detail" data-date="${d}" style="${type==='available'?'':'display:none'}">
-          <input type="time" class="av-from" data-date="${d}" value="${h(r&&r.from_time||'')}" placeholder="開始">
+          <input type="time" class="av-from" data-date="${d}" value="${timeInputVal(r&&r.from_time)}" placeholder="開始">
           <span class="muted">〜</span>
-          <input type="time" class="av-to" data-date="${d}" value="${h(r&&r.to_time||'')}" placeholder="終了">
+          <input type="time" class="av-to" data-date="${d}" value="${timeInputVal(r&&r.to_time)}" placeholder="終了">
           <input class="av-departure" data-date="${d}" value="${h(r&&r.departure||'')}" placeholder="どこから出発できるか(任意)">
         </div>
       </div>`;
@@ -1399,7 +1401,10 @@ async function openScheduleSelfReport(date){
   let typeOptions;
   try{ typeOptions = await api('/report-type-options'); }
   catch(e){ typeOptions = [{type:'work',label:'現場に変更'},{type:'off',label:'休暇に変更'}]; }
-  modal(`<h3>現場変更の報告</h3>
+  let existingAv = null;
+  try{ const list = await api(`/availability?month=${date.slice(0,7)}`); existingAv = list.find(a=>a.date===date) || null; }catch(e){}
+
+  const reportTabHtml = `
     <div class="form-grid" style="max-width:480px">
       <label>現場日 *</label><input type="date" id="sr-date" value="${h(date)}">
       <label>誰から言われたか *</label><input id="sr-toldby">
@@ -1415,28 +1420,89 @@ async function openScheduleSelfReport(date){
     <div class="row" style="margin-top:14px">
       <button class="btn gold" id="sr-save" style="flex:1">保存する</button>
     </div>
-    <div class="muted" style="margin-top:8px">※時刻・給与などの詳細は、この報告のあとで手配担当者が入力します。</div>`);
+    <div class="muted" style="margin-top:8px">※時刻・給与などの詳細は、この報告のあとで手配担当者が入力します。</div>`;
 
-  const typeSel = $('#sr-type');
-  const siteFields = $('#sr-site-fields');
-  typeSel.onchange = () => { siteFields.style.display = typeSel.value === 'work' ? '' : 'none'; };
+  const availTabHtml = `
+    <div class="form-grid" style="max-width:480px">
+      <label>希望日</label><span class="muted">${h(date)}</span>
+      <label>種別</label>
+      <select id="av-m-type">
+        <option value="off" ${existingAv&&existingAv.type==='off'?'selected':''}>休み希望</option>
+        <option value="available" ${existingAv&&existingAv.type==='available'?'selected':''}>稼働可能</option>
+      </select>
+    </div>
+    <div id="av-m-detail" class="form-grid" style="max-width:480px;margin-top:8px;${existingAv&&existingAv.type==='available'?'':'display:none'}">
+      <label>開始時刻</label><input type="time" id="av-m-from" value="${timeInputVal(existingAv&&existingAv.from_time)}">
+      <label>終了時刻</label><input type="time" id="av-m-to" value="${timeInputVal(existingAv&&existingAv.to_time)}">
+      <label>出発地点</label><input id="av-m-departure" value="${h(existingAv&&existingAv.departure||'')}" placeholder="どこから出発できるか(任意)">
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button class="btn gold" id="av-m-save" style="flex:1">保存する</button>
+    </div>
+    <div class="muted" style="margin-top:8px">手配担当者が配置を組む際の参考になります。実際のスケジュールが自動で入るわけではありません。</div>`;
 
-  $('#sr-save').onclick = async () => {
-    const date2 = $('#sr-date').value;
-    const toldBy = $('#sr-toldby').value.trim();
-    const type = typeSel.value;
-    const site = $('#sr-site').value.trim();
-    const venue = $('#sr-venue').value.trim();
-    if(!date2){ popup('現場日を入力してください','error'); return; }
-    if(!toldBy){ popup('誰から言われたかを入力してください','error'); return; }
-    if(type==='work' && !site && !venue){ popup('現場名か会場名を入力してください','error'); return; }
-    try{
-      const r = await api('/schedule-self-report', { method:'POST', body:{ date:date2, toldBy, type, site, venue } });
-      closeModal();
-      popup(r.needsApproval ? '報告しました。手配担当者の承認後にスケジュールへ反映されます' : '報告しました。手配担当者に通知が届きます');
-      render();
-    }catch(e){ popup(e.message,'error'); }
+  modal(`<h3>${h(date)} の予定について</h3>
+    <div class="row" style="margin-bottom:14px;gap:8px">
+      <button class="btn gold sm" id="sr-tab-report" style="flex:1">📢 現場変更を報告</button>
+      <button class="btn ghost sm" id="sr-tab-avail" style="flex:1">🙋 休み希望・稼働時間</button>
+    </div>
+    <div id="sr-tab-content">${reportTabHtml}</div>`);
+
+  const wireReportTab = () => {
+    const typeSel = $('#sr-type');
+    const siteFields = $('#sr-site-fields');
+    if(!typeSel) return;
+    typeSel.onchange = () => { siteFields.style.display = typeSel.value === 'work' ? '' : 'none'; };
+    $('#sr-save').onclick = async () => {
+      const date2 = $('#sr-date').value;
+      const toldBy = $('#sr-toldby').value.trim();
+      const type = typeSel.value;
+      const site = $('#sr-site').value.trim();
+      const venue = $('#sr-venue').value.trim();
+      if(!date2){ popup('現場日を入力してください','error'); return; }
+      if(!toldBy){ popup('誰から言われたかを入力してください','error'); return; }
+      if(type==='work' && !site && !venue){ popup('現場名か会場名を入力してください','error'); return; }
+      try{
+        const r = await api('/schedule-self-report', { method:'POST', body:{ date:date2, toldBy, type, site, venue } });
+        closeModal();
+        popup(r.needsApproval ? '報告しました。手配担当者の承認後にスケジュールへ反映されます' : '報告しました。手配担当者に通知が届きます');
+        render();
+      }catch(e){ popup(e.message,'error'); }
+    };
   };
+
+  const wireAvailTab = () => {
+    const typeSel = $('#av-m-type');
+    const detail = $('#av-m-detail');
+    if(!typeSel) return;
+    typeSel.onchange = () => { detail.style.display = typeSel.value === 'available' ? '' : 'none'; };
+    $('#av-m-save').onclick = async () => {
+      const type = typeSel.value;
+      const fromTime = $('#av-m-from').value;
+      const toTime = $('#av-m-to').value;
+      const departure = $('#av-m-departure').value.trim();
+      try{
+        await api('/availability', { method:'PUT', body:{ date, type, fromTime, toTime, departure } });
+        closeModal();
+        popup('休み希望・稼働時間を保存しました');
+      }catch(e){ popup(e.message,'error'); }
+    };
+  };
+
+  $('#sr-tab-report').onclick = () => {
+    $('#sr-tab-report').classList.replace('ghost','gold');
+    $('#sr-tab-avail').classList.replace('gold','ghost');
+    $('#sr-tab-content').innerHTML = reportTabHtml;
+    wireReportTab();
+  };
+  $('#sr-tab-avail').onclick = () => {
+    $('#sr-tab-avail').classList.replace('ghost','gold');
+    $('#sr-tab-report').classList.replace('gold','ghost');
+    $('#sr-tab-content').innerHTML = availTabHtml;
+    wireAvailTab();
+  };
+
+  wireReportTab();
 }
 
 async function openMemberDayEdit(uid, u, date){
