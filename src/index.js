@@ -43,6 +43,48 @@ async function loadNonSiteKeywords(env) {
   return map;
 }
 
+// ---- Googleカレンダー等への購読フィード(iCalendar/.ics)生成 ----
+// テキスト中のカンマ・セミコロン・改行等をiCalendar仕様に沿ってエスケープする
+function icsEscape(s) {
+  return String(s || '').replace(/\\/g, '\\\\').replace(/,/g, '\\,').replace(/;/g, '\\;').replace(/\n/g, '\\n');
+}
+// 日本時間の日付+時刻("2026-07-10","9:00")を、UTC基準のiCalendar日時("20260709T230000Z")に変換する
+function icsDateTime(date, time) {
+  const [hh, mm] = (time || '0:00').split(':').map(Number);
+  const dt = new Date(`${date}T${String(hh).padStart(2, '0')}:${String(mm || 0).padStart(2, '0')}:00+09:00`);
+  return dt.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+}
+function icsDateOnly(date) { return date.replace(/-/g, ''); }
+// 日付文字列に n日を加算する(UTC基準で日付だけ計算するため、タイムゾーン変換による日付ズレが起きない)
+function addDaysStr(date, n) {
+  const [y, m, d] = date.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+}
+// 1件のスケジュール行をVEVENTブロックに変換する。時刻が無い(work以外、または時刻未入力)場合は終日イベントにする。
+function scheduleRowToIcsEvent(uid, row) {
+  const label = { off: '休暇', paid: '有給', ok: '1日OK', x: '×' }[row.type];
+  const summary = row.type === 'work' ? (row.site || '(現場)') : (label || row.type);
+  const uidStr = `sched-${uid}-${row.date}-${row.slot || 0}@ty-schedule`;
+  const lines = ['BEGIN:VEVENT', `UID:${uidStr}`, `DTSTAMP:${icsDateTime(jstDate(), '0:00')}`];
+  if (row.type === 'work' && row.tin && row.tout) {
+    lines.push(`DTSTART:${icsDateTime(row.date, row.tin)}`);
+    lines.push(`DTEND:${icsDateTime(row.date, row.tout)}`);
+  } else {
+    // 時刻未定の現場・休暇等は終日イベントとして表示する。iCalendar仕様上、終日イベントの
+    // DTENDは「その日を含まない翌日」を指定する(排他的)。
+    lines.push(`DTSTART;VALUE=DATE:${icsDateOnly(row.date)}`);
+    lines.push(`DTEND;VALUE=DATE:${icsDateOnly(addDaysStr(row.date, 1))}`);
+  }
+  lines.push(`SUMMARY:${icsEscape(summary)}`);
+  if (row.venue) lines.push(`LOCATION:${icsEscape(row.venue)}`);
+  const descParts = [];
+  if (row.duty) descParts.push(`業務: ${row.duty}`);
+  if (row.note) descParts.push(`備考: ${row.note}`);
+  if (descParts.length) lines.push(`DESCRIPTION:${icsEscape(descParts.join('\n'))}`);
+  lines.push('END:VEVENT');
+  return lines.join('\r\n');
+}
+
 // after_json の内容が「現場(work)」を一切含まない場合(休暇・×・1日OK等のみへの変更)は true を返す。
 // このような変更(特に台帳の不在者休暇化・予定表の一括更新等)は大量に発生し履歴を埋め尽くしてしまうため、
 // スケジュール変更履歴には記録しない対象と判定する。育成計画の変更・現場を削除した(空にした)変更は、
@@ -69,7 +111,12 @@ async function pbkdf2(pw, salt) {
   return [...new Uint8Array(bits)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0, must_change: u.must_change ? 1 : 0, extra_perms: getPerms(u), notify_rookie: u.notify_rookie === null || u.notify_rookie === undefined ? null : (u.notify_rookie ? 1 : 0) });
+// アプリの機能アップデートのお知らせに使うバージョン番号。新しいお知らせを追加したら値を増やし、
+// updateNoticeContent()にも内容を追記する。既にパスワードを変更済み(must_change=0)の既存ユーザーが
+// ログインした際、seen_update_version がこれより小さければ「アップデートのお知らせ」を表示する。
+const CURRENT_UPDATE_VERSION = 1;
+
+const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0, must_change: u.must_change ? 1 : 0, extra_perms: getPerms(u), notify_rookie: u.notify_rookie === null || u.notify_rookie === undefined ? null : (u.notify_rookie ? 1 : 0), needsUpdateNotice: !u.must_change && (u.seen_update_version || 0) < CURRENT_UPDATE_VERSION });
 
 // ===== 給与計算 (RB事業2課ルール) =====
 // 業務名 → 計算区分。 g5=案内料金(最低5h) / l3=搬入出料金(最低3h) / lg,gl,lgl=時間帯分割 / skip=対象外
@@ -1170,6 +1217,24 @@ async function api(req, env, url) {
     return J({ token, user: { ...pub(u), handler: 0 } });
   }
 
+  // ---- Googleカレンダー等への購読フィード配信(認証不要・専用トークンで本人確認) ----
+  let icsm;
+  if (method === 'GET' && (icsm = path.match(/^\/calendar\/([a-zA-Z0-9]+)\.ics$/))) {
+    const token = icsm[1];
+    const u = await env.DB.prepare('SELECT id, name FROM users WHERE calendar_token=?').bind(token).first();
+    if (!u) return new Response('Not Found', { status: 404 });
+    const fromDate = jstDate();
+    const toDateObj = new Date(Date.now() + 9 * 3600e3); toDateObj.setMonth(toDateObj.getMonth() + 3);
+    const toDate = toDateObj.toISOString().slice(0, 10);
+    const rows = (await env.DB.prepare(
+      "SELECT * FROM schedule WHERE user_id=? AND date>=? AND date<=? AND type IN ('work','off','paid','ok') ORDER BY date, slot"
+    ).bind(u.id, fromDate, toDate).all()).results;
+    const events = rows.map(r => scheduleRowToIcsEvent(u.id, r)).join('\r\n');
+    const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//RB Jigyou 2ka//Schedule//JA', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH',
+      `X-WR-CALNAME:${icsEscape(u.name + 'のスケジュール(RB事業2課)')}`, events, 'END:VCALENDAR'].filter(Boolean).join('\r\n');
+    return new Response(ics, { headers: { 'Content-Type': 'text/calendar; charset=utf-8' } });
+  }
+
   // ---- スプレッドシート取り込み(GAS用・共有トークン認証)----
   // GAS から POST /api/import-schedule で呼び出す。セッション不要。
   if (method === 'POST' && path === '/import-schedule') {
@@ -1202,6 +1267,12 @@ async function api(req, env, url) {
     if (newpw === me.regno) return ERR('登録番号と同じパスワードは使えません。別のパスワードを設定してください');
     const salt = rnd();
     await env.DB.prepare('UPDATE users SET pass_hash=?, salt=?, must_change=0 WHERE id=?').bind(await pbkdf2(newpw, salt), salt, me.id).run();
+    return J({ ok: 1 });
+  }
+
+  // アップデートのお知らせを確認済みにする
+  if (method === 'POST' && path === '/update-notice/seen') {
+    await env.DB.prepare('UPDATE users SET seen_update_version=? WHERE id=?').bind(CURRENT_UPDATE_VERSION, me.id).run();
     return J({ ok: 1 });
   }
 
@@ -2620,6 +2691,26 @@ async function api(req, env, url) {
     const token = String(body.token || '').trim();
     if (token) await env.DB.prepare('DELETE FROM push_tokens WHERE user_id=? AND token=?').bind(me.id, token).run();
     return J({ ok: 1 });
+  }
+
+  // ---- Googleカレンダー等への購読URL(iCalendarフィード)の発行・再発行 ----
+  if (method === 'GET' && path === '/calendar-token') {
+    const row = await env.DB.prepare('SELECT calendar_token FROM users WHERE id=?').bind(me.id).first();
+    return J({ token: row ? row.calendar_token : null });
+  }
+  if (method === 'POST' && path === '/calendar-token') {
+    // 既に発行済みなら、その値をそのまま返す(冪等)。無ければ新規発行する。
+    const row = await env.DB.prepare('SELECT calendar_token FROM users WHERE id=?').bind(me.id).first();
+    if (row && row.calendar_token) return J({ token: row.calendar_token });
+    const token = rnd();
+    await env.DB.prepare('UPDATE users SET calendar_token=? WHERE id=?').bind(token, me.id).run();
+    return J({ token });
+  }
+  if (method === 'POST' && path === '/calendar-token/regenerate') {
+    // 既存のURLを知っている第三者を締め出すため、新しいトークンに差し替える
+    const token = rnd();
+    await env.DB.prepare('UPDATE users SET calendar_token=? WHERE id=?').bind(token, me.id).run();
+    return J({ token });
   }
 
   return ERR('Not found', 404);

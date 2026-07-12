@@ -616,3 +616,19 @@ td.sm-edit-cell{text-align:center;color:var(--gold);font-size:15px}
 .av-detail{display:flex;align-items:center;gap:6px;flex-wrap:wrap;flex:1 1 260px;min-width:0}
 .av-detail input[type=time]{width:100px}
 .av-detail .av-departure{flex:1 1 140px;min-width:0}
+
+/* ===== アップデートのお知らせモーダル ===== */
+.upd-list{display:flex;flex-direction:column;gap:12px;max-height:60vh;overflow-y:auto}
+.upd-item{display:flex;gap:12px;align-items:flex-start}
+.upd-icon{font-size:24px;flex:none;line-height:1.4}
+.upd-item b{font-size:14px}
+.upd-item .muted{font-size:12.5px;line-height:1.5;margin-top:2px}
+.upd-item .muted a{color:var(--gold);font-weight:600;text-decoration:none;margin-left:4px}
+.upd-item .muted a:hover{text-decoration:underline}
+
+/* ===== カレンダー連携ガイドページ ===== */
+.cg-step{margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid var(--line)}
+.cg-step:last-child{margin-bottom:0;padding-bottom:0;border-bottom:none}
+.cg-step-title{font-weight:700;font-size:14.5px;margin-bottom:8px}
+.cg-ol{margin:0;padding-left:22px;font-size:13.5px;line-height:1.9}
+.cg-ol li{margin-bottom:2px}

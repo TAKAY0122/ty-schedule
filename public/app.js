@@ -25,6 +25,7 @@ function notFound(app){ app.innerHTML = '<div class="card" style="text-align:cen
 
 let TOKEN = localStorage.getItem('tk') || '';
 let ME = null;
+let UPDATE_NOTICE_SHOWN = false; // 1セッション中に一度だけ表示するためのフラグ
 let MONTH = new Date(Date.now()+9*3600e3).toISOString().slice(0,7);
 // ページ遷移をまたいで保持したいフィルタ・タブ・検索語などの状態。
 // #app要素はページ遷移のたびに作り直されるため、そこに状態を持たせると戻った時に消えてしまう。
@@ -255,6 +256,30 @@ function conflictModal(conflicts){
 // 手配者モードのPIN入力(prompt()はスマホで不安定なため自前モーダル)
 // PINが正しく手配モードに入れたら、通常は「スケジュール入力」ページへ移動する。
 // onSuccessを渡した場合はそちらを実行する(承認フローなど、元の操作をそのまま続行したい場合用)。
+// アップデートのお知らせモーダル。既にパスワードを変更済みの既存ユーザーが、新しいバージョンで
+// 初めてログインした際に一度だけ表示する。内容を追加したらここに追記し、CURRENT_UPDATE_VERSION
+// (src/index.js側)を増やす。
+function openUpdateNotice(){
+  modal(`<h3>🎉 アップデートのお知らせ</h3>
+    <div class="muted" style="margin-bottom:14px">新しい機能が追加されました。</div>
+    <div class="upd-list">
+      <div class="upd-item"><span class="upd-icon">🏠</span><div><b>ホーム画面を追加</b><div class="muted">ログイン後、今日・明日の現場や通知が一目で見られるようになりました。</div></div></div>
+      <div class="upd-item"><span class="upd-icon">🙋</span><div><b>休み希望・稼働時間の提出</b><div class="muted">マイスケジュールから、休み希望や「この時間なら動ける」を手配担当者に伝えられます。</div></div></div>
+      <div class="upd-item"><span class="upd-icon">👤</span><div><b>メンバーを希望する機能</b><div class="muted">チーフ以上が「この現場にこの人が欲しい」と指名し、手配担当者の承認で反映できます。</div></div></div>
+      <div class="upd-item"><span class="upd-icon">📊</span><div><b>稼働サマリーを強化</b><div class="muted">「同じ現場ばかり任されている人」を自動で検知するようになりました。</div></div></div>
+      <div class="upd-item"><span class="upd-icon">📅</span><div><b>Googleカレンダー連携</b><div class="muted">自分のスケジュールを普段使いのカレンダーアプリに自動反映できます。<a href="#/calendar-guide" id="upd-cal-link">やり方を見る</a></div></div></div>
+    </div>
+    <div class="row" style="margin-top:16px"><button class="btn gold" id="upd-close" style="flex:1">確認しました</button></div>`);
+  const close = async () => {
+    ME.needsUpdateNotice = false;
+    try{ await api('/update-notice/seen', { method:'POST' }); }catch(e){}
+    closeModal();
+  };
+  $('#upd-close').onclick = close;
+  const calLink = $('#upd-cal-link');
+  if(calLink) calLink.onclick = (e) => { e.preventDefault(); close().then(()=>{ goTo('#/calendar-guide'); }); };
+}
+
 function openHandlerPin(onSuccess){
   modal(`<h3>手配者モードに切り替え</h3>
     <div class="muted" style="margin-bottom:10px">手配者専用パスワード(PIN)を入力してください。</div>
@@ -269,7 +294,7 @@ function openHandlerPin(onSuccess){
       await api('/handler-mode',{method:'POST',body:{pin:v}});
       ME.handler=1; closeModal();
       if(onSuccess) onSuccess();
-      else { location.hash='#/home'; render(); }
+      else goHome();
     }catch(e){ $('#hp-err').innerHTML=`<div class="msg err">${h(e.message)}</div>`; }
   };
   $('#hp-go').onclick = go;
@@ -545,6 +570,21 @@ window.addEventListener('hashchange', () => {
 });
 window.addEventListener('load', render);
 
+// ホーム画面へ移動する。location.hash の代入は、値が変化する場合のみ hashchange イベントを
+// 発火させる(その場合はイベント側で render() が呼ばれるため、ここでは呼ばない)。既にハッシュが
+// #/home のままなら hashchange が発火しないため、その場合だけ明示的に render() する。
+// (hashの代入直後にrender()を毎回呼んでしまうと、hashchange経由のrender()と二重に実行され、
+//  一方のcloseModal()がもう一方が表示したばかりのモーダルを消してしまうことがあるため)
+function goHome(){
+  if(location.hash === '#/home') render();
+  else location.hash = '#/home';
+}
+// 任意のハッシュへ、二重render()を起こさず安全に移動する(goHomeの汎用版)
+function goTo(hash){
+  if(location.hash === hash) render();
+  else location.hash = hash;
+}
+
 async function render(){
   clearTimers(); closeModal();
   if(!TOKEN){ renderLogin(); return; }
@@ -585,6 +625,7 @@ async function render(){
     else if(hash.startsWith('#/permissions/')) await pagePermissions(app, hash);
     else if(hash === '#/role-permissions') await pageRolePermissions(app);
     else if(hash === '#/password') pagePassword(app);
+    else if(hash === '#/calendar-guide') await pageCalendarGuide(app);
     else { location.hash='#/home'; }
   }catch(e){ app.innerHTML = `<div class="msg err">${h(e.message)}</div>`; }
   // 「氏名をタップ→スケジュールへ」を全ページ共通で有効化(各ページが個別にワイヤリングする必要はない)
@@ -593,6 +634,11 @@ async function render(){
     el.onclick = (e) => { e.stopPropagation(); location.hash = '#/schedule/' + el.dataset.gotoUid; };
   });
   pollBell();
+  // アップデートのお知らせ(1セッション中に一度だけ、パスワード変更済みの人にのみ表示)
+  if(ME.needsUpdateNotice && !UPDATE_NOTICE_SHOWN){
+    UPDATE_NOTICE_SHOWN = true;
+    openUpdateNotice();
+  }
 }
 
 /* ===== ログイン ===== */
@@ -613,7 +659,7 @@ function renderLogin(err){
     try{
       const d = await api('/login', { method:'POST', body:{ regno:$('#l-regno').value.trim(), password:$('#l-pw').value } });
       TOKEN = d.token; localStorage.setItem('tk', TOKEN); ME = d.user;
-      location.hash = '#/home'; render();
+      goHome();
     }catch(e){ $('#l-err').innerHTML = `<div class="msg err">${h(e.message)}</div>`; }
   };
   $('#l-btn').onclick = go;
@@ -648,7 +694,7 @@ function renderForcedPassword(){
       await api('/password', { method:'POST', body:{ oldpw, newpw } });
       ME.must_change = 0;
       popup('パスワードを変更しました');
-      location.hash = '#/home'; render();
+      goHome();
     }catch(e){ err(e.message); }
   };
   $('#fp-btn').onclick = go;
@@ -891,11 +937,14 @@ async function openCalendarSync(){
         <button class="btn ghost sm" id="cs-copy">コピー</button>
       </div>
       <div class="muted" style="margin-bottom:14px;font-size:12.5px">
-        <b>Googleカレンダーの場合:</b> 左メニュー「他のカレンダー」の＋ →「URLで追加」に、このURLを貼り付けてください。
+        <b>Googleカレンダーの場合:</b> 左メニュー「他のカレンダー」の＋ →「URLで追加」に、このURLを貼り付けてください。<br>
+        <a href="#/calendar-guide" id="cs-guide-link">📖 画像付きの詳しいやり方を見る(Google/Outlook/Apple対応)</a>
       </div>
       <button class="btn danger sm" id="cs-regen">URLを再発行する(このURLを無効化)</button>
       <div class="muted" style="margin-top:8px;font-size:12px">誰かにURLを知られてしまった場合は、再発行すると古いURLは使えなくなります。</div>`;
     box.querySelector('.close-x').onclick = closeModal;
+    const guideLink = $('#cs-guide-link');
+    if(guideLink) guideLink.onclick = (e) => { e.preventDefault(); closeModal(); goTo('#/calendar-guide'); };
     $('#cs-copy').onclick = () => {
       navigator.clipboard.writeText(url).then(()=>popup('コピーしました')).catch(()=>{
         $('#cs-url').select(); document.execCommand('copy'); popup('コピーしました');
@@ -1119,6 +1168,104 @@ async function pageNominationsApprove(app){
     if(ME.handler !== 1 && ME.role !== 'admin'){ openHandlerPin(() => proceed(b.dataset.id,'reject')); return; }
     proceed(b.dataset.id,'reject');
   });
+}
+
+/* ===== Googleカレンダー連携の詳しいやり方ページ ===== */
+async function pageCalendarGuide(app){
+  let token = null;
+  try{ const r = await api('/calendar-token'); token = r.token; }catch(e){}
+  const url = token ? `${location.origin}/api/calendar/${token}.ics` : null;
+
+  app.innerHTML = `
+  <h2 style="margin-bottom:4px">📅 カレンダー連携のやり方</h2>
+  <div class="muted" style="margin-bottom:16px">自分のスケジュールを、普段使っているカレンダーアプリに自動で表示できます。数時間〜半日程度の反映遅延がありますが、一度設定すれば、その後は自動で最新のスケジュールが反映され続けます。</div>
+
+  <div class="card" style="margin-bottom:16px">
+    <h3 style="margin-bottom:8px">① まずは自分専用のURLを発行</h3>
+    ${token ? `
+      <div class="row" style="gap:6px">
+        <input id="cg-url" readonly value="${h(url)}" style="flex:1;min-width:0;font-family:monospace;font-size:12px">
+        <button class="btn ghost sm" id="cg-copy">コピー</button>
+      </div>
+      <div class="muted" style="margin-top:8px;font-size:12px">このURLは、あなた専用の非公開URLです。他の人に知られると誰でもあなたのスケジュールを見られてしまうため、共有しないでください。もし知られてしまったら、下の「URLを再発行する」で無効化できます。</div>
+      <button class="btn danger sm" id="cg-regen" style="margin-top:10px">URLを再発行する(このURLを無効化)</button>
+    ` : `
+      <div class="muted" style="margin-bottom:10px">まだURLを発行していません。下のボタンから発行してください。</div>
+      <button class="btn gold" id="cg-start">URLを発行する</button>
+    `}
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <h3 style="margin-bottom:10px">② カレンダーアプリに登録する</h3>
+
+    <div class="cg-step">
+      <div class="cg-step-title">🟢 Googleカレンダーの場合</div>
+      <div class="muted" style="margin-bottom:6px">⚠️ この設定は<b>パソコンのブラウザ</b>からのみ行えます(スマホアプリからは登録できません)。一度パソコンで登録すれば、以降はスマホのGoogleカレンダーアプリにも自動的に表示されます。</div>
+      <ol class="cg-ol">
+        <li>パソコンのブラウザで <a href="https://calendar.google.com" target="_blank" rel="noopener">Googleカレンダー</a> を開く</li>
+        <li>画面左側「他のカレンダー」の横にある <b>＋</b> をクリック</li>
+        <li>「<b>URLで追加</b>」を選択</li>
+        <li>①で発行したURLを貼り付けて「<b>カレンダーを追加</b>」をクリック</li>
+        <li>数分〜数時間後、左側の「他のカレンダー」に表示されます</li>
+      </ol>
+    </div>
+
+    <div class="cg-step">
+      <div class="cg-step-title">🔵 Outlookの場合</div>
+      <ol class="cg-ol">
+        <li>Outlook(Web版またはアプリ)を開く</li>
+        <li>カレンダー画面で「<b>カレンダーの追加</b>」→「<b>インターネットから購読</b>」を選択</li>
+        <li>①で発行したURLを貼り付けて「<b>インポート</b>」をクリック</li>
+      </ol>
+    </div>
+
+    <div class="cg-step">
+      <div class="cg-step-title">⚪ Apple カレンダー(iPhone/iPad)の場合</div>
+      <ol class="cg-ol">
+        <li>「設定」アプリを開く</li>
+        <li>「<b>カレンダー</b>」→「<b>アカウント</b>」→「<b>アカウントを追加</b>」</li>
+        <li>「<b>その他</b>」→「<b>購読カレンダーを追加</b>」</li>
+        <li>①で発行したURLを貼り付けて「<b>次へ</b>」をタップ</li>
+      </ol>
+    </div>
+
+    <div class="cg-step">
+      <div class="cg-step-title">⚪ Apple カレンダー(Mac)の場合</div>
+      <ol class="cg-ol">
+        <li>カレンダーアプリを開く</li>
+        <li>メニューバー「<b>ファイル</b>」→「<b>新規カレンダー購読</b>」</li>
+        <li>①で発行したURLを貼り付けて「<b>登録</b>」をクリック</li>
+      </ol>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="margin-bottom:6px">よくある質問</h3>
+    <div class="drow"><span class="dk">反映が遅い</span><span class="dv">カレンダーアプリ側が数時間〜半日おきにしかURLを再取得しないため、即時反映はされません。これは仕様上の制限です。</span></div>
+    <div class="drow"><span class="dk">向こうから編集できる？</span><span class="dv">できません。このカレンダーは「見るだけ」の一方向連携です。スケジュールの変更は、引き続きこのアプリから行ってください。</span></div>
+    <div class="drow"><span class="dk">URLを間違えて共有した</span><span class="dv">上の「URLを再発行する」で古いURLを無効化できます。再発行後は、カレンダーアプリ側で新しいURLに登録し直してください。</span></div>
+  </div>`;
+
+  const wireCopy = () => {
+    const cp = $('#cg-copy');
+    if(cp) cp.onclick = () => {
+      navigator.clipboard.writeText(url).then(()=>popup('コピーしました')).catch(()=>{
+        $('#cg-url').select(); document.execCommand('copy'); popup('コピーしました');
+      });
+    };
+    const rg = $('#cg-regen');
+    if(rg) rg.onclick = async () => {
+      if(!confirm('URLを再発行しますか？古いURLは使えなくなり、カレンダーアプリ側で登録し直す必要があります。')) return;
+      try{ await api('/calendar-token/regenerate', { method:'POST' }); popup('再発行しました'); pageCalendarGuide(app); }
+      catch(e){ popup(e.message,'error'); }
+    };
+  };
+  const st = $('#cg-start');
+  if(st) st.onclick = async () => {
+    try{ await api('/calendar-token', { method:'POST' }); pageCalendarGuide(app); }
+    catch(e){ popup(e.message,'error'); }
+  };
+  wireCopy();
 }
 
 async function pageHome(app){
