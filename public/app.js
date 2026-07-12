@@ -269,7 +269,7 @@ function openHandlerPin(onSuccess){
       await api('/handler-mode',{method:'POST',body:{pin:v}});
       ME.handler=1; closeModal();
       if(onSuccess) onSuccess();
-      else { location.hash='#/edit'; render(); }
+      else { location.hash='#/home'; render(); }
     }catch(e){ $('#hp-err').innerHTML=`<div class="msg err">${h(e.message)}</div>`; }
   };
   $('#hp-go').onclick = go;
@@ -864,6 +864,52 @@ async function openScheduleHistory(uid, name){
   }
 }
 
+// Googleカレンダー等への購読URL(iCalendarフィード)の案内・発行・再発行モーダル。
+async function openCalendarSync(){
+  modal(`<h3>📅 カレンダー連携</h3><div class="muted">読み込み中…</div>`);
+  const render2 = async () => {
+    let token = null;
+    try{ const r = await api('/calendar-token'); token = r.token; }catch(e){}
+    const box = document.querySelector('.modal');
+    if(!box) return;
+    if(!token){
+      box.innerHTML = `<button class="close-x">✕</button><h3>📅 カレンダー連携</h3>
+        <div class="muted" style="margin-bottom:14px">自分のスケジュールを、普段使っているGoogleカレンダー・Outlook・Appleカレンダーなどに自動で表示できます(数時間〜半日程度の反映遅延があります)。</div>
+        <button class="btn gold" id="cs-start" style="width:100%">連携を開始する</button>`;
+      $('#cs-start').onclick = async () => {
+        try{ await api('/calendar-token', { method:'POST' }); render2(); }
+        catch(e){ popup(e.message,'error'); }
+      };
+      box.querySelector('.close-x').onclick = closeModal;
+      return;
+    }
+    const url = `${location.origin}/api/calendar/${token}.ics`;
+    box.innerHTML = `<button class="close-x">✕</button><h3>📅 カレンダー連携</h3>
+      <div class="muted" style="margin-bottom:10px">以下のURLを、お使いのカレンダーアプリで「URLで購読(追加)」してください。</div>
+      <div class="row" style="gap:6px;margin-bottom:14px">
+        <input id="cs-url" readonly value="${h(url)}" style="flex:1;min-width:0;font-family:monospace;font-size:12px">
+        <button class="btn ghost sm" id="cs-copy">コピー</button>
+      </div>
+      <div class="muted" style="margin-bottom:14px;font-size:12.5px">
+        <b>Googleカレンダーの場合:</b> 左メニュー「他のカレンダー」の＋ →「URLで追加」に、このURLを貼り付けてください。
+      </div>
+      <button class="btn danger sm" id="cs-regen">URLを再発行する(このURLを無効化)</button>
+      <div class="muted" style="margin-top:8px;font-size:12px">誰かにURLを知られてしまった場合は、再発行すると古いURLは使えなくなります。</div>`;
+    box.querySelector('.close-x').onclick = closeModal;
+    $('#cs-copy').onclick = () => {
+      navigator.clipboard.writeText(url).then(()=>popup('コピーしました')).catch(()=>{
+        $('#cs-url').select(); document.execCommand('copy'); popup('コピーしました');
+      });
+    };
+    $('#cs-regen').onclick = async () => {
+      if(!confirm('URLを再発行しますか？古いURLは使えなくなり、カレンダーアプリ側で登録し直す必要があります。')) return;
+      try{ await api('/calendar-token/regenerate', { method:'POST' }); popup('再発行しました'); render2(); }
+      catch(e){ popup(e.message,'error'); }
+    };
+  };
+  render2();
+}
+
 /* ===== ホーム画面(ログイン後の最初の画面) ===== */
 /* ===== 休み希望・稼働可能時間の提出(本人用) ===== */
 async function pageAvailability(app){
@@ -1239,6 +1285,7 @@ async function pageSchedule(app, hash){
 
   const others = LV[ME.role]>=1 ? `<button class="btn ghost sm" id="pick-user">他のメンバーを見る ▾</button>` : '';
   const histBtn = LV[ME.role]>=2 ? `<button class="btn ghost sm" id="view-history">📝 変更履歴</button>` : '';
+  const calSyncBtn = uid===ME.id ? `<button class="btn ghost sm" id="cal-sync">📅 カレンダー連携</button>` : '';
   app.innerHTML = `
   <h2>${h(u.name)} のスケジュール ${uid!==ME.id?'<span class="muted">(閲覧中)</span>':''}</h2>
   <div class="card">
@@ -1251,6 +1298,7 @@ async function pageSchedule(app, hash){
       <div class="muted">${h(u.regno)} / ${h(u.rank)} / ${h(u.han)} / ${h(u.station)}</div>
       ${others}
       ${histBtn}
+      ${calSyncBtn}
     </div>
     <div class="sched-wrap pc-only">
       <table class="sched">
@@ -1281,6 +1329,8 @@ async function pageSchedule(app, hash){
   $('#next-m').onclick = () => { MONTH = shiftMonth(MONTH, 1); render(); };
   const vh = $('#view-history');
   if(vh) vh.onclick = () => openScheduleHistory(uid, u.name);
+  const cs = $('#cal-sync');
+  if(cs) cs.onclick = () => openCalendarSync();
   const pk = $('#pick-user');
   if(pk) pk.onclick = async () => {
     const [users, managers] = await Promise.all([getUsers(true), api('/managers')]);
