@@ -191,11 +191,18 @@ async function importScheduleSheet(env, source, url, editorId, fromDate) {
   const keywordMap = await loadNonSiteKeywords(env);
   let allRows = [];
   const sheetReport = [];
+  let anyLabelFound = false;
   for (const sh of got.sheets) {
     const parsed = parseChiefScheduleSheet(sh.grid, fromDate, keywordMap);
-    if (parsed.length) { allRows = allRows.concat(parsed); sheetReport.push({ name: sh.name, count: parsed.length }); }
+    if (parsed.labelFound) anyLabelFound = true;
+    if (parsed.rows.length) { allRows = allRows.concat(parsed.rows); sheetReport.push({ name: sh.name, count: parsed.rows.length }); }
   }
-  if (!allRows.length) return { applied: 0, skipped: 0, sheets: sheetReport, unchangedPeople: 0, changedPeople: 0, errors: ['対象日以降の予定が見つかりませんでした'] };
+  if (!allRows.length) {
+    const msg = anyLabelFound
+      ? '対象日以降の予定が見つかりませんでした'
+      : 'このシートには「現場」の見出しが横に並ぶレイアウトが見つかりませんでした。予定表ソースは、現場名の見出し行が上部にあり、そこから右にメンバーごとの列が並ぶ「チーフ予定表」専用の形式のみに対応しています。台帳(IN/OUT表)など別のレイアウトのシートは登録しないでください。';
+    return { applied: 0, skipped: 0, sheets: sheetReport, unchangedPeople: 0, changedPeople: 0, errors: [msg] };
+  }
 
   // 人(登録番号)ごとにグルーピングし、比較用に内容を正規化してJSON化
   const byRegno = {};
@@ -642,6 +649,7 @@ function findHeaderCols(line) {
     start: idxOf('開始時間'),
     tend: idxOf('終了予定時間', '終了予定'),
     tout: idxOf('退勤時間'),
+    late: idxOf('遅刻･欠勤', '遅刻・欠勤'),
     note: idxOf('備考'),
     org: idxOf('所属'),
   };
@@ -989,6 +997,15 @@ function parseFormatC(rows, cfg, fileDate) {
         continue;
       }
       blank = 0;
+      // U列(退勤時間)またはW列(遅刻・欠勤)に「欠勤」「枠移動」と書かれている行は、現場データ
+      // としては登録しない(スキップする)。
+      // ・欠勤: この夜、他のどの台帳ファイルにも名前が登場しなければ、不在者休暇化(既存ロジック)
+      //   により自動的に休暇へ変更される。
+      // ・枠移動: 実際には別の現場(別の台帳ファイル)に配置されているはずなので、この行の情報は
+      //   使わず、移動先のシートに登場する正しいデータを優先する。
+      const toutRaw = cols.tout >= 0 ? String(line[cols.tout] || '').trim() : '';
+      const lateRaw = cols.late >= 0 ? String(line[cols.late] || '').trim() : '';
+      if (/欠勤|枠移動/.test(toutRaw) || /欠勤|枠移動/.test(lateRaw)) { continue; }
       let duty = String(line[cols.gyomu] || '').trim();
       let multi = 0;
       // 業務名に "(2st)" → 2st手当ON、表記を除去
@@ -1032,7 +1049,7 @@ function parseChiefScheduleSheet(grid, fromDate, keywordMap) {
     for (let c = 0; c < line.length; c++) if (/^現場名?$/.test(String(line[c]).trim())) cols.push(c);
     if (cols.length >= 1) { labelRow = r; genbaCols = cols; break; }
   }
-  if (labelRow < 0) return [];
+  if (labelRow < 0) return { rows: out, labelFound: false };
   const nameRow = grid[labelRow - 2] || [];
   const regnoRow = grid[labelRow - 1] || [];
   const blocks = genbaCols.map(c => ({
@@ -1040,7 +1057,7 @@ function parseChiefScheduleSheet(grid, fromDate, keywordMap) {
     name: String(nameRow[c] || '').trim(),
     regno: normRegno(regnoRow[c]),
   })).filter(b => /^\d{3,}$/.test(b.regno));
-  if (!blocks.length) return [];
+  if (!blocks.length) return { rows: out, labelFound: true };
 
   // 日付列を自動検出: ラベル行より左の列のうち、直後のデータ行でシリアル日付らしき数値が入っている列
   let dateCol = -1;
@@ -1070,7 +1087,7 @@ function parseChiefScheduleSheet(grid, fromDate, keywordMap) {
       out.push({ regno: b.regno, date, type: 'work', site, venue, tin: '', tout: '', duty: '' });
     }
   }
-  return out;
+  return { rows: out, labelFound: true };
 }
 
 // フォーマットA/B(個人スケジュール月間表・横長)を解析
@@ -1526,7 +1543,7 @@ async function api(req, env, url) {
     try {
       const r = await importScheduleSheet(env, 'sched_src_' + id, src.url, me.id, fromDate);
       await env.DB.prepare('UPDATE sched_sources SET last_run=?, last_result=? WHERE id=?').bind(
-        jstTs(), JSON.stringify({ ts: jstTs(), applied: r.applied, skipped: r.skipped, unchangedPeople: r.unchangedPeople, changedPeople: r.changedPeople, error: '' }), id
+        jstTs(), JSON.stringify({ ts: jstTs(), applied: r.applied, skipped: r.skipped, unchangedPeople: r.unchangedPeople, changedPeople: r.changedPeople, error: (r.errors && r.errors[0]) || '' }), id
       ).run();
       if (src.notify_admin && r.applied > 0) {
         const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
@@ -2900,7 +2917,7 @@ async function cronScheduleSources(env) {
       const r = await importScheduleSheet(env, 'sched_src_' + src.id, src.url, adminUser ? adminUser.id : 0, fromDate);
       await env.DB.prepare('UPDATE sched_sources SET last_run=?, last_result=? WHERE id=?').bind(
         jstTs(),
-        JSON.stringify({ ts: jstTs(), applied: r.applied, skipped: r.skipped, unchangedPeople: r.unchangedPeople, changedPeople: r.changedPeople, error: '' }),
+        JSON.stringify({ ts: jstTs(), applied: r.applied, skipped: r.skipped, unchangedPeople: r.unchangedPeople, changedPeople: r.changedPeople, error: (r.errors && r.errors[0]) || '' }),
         src.id
       ).run();
       console.log(`[cronScheduleSources] done: id=${src.id} applied=${r.applied} skipped=${r.skipped}`);
