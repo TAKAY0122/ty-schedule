@@ -898,18 +898,31 @@ async function pollBell(){
 // 個人スケジュール画面から、その人の変更履歴(誰が・いつ・どこを・どう変更したか)を見る。
 // 閲覧は手配者以上(pageSchedule側で呼び出しボタンの表示を制御済み)。
 async function openScheduleHistory(uid, name){
-  modal(`<h3>${h(name)} さんの変更履歴</h3><div class="muted" style="margin-bottom:10px">直近500件を新しい順に表示します</div><div id="sh-list" class="muted">読み込み中…</div>`);
-  try{
-    const hist = await api(`/history?uid=${uid}`);
-    const el = $('#sh-list'); if(!el) return;
-    el.innerHTML = hist.length ? hist.map(x=>`<div class="dcard" style="margin-bottom:8px">
-      <div class="dcard-head"><span class="dcard-title">${h(x.date)}</span><span class="dcard-sub">${h(x.editor_name)}</span></div>
-      <div class="drow"><span class="dk">変更</span><span class="dv">${h(summarizeHistory(x.before_json, x.after_json))}</span></div>
-      <div class="drow"><span class="dk">日時</span><span class="dv dcard-sub">${h(x.ts)}</span></div>
-    </div>`).join('') : '<div class="muted" style="text-align:center;padding:16px 0">変更履歴はありません</div>';
-  }catch(e){
-    const el = $('#sh-list'); if(el) el.innerHTML = `<div class="msg err">${h(e.message)}</div>`;
-  }
+  modal(`<h3>${h(name)} さんの変更履歴</h3><div class="muted" style="margin-bottom:10px">直近500件を新しい順に表示します。誤った変更は「取り消す」で1つ前の状態に戻せます。</div><div id="sh-list" class="muted">読み込み中…</div>`);
+  const render2 = async () => {
+    try{
+      const hist = await api(`/history?uid=${uid}`);
+      const el = $('#sh-list'); if(!el) return;
+      el.innerHTML = hist.length ? hist.map(x=>`<div class="dcard" style="margin-bottom:8px">
+        <div class="dcard-head"><span class="dcard-title">${h(x.date)}</span><span class="dcard-sub">${h(x.editor_name)}</span></div>
+        <div class="drow"><span class="dk">変更</span><span class="dv">${h(summarizeHistory(x.before_json, x.after_json))}</span></div>
+        <div class="drow"><span class="dk">日時</span><span class="dv dcard-sub">${h(x.ts)}</span></div>
+        <div class="row" style="margin-top:6px"><button class="btn ghost xs sh-undo" data-id="${x.id}" data-date="${h(x.date)}">↩️ この変更を取り消す</button></div>
+      </div>`).join('') : '<div class="muted" style="text-align:center;padding:16px 0">変更履歴はありません</div>';
+      el.querySelectorAll('.sh-undo').forEach(b => b.onclick = () => {
+        const doUndo = async () => {
+          if(!confirm(`${b.dataset.date} の内容を、この変更が行われる前の状態に戻します。よろしいですか？`)) return;
+          try{ await api(`/history/${b.dataset.id}/undo`, { method:'POST' }); popup('取り消しました'); render2(); }
+          catch(e){ popup(e.message,'error'); }
+        };
+        if(ME.handler !== 1 && ME.role !== 'admin'){ openHandlerPin(doUndo); return; }
+        doUndo();
+      });
+    }catch(e){
+      const el = $('#sh-list'); if(el) el.innerHTML = `<div class="msg err">${h(e.message)}</div>`;
+    }
+  };
+  render2();
 }
 
 // Googleカレンダー等への購読URL(iCalendarフィード)の案内・発行・再発行モーダル。
@@ -1816,6 +1829,8 @@ async function pageSites(app){
             <span class="st-site-name">${h(s.site)}</span>
             ${s.venue?`<span class="st-site-venue">${h(s.venue)}</span>`:''}
             <span class="st-site-cnt">${s.cnt}名</span>
+            ${(s.rookieNames&&s.rookieNames.length)?`<span class="st-share rookie" title="新人報告あり:${s.rookieNames.map(h).join('、')}">🔰 ${s.rookieNames.length}</span>`:''}
+            ${(s.blacklistNames&&s.blacklistNames.length)?`<span class="st-share blacklist" title="ブラックリスト登録あり:${s.blacklistNames.map(h).join('、')}">⚠️ ${s.blacklistNames.length}</span>`:''}
           </button>`).join('')}
         </div>
       </div>`;
@@ -2523,6 +2538,7 @@ function pageReportForm(app){
 /* ===== 報告一覧・2次チェック ===== */
 async function pageReports(app){
   const rows = await api('/reports');
+  const acqBadge = ka => ka ? `<span class="tag acquired" title="既にアプリに登録済み">✅ ${h(ka)}獲得</span>` : '';
   app.innerHTML = `
   <h2>新人報告一覧</h2>
   <div class="card">
@@ -2530,12 +2546,13 @@ async function pageReports(app){
     <tr><th>日時</th><th>報告者</th><th>候補者</th><th>学年</th><th>状態</th><th>ドラフト</th><th>チェック者</th></tr>
     ${rows.map(r=>`<tr class="click" data-id="${r.id}">
       <td>${h(r.ts)}</td><td>${h(r.reporter_name)}</td><td><b>${h(r.candidate_name)}</b></td><td>${h(r.candidate_grade)}</td>
-      <td><span class="tag ${r.status}">${r.status==='pending'?'2次未チェック':'チェック済'}</span></td>
+      <td><span class="tag ${r.status}">${r.status==='pending'?'2次未チェック':'チェック済'}</span> ${acqBadge(r.acquired_ka)}</td>
       <td>${h(r.draft)}</td><td>${h(r.checker)}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">報告はまだありません</td></tr>'}
     </table>
     <div class="cards sp-only">
     ${rows.map(r=>`<div class="dcard clickable" data-id="${r.id}">
       <div class="dcard-head"><span class="dcard-title">${h(r.candidate_name)}</span><span class="tag ${r.status}">${r.status==='pending'?'2次未チェック':'チェック済'}</span></div>
+      ${r.acquired_ka?`<div class="drow"><span class="dk">状態</span><span class="dv">${acqBadge(r.acquired_ka)}</span></div>`:''}
       <div class="drow"><span class="dk">報告者</span><span class="dv">${h(r.reporter_name)}</span></div>
       <div class="drow"><span class="dk">学年</span><span class="dv">${h(r.candidate_grade)||'—'}</span></div>
       ${r.draft?`<div class="drow"><span class="dk">ドラフト</span><span class="dv">${h(r.draft)}</span></div>`:''}
@@ -2635,6 +2652,7 @@ async function pageBlacklist(app){
   const rows = await api('/blacklist');
   const sc = id => `<select id="${id}" style="width:64px"><option value="">-</option>${[1,2,3,4,5].map(n=>`<option>${n}</option>`).join('')}</select>`;
   const scTh = ['会話','服装','身なり','遅刻','業務'];
+  const matchedBadge = ka => ka ? `<span class="tag matched" title="既にアプリに登録されています">⚠️ 登録済(${h(ka)})</span>` : '';
   app.innerHTML = `
   <h2>ブラックリスト</h2>
   <div class="card">
@@ -2654,17 +2672,18 @@ async function pageBlacklist(app){
   </div>
   <div class="card">
     <div class="sched-wrap pc-only"><table class="list">
-    <tr><th>提出日時</th><th>日付</th><th>報告者</th><th>名前</th>${scTh.map(t=>`<th>${t}</th>`).join('')}<th>理由</th><th>登録者</th></tr>
+    <tr><th>提出日時</th><th>日付</th><th>報告者</th><th>名前</th>${scTh.map(t=>`<th>${t}</th>`).join('')}<th>理由</th><th>登録者</th><th>状態</th></tr>
     ${rows.map(r=>`<tr>
       <td>${h(r.ts)}</td><td>${h(r.date)}</td><td>${h(r.reporter)}</td><td><b>${h(r.name)}</b></td>
       <td class="c">${r.s_talk??''}</td><td class="c">${r.s_dress??''}</td><td class="c">${r.s_groom??''}</td><td class="c">${r.s_late??''}</td><td class="c">${r.s_work??''}</td>
-      <td>${h(r.reason)}</td><td>${h(r.added_by)}</td></tr>`).join('') || '<tr><td colspan="11" class="muted">登録はありません</td></tr>'}
+      <td>${h(r.reason)}</td><td>${h(r.added_by)}</td><td>${matchedBadge(r.matched_ka)}</td></tr>`).join('') || '<tr><td colspan="12" class="muted">登録はありません</td></tr>'}
     </table></div>
     <div class="cards sp-only">
     ${rows.map(r=>{
       const sc2 = [['会話',r.s_talk],['服装',r.s_dress],['身なり',r.s_groom],['遅刻',r.s_late],['業務',r.s_work]].filter(x=>x[1]!=null);
       return `<div class="dcard">
       <div class="dcard-head"><span class="dcard-title">${h(r.name)}</span><span class="dcard-sub">${h(r.date)}</span></div>
+      ${r.matched_ka?`<div class="drow"><span class="dk">状態</span><span class="dv">${matchedBadge(r.matched_ka)}</span></div>`:''}
       <div class="drow"><span class="dk">報告者</span><span class="dv">${h(r.reporter)}</span></div>
       ${sc2.length?`<div class="drow"><span class="dk">評価</span><span class="dv"><div class="dscore">${sc2.map(x=>`<span>${x[0]} ${x[1]}</span>`).join('')}</div></span></div>`:''}
       ${r.reason?`<div class="drow"><span class="dk">理由</span><span class="dv">${h(r.reason)}</span></div>`:''}
@@ -3112,17 +3131,30 @@ async function pageHandlerStatus(app){
   loadOnline();
   timers.push(setInterval(loadOnline, 10000));
 
-  const hist = await api('/history');
-  $('#hd-history').innerHTML = hist.length ? `<div class="sched-wrap pc-only"><table class="list">
-    <tr><th>日時</th><th>編集者</th><th>対象メンバー</th><th>対象日</th><th>変更内容</th></tr>
-    ${hist.map(x=>`<tr><td>${h(x.ts)}</td><td>${h(x.editor_name)}</td><td>${x.target_id?`<span class="name-link" data-goto-uid="${x.target_id}">${h(x.target_name)}</span>`:h(x.target_name)}</td><td>${h(x.date)}</td><td>${h(summarize(x.before_json, x.after_json))}</td></tr>`).join('')}
-  </table></div>
-  <div class="cards sp-only">${hist.map(x=>`<div class="dcard">
-    <div class="dcard-head"><span class="dcard-title">${x.target_id?`<span class="name-link" data-goto-uid="${x.target_id}">${h(x.target_name)}</span>`:h(x.target_name)} / ${h(x.date)}</span><span class="dcard-sub">${h(x.editor_name)}</span></div>
-    <div class="drow"><span class="dk">変更</span><span class="dv">${h(summarize(x.before_json, x.after_json))}</span></div>
-    <div class="drow"><span class="dk">日時</span><span class="dv dcard-sub">${h(x.ts)}</span></div>
-  </div>`).join('')}</div>` : '<div class="muted">編集履歴はありません</div>';
-  wireNameLinks($('#hd-history'));
+  const loadHistory = async () => {
+    const hist = await api('/history');
+    $('#hd-history').innerHTML = hist.length ? `<div class="sched-wrap pc-only"><table class="list">
+      <tr><th>日時</th><th>編集者</th><th>対象メンバー</th><th>対象日</th><th>変更内容</th><th></th></tr>
+      ${hist.map(x=>`<tr><td>${h(x.ts)}</td><td>${h(x.editor_name)}</td><td>${x.target_id?`<span class="name-link" data-goto-uid="${x.target_id}">${h(x.target_name)}</span>`:h(x.target_name)}</td><td>${h(x.date)}</td><td>${h(summarize(x.before_json, x.after_json))}</td><td><button class="btn ghost xs hd-undo" data-id="${x.id}" data-date="${h(x.date)}">↩️ 取り消す</button></td></tr>`).join('')}
+    </table></div>
+    <div class="cards sp-only">${hist.map(x=>`<div class="dcard">
+      <div class="dcard-head"><span class="dcard-title">${x.target_id?`<span class="name-link" data-goto-uid="${x.target_id}">${h(x.target_name)}</span>`:h(x.target_name)} / ${h(x.date)}</span><span class="dcard-sub">${h(x.editor_name)}</span></div>
+      <div class="drow"><span class="dk">変更</span><span class="dv">${h(summarize(x.before_json, x.after_json))}</span></div>
+      <div class="drow"><span class="dk">日時</span><span class="dv dcard-sub">${h(x.ts)}</span></div>
+      <div class="row" style="margin-top:6px"><button class="btn ghost xs hd-undo" data-id="${x.id}" data-date="${h(x.date)}">↩️ この変更を取り消す</button></div>
+    </div>`).join('')}</div>` : '<div class="muted">編集履歴はありません</div>';
+    wireNameLinks($('#hd-history'));
+    $('#hd-history').querySelectorAll('.hd-undo').forEach(b => b.onclick = () => {
+      const doUndo = async () => {
+        if(!confirm(`${b.dataset.date} の内容を、この変更が行われる前の状態に戻します。よろしいですか？`)) return;
+        try{ await api(`/history/${b.dataset.id}/undo`, { method:'POST' }); popup('取り消しました'); loadHistory(); }
+        catch(e){ popup(e.message,'error'); }
+      };
+      if(ME.handler !== 1 && ME.role !== 'admin'){ openHandlerPin(doUndo); return; }
+      doUndo();
+    });
+  };
+  loadHistory();
 }
 
 /* ===== ロール一括権限の編集(管理者のみ・専用ページ) ===== */

@@ -621,6 +621,71 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
   return { applied, skipped, skippedUnregistered, skippedUnchanged, skippedInvalid, skippedOtherOrg, errors };
 }
 
+// 新しくアカウントが作成された時、氏名が一致する新人報告・ブラックリストのレコードに
+// 所属課を記録する(「新人報告→ドラフト→登録」を飛ばして直接登録された場合の後追い対応)。
+// これにより、該当レコードは新人共有・ブラックリスト共有(matchRookieAndBlacklist)の対象から外れる。
+async function markAcquiredByName(env, name, ka) {
+  const normName = s => String(s || '').replace(/[\s　]/g, '');
+  const key = normName(name);
+  if (!key) return;
+  const kaVal = ka || '(所属未設定)';
+  const reports = (await env.DB.prepare("SELECT id, candidate_name FROM reports WHERE COALESCE(acquired_ka,'')=''").all()).results;
+  for (const r of reports) if (normName(r.candidate_name) === key) {
+    await env.DB.prepare('UPDATE reports SET acquired_ka=? WHERE id=?').bind(kaVal, r.id).run();
+  }
+  const blist = (await env.DB.prepare("SELECT id, name FROM blacklist WHERE COALESCE(matched_ka,'')=''").all()).results;
+  for (const b of blist) if (normName(b.name) === key) {
+    await env.DB.prepare('UPDATE blacklist SET matched_ka=? WHERE id=?').bind(kaVal, b.id).run();
+  }
+}
+
+// 台帳データ(氏名を含む行)を、新人報告(未獲得=acquired_kaが空)・ブラックリスト(未マッチ=matched_kaが空)の
+// 対象者名と照合する。マッチしたら rookie_site_matches に記録し、その日・その現場に入っているチーフ以上へ
+// 通知する。新人報告(良い人の共有)とブラックリスト(悪い人の共有)は、通知の種類・文言を明確に分け、
+// 混同しないようにする。既にアプリに登録済み(acquired_ka/matched_kaが設定済み)の人はそもそも対象にしない。
+async function matchRookieAndBlacklist(env, rows) {
+  const normName = s => String(s || '').replace(/[\s　]/g, '');
+  const rowsWithName = (rows || []).filter(r => r.personName && r.date && r.site);
+  if (!rowsWithName.length) return;
+
+  const pendingReports = (await env.DB.prepare("SELECT id, candidate_name FROM reports WHERE COALESCE(acquired_ka,'')=''").all()).results;
+  const pendingBlacklist = (await env.DB.prepare("SELECT id, name FROM blacklist WHERE COALESCE(matched_ka,'')=''").all()).results;
+  if (!pendingReports.length && !pendingBlacklist.length) return;
+
+  const reportMap = {}; for (const r of pendingReports) { const k = normName(r.candidate_name); if (k) (reportMap[k] ||= []).push(r.id); }
+  const blacklistMap = {}; for (const b of pendingBlacklist) { const k = normName(b.name); if (k) (blacklistMap[k] ||= []).push(b.id); }
+
+  const candidates = [];
+  for (const r of rowsWithName) {
+    const key = normName(r.personName);
+    if (!key) continue;
+    if (reportMap[key]) for (const rid of reportMap[key]) candidates.push({ kind: 'report', matched_name: r.personName, report_id: rid, blacklist_id: null, date: r.date, site: r.site, venue: r.venue || '' });
+    if (blacklistMap[key]) for (const bid of blacklistMap[key]) candidates.push({ kind: 'blacklist', matched_name: r.personName, report_id: null, blacklist_id: bid, date: r.date, site: r.site, venue: r.venue || '' });
+  }
+  if (!candidates.length) return;
+
+  for (const m of candidates) {
+    // UNIQUE制約(kind, matched_name, date, site)により、既に記録済みなら重複登録・重複通知はしない
+    let inserted;
+    try {
+      await env.DB.prepare('INSERT INTO rookie_site_matches(kind,matched_name,report_id,blacklist_id,date,site,venue,created_at) VALUES(?,?,?,?,?,?,?,?)')
+        .bind(m.kind, m.matched_name, m.report_id, m.blacklist_id, m.date, m.site, m.venue, jstTs()).run();
+      inserted = true;
+    } catch (e) { inserted = false; } // UNIQUE制約違反=既に通知済みなのでスキップ
+    if (!inserted) continue;
+
+    const chiefs = (await env.DB.prepare(
+      "SELECT DISTINCT u.id FROM schedule s JOIN users u ON u.id=s.user_id WHERE s.date=? AND s.site=? AND s.type='work' AND u.role!='member'"
+    ).bind(m.date, m.site).all()).results;
+    if (!chiefs.length) continue;
+    if (m.kind === 'report') {
+      await notify(env, chiefs.map(c => c.id), 'rookie_share', `🔰 新人共有:「${m.matched_name}」が ${m.date} の現場「${m.site}」に入っています(新人報告あり)`, '#/sites');
+    } else {
+      await notify(env, chiefs.map(c => c.id), 'blacklist_share', `⚠️ 要注意共有:「${m.matched_name}」が ${m.date} の現場「${m.site}」に入っています(ブラックリスト登録あり)`, '#/sites');
+    }
+  }
+}
+
 // グリッドからフォーマットを推定。Cは勤務表(打刻/退勤/集合などの語)、それ以外はAB(月間表)
 function detectFormat(grid) {
   const head = grid.slice(0, 14).flat().join(' ');
@@ -645,6 +710,7 @@ function findHeaderCols(line) {
     venueCol: idxOf('会場名'),
     gyomu: idxOf('業務名'),
     regno,
+    nameCol: idxOf('氏名'),
     rank: idxOf('ランク'),
     start: idxOf('開始時間'),
     tend: idxOf('終了予定時間', '終了予定'),
@@ -1016,8 +1082,9 @@ function parseFormatC(rows, cfg, fileDate) {
       const tout = laterTime(normTime(cols.tout >= 0 ? line[cols.tout] : ''), normTime(cols.tend >= 0 ? line[cols.tend] : ''));
       const note = cols.note >= 0 ? String(line[cols.note] || '').trim() : '';
       const org = cols.org >= 0 ? String(line[cols.org] || '').trim() : '';
+      const personName = cols.nameCol >= 0 ? String(line[cols.nameCol] || '').trim() : '';
       if (!tin && !tout && !duty) continue;
-      out.push({ regno, date: blockDate, site, venue: venueCell, tin, tout, duty, load_end: blockLoadEnd, show_end: blockShowEnd, multi, note, org });
+      out.push({ regno, date: blockDate, site, venue: venueCell, tin, tout, duty, load_end: blockLoadEnd, show_end: blockShowEnd, multi, note, org, personName });
     }
   }
   return { date: lastDate, venue: lastVenue, rows: out };
@@ -1201,9 +1268,19 @@ async function rookieNotify(env, r) {
 async function auth(req, env) {
   const t = (req.headers.get('authorization') || '').replace('Bearer ', '');
   if (!t) return null;
-  const s = await env.DB.prepare('SELECT s.token AS _tk, s.handler AS _handler, u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=?').bind(t).first();
+  const s = await env.DB.prepare(
+    'SELECT s.token AS _tk, s.handler AS _handler, s.created AS _created, s.last_seen AS _lastSeen, u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=?'
+  ).bind(t).first();
   if (!s) return null;
-  await env.DB.prepare('UPDATE sessions SET last_seen=? WHERE token=?').bind(Date.now(), t).run();
+  // セッションの有効期限: 30日間操作が無ければ失効(アイドルタイムアウト)、
+  // また作成から90日経過したら操作の有無に関わらず強制失効させる(トークン漏洩時の被害を限定する)
+  const now = Date.now();
+  const IDLE_LIMIT = 30 * 24 * 3600e3, ABS_LIMIT = 90 * 24 * 3600e3;
+  if ((now - s._lastSeen) > IDLE_LIMIT || (now - s._created) > ABS_LIMIT) {
+    await env.DB.prepare('DELETE FROM sessions WHERE token=?').bind(t).run();
+    return null;
+  }
+  await env.DB.prepare('UPDATE sessions SET last_seen=? WHERE token=?').bind(now, t).run();
   return s;
 }
 
@@ -1215,11 +1292,30 @@ async function api(req, env, url) {
   // ---- 認証不要 ----
   if (method === 'POST' && path === '/login') {
     const { regno, password } = body;
-    const u = await env.DB.prepare('SELECT * FROM users WHERE regno=?').bind(String(regno || '').trim()).first();
-    if (!u) return ERR('登録番号またはパスワードが違います', 401);
+    const regnoTrim = String(regno || '').trim();
+    if (!regnoTrim) return ERR('登録番号を入力してください');
+
+    // ブルートフォース対策: 同じ登録番号への失敗が続いたら一定時間ロックする
+    const attempt = await env.DB.prepare('SELECT * FROM login_attempts WHERE regno=?').bind(regnoTrim).first();
+    const now = Date.now();
+    if (attempt && attempt.locked_until > now) {
+      const waitMin = Math.ceil((attempt.locked_until - now) / 60000);
+      return ERR(`ログイン試行回数が上限に達しました。${waitMin}分後に再度お試しください。`, 429);
+    }
+    const MAX_FAIL = 5, LOCK_MS = 15 * 60 * 1000;
+    const recordFail = async () => {
+      const fc = (attempt ? attempt.fail_count : 0) + 1;
+      const lockedUntil = fc >= MAX_FAIL ? now + LOCK_MS : 0;
+      await env.DB.prepare(
+        'INSERT INTO login_attempts(regno,fail_count,locked_until,last_attempt) VALUES(?,?,?,?) ON CONFLICT(regno) DO UPDATE SET fail_count=excluded.fail_count, locked_until=excluded.locked_until, last_attempt=excluded.last_attempt'
+      ).bind(regnoTrim, fc, lockedUntil, now).run();
+    };
+
+    const u = await env.DB.prepare('SELECT * FROM users WHERE regno=?').bind(regnoTrim).first();
+    if (!u) { await recordFail(); return ERR('登録番号またはパスワードが違います', 401); }
     if (u.suspended) return ERR('このアカウントは停止されています。管理者にお問い合わせください。', 403);
     if (!u.pass_hash) {
-      if (password !== u.regno) return ERR('登録番号またはパスワードが違います', 401);
+      if (password !== u.regno) { await recordFail(); return ERR('登録番号またはパスワードが違います', 401); }
       const salt = rnd();
       const h = await pbkdf2(password, salt);
       // 初期パスワード(=登録番号)での初回ログイン → 強制変更フラグを立てる
@@ -1227,8 +1323,9 @@ async function api(req, env, url) {
       u.must_change = 1;
     } else {
       const h = await pbkdf2(password || '', u.salt);
-      if (h !== u.pass_hash) return ERR('登録番号またはパスワードが違います', 401);
+      if (h !== u.pass_hash) { await recordFail(); return ERR('登録番号またはパスワードが違います', 401); }
     }
+    if (attempt) await env.DB.prepare('DELETE FROM login_attempts WHERE regno=?').bind(regnoTrim).run();
     const token = rnd();
     await env.DB.prepare('INSERT INTO sessions(token,user_id,handler,last_seen,created) VALUES(?,?,0,?,?)').bind(token, u.id, Date.now(), Date.now()).run();
     return J({ token, user: { ...pub(u), handler: 0 } });
@@ -1679,6 +1776,7 @@ async function api(req, env, url) {
       await env.DB.prepare('INSERT INTO users(regno,name,rank,han,ka,station,role,manager_id) VALUES(?,?,?,?,?,?,?,?)')
         .bind(String(regno).trim(), name, rank, han, ka, station, newRole, manager_id || null).run();
     } catch { return ERR('この登録番号は既に存在します'); }
+    try { await markAcquiredByName(env, name, ka); } catch (e) {}
     return J({ ok: 1 });
   }
   let mm;
@@ -2327,6 +2425,22 @@ async function api(req, env, url) {
     const rows = (await env.DB.prepare(
       "SELECT date, site, venue, COUNT(*) AS cnt FROM schedule WHERE type='work' AND site<>'' AND date LIKE ? GROUP BY date, site, venue ORDER BY date, site"
     ).bind(month + '%').all()).results;
+    // 新人共有・要注意共有(台帳と新人報告/ブラックリストの氏名マッチ)がある現場に印を付ける。
+    // 良い人(新人報告)と悪い人(ブラックリスト)は別々に持たせ、表示側で混同しないようにする。
+    const matches = (await env.DB.prepare(
+      "SELECT kind, date, site, matched_name FROM rookie_site_matches WHERE date LIKE ?"
+    ).bind(month + '%').all()).results;
+    const rookieMap = {}, blacklistMap = {};
+    for (const m of matches) {
+      const key = m.date + '|' + m.site;
+      const target = m.kind === 'report' ? rookieMap : blacklistMap;
+      (target[key] ||= []).push(m.matched_name);
+    }
+    for (const r of rows) {
+      const key = r.date + '|' + r.site;
+      r.rookieNames = rookieMap[key] || [];
+      r.blacklistNames = blacklistMap[key] || [];
+    }
     return J(rows);
   }
 
@@ -2453,6 +2567,7 @@ async function api(req, env, url) {
       // 台帳に登場しない人を休暇にする処理は、複数ファイル(URL)を横断して判定する必要があるため、
       // ここ(手動取り込み・1URLごと)では行わず、夜間の自動再取り込み(cronDaichoReload)でのみ実行する。
       urlMeta[rawUrl] = { sheetTitle: sheetFileTitle || '', targetDate: fileDate || '' };
+      try { await matchRookieAndBlacklist(env, allRows); } catch (e) {}
 
       // 監査・証拠用に、取り込んだ元Excel(xlsx)をR2へ保管しインデックスを記録する。
       let archived = false, archiveError = '';
@@ -2598,6 +2713,44 @@ async function api(req, env, url) {
           "SELECT h.*, COALESCE(e.name, CASE WHEN h.editor_id=0 THEN 'スプレッドシート' ELSE '不明' END) AS editor_name, t.name AS target_name FROM schedule_history h LEFT JOIN users e ON e.id=h.editor_id LEFT JOIN users t ON t.id=h.target_id ORDER BY h.id DESC LIMIT 500"
         ).all()).results;
     return J(rows);
+  }
+  // 編集履歴からの取り消し。指定した履歴レコードの「変更前(before_json)」の状態に、
+  // 対象者のその日のスケジュールを復元する。誤って台帳を読み込んでしまった場合などに使う。
+  // 取り消し自体も新しい履歴として記録するため、何度でも辿って戻せる。
+  let hum;
+  if (method === 'POST' && (hum = path.match(/^\/history\/(\d+)\/undo$/))) {
+    if (!handlerMode && !has(me, 'handler_tools')) return ERR('取り消しには手配モードが必要です', 403);
+    const id = Number(hum[1]);
+    const hist = await env.DB.prepare('SELECT * FROM schedule_history WHERE id=?').bind(id).first();
+    if (!hist) return ERR('履歴が見つかりません', 404);
+    const uid = hist.target_id, date = hist.date;
+    let restoreRows;
+    try {
+      const parsed = JSON.parse(hist.before_json);
+      restoreRows = Array.isArray(parsed) ? parsed : (parsed.slots || []);
+    } catch (e) { return ERR('この履歴は形式が壊れているため復元できません'); }
+
+    const target = await env.DB.prepare('SELECT rank FROM users WHERE id=?').bind(uid).first();
+    const rank = target ? target.rank : '';
+    const resolve = await loadWageResolver(env);
+    const currentRows = (await env.DB.prepare('SELECT * FROM schedule WHERE user_id=? AND date=? ORDER BY slot').bind(uid, date).all()).results;
+    const currentJson = JSON.stringify(currentRows.map(stripRow));
+
+    await env.DB.prepare('DELETE FROM schedule WHERE user_id=? AND date=?').bind(uid, date).run();
+    let slot = 0;
+    for (const r of restoreRows) {
+      let hours = 0, overtime = 0, pay = r.pay || 0;
+      if (r.type === 'work' || r.type === 'paid') {
+        const c = calcPay({ rank, date, tin: r.tin, tout: r.tout, duty: r.duty, loadEnd: r.load_end, showEnd: r.show_end, multi: r.multi ? 1 : 0 }, resolve);
+        if (c) ({ hours, overtime, pay } = c);
+      }
+      await env.DB.prepare('INSERT INTO schedule(user_id,date,slot,type,site,venue,tin,tout,hours,overtime,pay,note,duty,load_end,show_end,multi) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+        .bind(uid, date, slot, r.type || 'work', r.site || '', r.venue || '', r.tin || '', r.tout || '', hours, overtime, pay, r.note || '', r.duty || '', r.load_end || '', r.show_end || '', r.multi ? 1 : 0).run();
+      slot++;
+    }
+    await env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
+      .bind(jstTs(), me.id, uid, date, currentJson, JSON.stringify({ slots: restoreRows, _src: `編集の取り消し(履歴#${id}を元に復元、実行者:${me.name})` })).run();
+    return J({ ok: 1 });
   }
 
   // ---- 新人報告 ----
@@ -2827,6 +2980,8 @@ async function cronDaichoReload(env) {
   if (allRowsCombined.length) {
     try { absentResult = await clearAbsentFromDaicho(env, allRowsCombined, editorId); }
     catch (e) { console.error('clearAbsentFromDaicho failed:', e); }
+    try { await matchRookieAndBlacklist(env, allRowsCombined); }
+    catch (e) { console.error('matchRookieAndBlacklist failed:', e); }
   }
 
   // 取り込んだURLを保存済みリストから削除
@@ -2949,9 +3104,25 @@ async function cronScheduleSources(env) {
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
+    const withSecurityHeaders = (resp) => {
+      const headers = new Headers(resp.headers);
+      // クリックジャッキング対策(他サイトのiframeにこのアプリを埋め込ませない)
+      headers.set('X-Frame-Options', 'DENY');
+      headers.set('Content-Security-Policy', "frame-ancestors 'none'");
+      // MIMEタイプスニッフィング対策
+      headers.set('X-Content-Type-Options', 'nosniff');
+      // どのサイト経由で来たか(リファラ)を、外部サイトへは送らない
+      headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+      return new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers });
+    };
     if (url.pathname.startsWith('/api/')) {
-      try { return await api(req, env, url); }
-      catch (e) { return ERR('サーバーエラー: ' + e.message, 500); }
+      try { return withSecurityHeaders(await api(req, env, url)); }
+      catch (e) {
+        // 内部エラーの詳細(SQL文やスタック等)はサーバーログにのみ残し、クライアントには
+        // 一般的なメッセージのみ返す(DB構造等の手がかりを外部に与えないため)
+        console.error('API error:', e);
+        return withSecurityHeaders(ERR('サーバーエラーが発生しました。時間をおいて再度お試しください。', 500));
+      }
     }
     const resp = await env.ASSETS.fetch(req);
     // index.html / app.js / style.css は、ブラウザ・CDNどちらにもキャッシュさせない。
@@ -2961,9 +3132,9 @@ export default {
       const headers = new Headers(resp.headers);
       headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
       headers.delete('etag');
-      return new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers });
+      return withSecurityHeaders(new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers }));
     }
-    return resp;
+    return withSecurityHeaders(resp);
   },
   // 各cronタスクは互いに影響しないよう、それぞれ独立してtry-catchする。
   // 台帳の深夜再取込を最優先で実行(最も重要な処理のため、他のcronが重くても確実に走らせる)。

@@ -88,7 +88,8 @@ CREATE TABLE IF NOT EXISTS reports(
   checker TEXT DEFAULT '',               -- チーフチェック者
   next_site TEXT DEFAULT '',             -- 次回現場名(任意)
   next_date TEXT DEFAULT '',             -- 次回日付(任意)
-  status TEXT DEFAULT 'pending'          -- pending(2次未) / checked
+  status TEXT DEFAULT 'pending',         -- pending(2次未) / checked
+  acquired_ka TEXT DEFAULT ''            -- 獲得課(1課/2課等)。空でなければ既にアプリ登録済み=新人共有から除外
 );
 
 CREATE TABLE IF NOT EXISTS blacklist(
@@ -103,7 +104,8 @@ CREATE TABLE IF NOT EXISTS blacklist(
   s_late INTEGER,                        -- 遅刻(1-5)
   s_work INTEGER,                        -- 業務(1-5)
   reason TEXT DEFAULT '',                -- 理由
-  added_by TEXT DEFAULT ''               -- 登録者(ログインユーザー)
+  added_by TEXT DEFAULT '',              -- 登録者(ログインユーザー)
+  matched_ka TEXT DEFAULT ''             -- アプリに登録されている場合の所属課。空でなければブラックリスト共有から除外
 );
 
 CREATE TABLE IF NOT EXISTS notifications(
@@ -298,4 +300,29 @@ CREATE TABLE IF NOT EXISTS site_nominations(
   created_at TEXT,
   decided_at TEXT,
   decided_by INTEGER
+);
+
+-- 台帳取込時、その現場に「新人報告の候補者」または「ブラックリスト対象者」と同姓同名の人が
+-- 実際に入っていたことを検知した記録。現場一覧への表示、担当チーフへの通知に使う。
+-- 新人報告(良い人)とブラックリスト(悪い人)を混同しないよう、kindで明確に区別する。
+CREATE TABLE IF NOT EXISTS rookie_site_matches(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,          -- 'report'(新人共有) | 'blacklist'(要注意共有)
+  matched_name TEXT NOT NULL,  -- マッチした氏名
+  report_id INTEGER,           -- reports.id (kind='report'の場合)
+  blacklist_id INTEGER,        -- blacklist.id (kind='blacklist'の場合)
+  date TEXT NOT NULL,
+  site TEXT NOT NULL,
+  venue TEXT DEFAULT '',
+  created_at TEXT,
+  UNIQUE(kind, matched_name, date, site)
+);
+
+-- ログイン失敗回数の記録(ブルートフォース攻撃対策)。登録番号ごとに一定回数失敗すると
+-- 一定時間ロックする。regnoが存在しない/しないに関わらず記録し、アカウント有無の推測も防ぐ。
+CREATE TABLE IF NOT EXISTS login_attempts(
+  regno TEXT PRIMARY KEY,
+  fail_count INTEGER DEFAULT 0,
+  locked_until INTEGER DEFAULT 0,   -- ロック解除時刻(epoch ms)。0=ロックなし
+  last_attempt INTEGER DEFAULT 0
 );
