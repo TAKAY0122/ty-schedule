@@ -2652,11 +2652,16 @@ async function api(req, env, url) {
     if (!has(me, 'blacklist_manage')) return ERR('ページが見つかりません', 404);
     if (!body.name) return ERR('名前は必須です');
     const sc = v => { const n = Number(v); return (n >= 1 && n <= 5) ? n : null; };
+    const talk = sc(body.s_talk), dress = sc(body.s_dress), groom = sc(body.s_groom), late = sc(body.s_late), work = sc(body.s_work);
     await env.DB.prepare(
       'INSERT INTO blacklist(ts,date,reporter,name,s_talk,s_dress,s_groom,s_late,s_work,reason,added_by) VALUES(?,?,?,?,?,?,?,?,?,?,?)'
     ).bind(jstTs(), body.date || jstDate(), body.reporter || me.name, body.name,
-      sc(body.s_talk), sc(body.s_dress), sc(body.s_groom), sc(body.s_late), sc(body.s_work),
+      talk, dress, groom, late, work,
       body.reason || '', me.name).run();
+    try {
+      const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
+      if (admins.length) await notify(env, admins.map(a => a.id), 'blacklist', `⚠️ ブラックリストに登録:${body.name}(登録者:${me.name})`, '#/blacklist');
+    } catch (e) {}
     return J({ ok: 1 });
   }
 

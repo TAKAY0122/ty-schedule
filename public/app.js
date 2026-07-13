@@ -2521,8 +2521,19 @@ function pageReportForm(app){
 /* ===== 報告一覧・2次チェック ===== */
 async function pageReports(app){
   const rows = await api('/reports');
+  const st = PAGE_STATE.reportsExport || (PAGE_STATE.reportsExport = { from:'', to:'' });
   app.innerHTML = `
   <h2>新人報告一覧</h2>
+  <div class="card" style="margin-bottom:14px">
+    <h3 style="margin-bottom:8px">📋 スプレッドシート貼り付け用にコピー</h3>
+    <div class="muted" style="margin-bottom:8px">期間を指定して「コピーする」を押すと、共有シートにそのまま貼り付けられる形式でクリップボードにコピーされます(貼り付け先のシートの空いている行の先頭セルを選んで貼り付けてください)。</div>
+    <div class="row" style="gap:10px;flex-wrap:wrap;align-items:center">
+      <label>開始日 <input type="date" id="rex-from" value="${h(st.from)}"></label>
+      <label>終了日 <input type="date" id="rex-to" value="${h(st.to)}"></label>
+      <button class="btn gold sm" id="rex-copy">コピーする</button>
+      <span class="muted" id="rex-msg"></span>
+    </div>
+  </div>
   <div class="card">
     <table class="list pc-only">
     <tr><th>日時</th><th>報告者</th><th>候補者</th><th>学年</th><th>状態</th><th>ドラフト</th><th>チェック者</th></tr>
@@ -2543,6 +2554,38 @@ async function pageReports(app){
     </div>
   </div>`;
   app.querySelectorAll('[data-id]').forEach(el => el.onclick = () => openReport(rows.find(r=>r.id==el.dataset.id)));
+
+  $('#rex-copy').onclick = () => {
+    const from = $('#rex-from').value, to = $('#rex-to').value;
+    st.from = from; st.to = to;
+    // ts は "07/11 20:18" のような "MM/DD HH:mm" 形式。日付比較のため年をつけて正規化する
+    const inRange = ts => {
+      if(!from && !to) return true;
+      const m = String(ts||'').match(/^(\d{2})\/(\d{2})/);
+      if(!m) return true;
+      const y = new Date().getFullYear();
+      const d = `${y}-${m[1]}-${m[2]}`;
+      if(from && d < from) return false;
+      if(to && d > to) return false;
+      return true;
+    };
+    const targets = rows.filter(r => inRange(r.ts));
+    if(!targets.length){ $('#rex-msg').textContent = '対象の報告がありません'; return; }
+    const clean = s => String(s??'').replace(/[\t\n\r]+/g,' ').trim();
+    const lines = targets.map(r => [
+      r.ts, r.reporter_name, '', '', r.status==='checked'?'2次チェック':'1次チェック', '',
+      r.candidate_name, r.candidate_grade, '', '', '', '',
+      r.next_site, r.first_chief, r.first_note,
+      [r.s_motivation, r.s_response].filter(v=>v!=null).join('/'),
+      '', '', '',
+      r.s_total ?? '', r.draft, r.plan, r.checker,
+    ].map(clean).join('\t'));
+    const text = lines.join('\n');
+    navigator.clipboard.writeText(text).then(
+      () => { $('#rex-msg').textContent = `${targets.length}件をコピーしました`; },
+      () => { $('#rex-msg').textContent = 'コピーに失敗しました(ブラウザの権限を確認してください)'; }
+    );
+  };
 }
 
 function openReport(r){
@@ -2631,6 +2674,7 @@ async function pageDraft(app){
 async function pageBlacklist(app){
   if(!has('blacklist_manage')){ notFound(app); return; }
   const rows = await api('/blacklist');
+  const bst = PAGE_STATE.blacklistExport || (PAGE_STATE.blacklistExport = { from:'', to:'' });
   const sc = id => `<select id="${id}" style="width:64px"><option value="">-</option>${[1,2,3,4,5].map(n=>`<option>${n}</option>`).join('')}</select>`;
   const scTh = ['会話','服装','身なり','遅刻','業務'];
   app.innerHTML = `
@@ -2649,6 +2693,16 @@ async function pageBlacklist(app){
       <label>理由</label><textarea id="b-reason" placeholder="具体的な理由・エピソード"></textarea>
     </div>
     <div class="row" style="margin-top:14px"><button class="btn danger" id="b-add">提出する</button><span id="b-msg"></span></div>
+  </div>
+  <div class="card" style="margin-bottom:14px">
+    <h3 style="margin-bottom:8px">📋 スプレッドシート貼り付け用にコピー</h3>
+    <div class="muted" style="margin-bottom:8px">期間を指定して「コピーする」を押すと、共有シートにそのまま貼り付けられる形式でクリップボードにコピーされます。評価は5段階からシートの表記(×/△/〇)に自動変換されます(1-2=×、3=△、4-5=〇)。</div>
+    <div class="row" style="gap:10px;flex-wrap:wrap;align-items:center">
+      <label>開始日 <input type="date" id="bex-from" value="${h(bst.from)}"></label>
+      <label>終了日 <input type="date" id="bex-to" value="${h(bst.to)}"></label>
+      <button class="btn gold sm" id="bex-copy">コピーする</button>
+      <span class="muted" id="bex-msg"></span>
+    </div>
   </div>
   <div class="card">
     <div class="sched-wrap pc-only"><table class="list">
@@ -2682,6 +2736,25 @@ async function pageBlacklist(app){
       render();
       popup('ブラックリストに登録しました。');
     }catch(e){ popup(e.message, 'error'); }
+  };
+  $('#bex-copy').onclick = () => {
+    const from = $('#bex-from').value, to = $('#bex-to').value;
+    bst.from = from; bst.to = to;
+    const inRange = d => (!from || d >= from) && (!to || d <= to);
+    const targets = rows.filter(r => inRange(String(r.date||'')));
+    if(!targets.length){ $('#bex-msg').textContent = '対象の登録がありません'; return; }
+    const mark = n => n == null ? '' : (n <= 2 ? '×' : n === 3 ? '△' : '〇');
+    const clean = s => String(s??'').replace(/[\t\n\r]+/g,' ').trim();
+    const lines = targets.map(r => [
+      r.date, r.reporter, r.name,
+      mark(r.s_talk), mark(r.s_dress), mark(r.s_groom), mark(r.s_late), mark(r.s_work),
+      r.reason,
+    ].map(clean).join('\t'));
+    const text = lines.join('\n');
+    navigator.clipboard.writeText(text).then(
+      () => { $('#bex-msg').textContent = `${targets.length}件をコピーしました`; },
+      () => { $('#bex-msg').textContent = 'コピーに失敗しました(ブラウザの権限を確認してください)'; }
+    );
   };
 }
 
