@@ -1324,7 +1324,6 @@ async function pageCalendarGuide(app){
 async function pageHome(app){
   app.innerHTML = '<div class="card"><div class="muted">読み込み中…</div></div>';
   const today = jstToday();
-  const tomorrow = new Date(Date.now() + 9*3600e3 + 24*3600e3).toISOString().slice(0,10);
   const month = today.slice(0,7);
   const isChief = LV[ME.role] >= 1;
   const isHandlerRole = LV[ME.role] >= 2;
@@ -1336,6 +1335,7 @@ async function pageHome(app){
   ]);
 
   const entries = (schedData && schedData.entries) || {};
+  const wdNames = '日月火水木金土';
   const dayCard = (date, label) => {
     const list = entries[date] || [];
     const works = list.filter(e => e.type === 'work');
@@ -1348,25 +1348,31 @@ async function pageHome(app){
       ${works.map(e=>`<div class="home-day-site">${h(e.site)}${e.venue?`<span class="muted"> ／ ${h(e.venue)}</span>`:''}${e.tin?`<span class="muted"> ${h(e.tin)}〜${h(e.tout||'')}</span>`:''}</div>`).join('')}
     </div>`;
   };
+  // 今日から1週間分。スワイプ(横スクロール)で先の予定まで見られるようにする
+  const days7 = Array.from({length:7}, (_,i) => {
+    const d = new Date(Date.now() + 9*3600e3 + i*24*3600e3).toISOString().slice(0,10);
+    const label = i===0 ? '今日' : i===1 ? '明日' : wdNames[new Date(d+'T00:00:00+09:00').getDay()]+'曜日';
+    return dayCard(d, label);
+  }).join('');
 
   const unreadCount = notifData.unread || 0;
   const pendingCount = selfReports.length;
 
   const menuItems = [
     ['#/schedule','📅','マイスケジュール', true],
-    ['#/availability','🙋','休み希望・稼働時間', true],
+    ['#/availability','🙋','休み希望', true],
     ['#/edit','✏️','スケジュール入力', ME.handler===1],
-    ['#/availability-team','📋','チームの希望一覧', isHandlerRole],
-    ['#/nominate','👤','メンバーを希望する', isChief],
-    ['#/nominations','✅','メンバー指名の承認', isChief],
+    ['#/availability-team','📋','チーム希望一覧', isHandlerRole],
+    ['#/nominate','👤','メンバー指名', isChief],
+    ['#/nominations','✅','指名の承認', isChief],
     ['#/sites','🏟️','現場一覧', isChief],
     ['#/members/mine','📋',`${h(ME.name)}手配`, isHandlerRole],
     ['#/members','👥','メンバー一覧', isChief],
     ['#/summary','📊','稼働サマリー', isChief],
-    ['#/self-reports','📝','現場変更報告の承認', isChief],
+    ['#/self-reports','📝','変更報告承認', isChief],
     ['#/report','🆕','新人報告', true],
-    ['#/reports','📋','新人報告一覧', true],
-    ['#/import','📥','スプレッドシート取込', has('import_data')],
+    ['#/reports','📋','報告一覧', true],
+    ['#/import','📥','スプレッド取込', has('import_data')],
     ['#/admin','⚙️','アカウント管理', has('account_manage')],
   ].filter(m=>m[3]);
 
@@ -1375,16 +1381,16 @@ async function pageHome(app){
     <div class="muted" style="margin-bottom:16px">${h(today)} (${h('日月火水木金土'[new Date(today+'T00:00:00+09:00').getDay()])})</div>
 
     <div class="home-top-cards">
-      <div class="card home-days">
-        ${dayCard(today, '今日')}
-        ${dayCard(tomorrow, '明日')}
+      <div class="card home-days-card">
+        <div class="home-days-hint muted">◀ スワイプで1週間先まで見られます ▶</div>
+        <div class="home-days">${days7}</div>
       </div>
       <div class="card home-stat-card">
         <a href="#/schedule" class="home-stat">
           <span class="home-stat-num">${unreadCount}</span><span class="home-stat-label">🔔 未読の通知</span>
         </a>
         ${isChief ? `<a href="#/self-reports" class="home-stat">
-          <span class="home-stat-num">${pendingCount}</span><span class="home-stat-label">📝 承認待ちの現場変更報告</span>
+          <span class="home-stat-num">${pendingCount}</span><span class="home-stat-label">📝 承認待ちの報告</span>
         </a>` : ''}
       </div>
     </div>
@@ -3994,13 +4000,14 @@ async function pageAdminSettings(app){
   const notifyData = await api('/notify-settings').catch(()=>null);
   const lockData = await api('/lock-settings').catch(()=>null);
   const rtoList = await api('/report-type-options').catch(()=>[]);
+  const maintenance = await api('/settings/maintenance').catch(()=>({enabled:false}));
   const stAs = PAGE_STATE.adminSettings || (PAGE_STATE.adminSettings = { open:{ pin:true } });
   const openSet = stAs.open;
   const sec = (id,title,body)=>`<details class="adm-sec" id="asec-${id}" data-sec="${id}" ${openSet[id]?'open':''}><summary>${title}</summary><div class="adm-body">${body}</div></details>`;
   app.innerHTML = `
   <h2 style="margin-bottom:8px">🔧 システム設定</h2>
   <div class="adm-nav">
-    ${[['pin','🔑 PIN'],['link','🔗 連携'],['notify','🔔 通知'],['wage','💴 時給'],['report-type','📝 報告選択肢']].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
+    ${[['pin','🔑 PIN'],['link','🔗 連携'],['notify','🔔 通知'],['wage','💴 時給'],['report-type','📝 報告選択肢'],['maintenance','🚧 メンテナンス']].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
   </div>
 
   ${sec('pin','🔑 手配者専用パスワード(PIN)', `
@@ -4083,7 +4090,16 @@ async function pageAdminSettings(app){
       <select id="rto-type"><option value="off">休暇</option><option value="ok">1日OK</option><option value="paid">有給</option><option value="x">×</option></select>
       <input id="rto-label" placeholder="表示ラベル(例:1日OKに変更)" style="width:200px">
       <button class="btn gold sm" id="rto-add">追加</button>
-    </div>`)}`;
+    </div>`)}
+
+  ${sec('maintenance','🚧 メンテナンスモード', `
+    <div class="muted" style="margin-bottom:10px">有効にすると、<b>管理者以外の全員が即座に強制ログアウト</b>され、メンテナンスを終了するまで管理者以外はログインできなくなります(ログイン画面に「現在メンテナンス中です」と表示されます)。管理者は引き続きログイン・操作できます。</div>
+    <div class="row" style="gap:10px;align-items:center;margin-bottom:12px">
+      <span>現在の状態:</span>
+      <span class="tag ${maintenance.enabled?'pending':'checked'}" id="maint-status">${maintenance.enabled?'🚧 メンテナンス中':'🟢 通常稼働中'}</span>
+    </div>
+    <button class="btn ${maintenance.enabled?'gold':'danger'}" id="maint-toggle">${maintenance.enabled?'メンテナンスを終了する':'メンテナンスを開始する(全員強制ログアウト)'}</button>
+    <span class="muted" id="maint-msg" style="margin-left:8px"></span>`)}`;
 
   app.querySelectorAll('.adm-sec').forEach(d => d.addEventListener('toggle', () => { stAs.open[d.dataset.sec] = d.open; }));
   app.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => {
@@ -4180,6 +4196,23 @@ async function pageAdminSettings(app){
       $('#imp-tok').value = d.token;
       $('#imp-msg').innerHTML = '<span class="msg ok">再発行しました</span>';
     }catch(e){ $('#imp-msg').innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
+  };
+  $('#maint-toggle').onclick = async () => {
+    const nextEnable = !maintenance.enabled;
+    const msg = nextEnable
+      ? '管理者以外の全員を今すぐ強制ログアウトし、メンテナンスを終了するまでログインできなくします。よろしいですか?'
+      : 'メンテナンスを終了し、全員が通常通りログインできるようにします。よろしいですか?';
+    if(!confirm(msg)) return;
+    try{
+      const r = await api('/settings/maintenance', { method:'POST', body:{ enabled:nextEnable } });
+      maintenance.enabled = r.enabled;
+      $('#maint-status').className = `tag ${r.enabled?'pending':'checked'}`;
+      $('#maint-status').textContent = r.enabled ? '🚧 メンテナンス中' : '🟢 通常稼働中';
+      $('#maint-toggle').className = `btn ${r.enabled?'gold':'danger'}`;
+      $('#maint-toggle').textContent = r.enabled ? 'メンテナンスを終了する' : 'メンテナンスを開始する(全員強制ログアウト)';
+      $('#maint-msg').textContent = r.enabled ? `メンテナンスを開始しました(${r.loggedOut}人を強制ログアウトしました)` : 'メンテナンスを終了しました';
+      popup(r.enabled ? 'メンテナンスモードを有効にしました' : 'メンテナンスモードを解除しました');
+    }catch(e){ $('#maint-msg').textContent = e.message; }
   };
 }
 

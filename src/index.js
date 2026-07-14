@@ -1314,6 +1314,12 @@ async function auth(req, env) {
     await env.DB.prepare('DELETE FROM sessions WHERE token=?').bind(t).run();
     return null;
   }
+  // メンテナンスモード中は、管理者以外のセッションは無効として扱う
+  // (通常はメンテナンス開始時に一括削除されるが、念のためここでも二重にチェックする)
+  if (s.role !== 'admin' && (await getSetting(env, 'maintenance_mode', '0')) === '1') {
+    await env.DB.prepare('DELETE FROM sessions WHERE token=?').bind(t).run();
+    return null;
+  }
   await env.DB.prepare('UPDATE sessions SET last_seen=? WHERE token=?').bind(now, t).run();
   return s;
 }
@@ -1348,6 +1354,9 @@ async function api(req, env, url) {
     const u = await env.DB.prepare('SELECT * FROM users WHERE regno=?').bind(regnoTrim).first();
     if (!u) { await recordFail(); return ERR('登録番号またはパスワードが違います', 401); }
     if (u.suspended) return ERR('このアカウントは停止されています。管理者にお問い合わせください。', 403);
+    if (u.role !== 'admin' && (await getSetting(env, 'maintenance_mode', '0')) === '1') {
+      return ERR('現在メンテナンス中です。しばらくしてから再度お試しください。', 503);
+    }
     if (!u.pass_hash) {
       if (password !== u.regno) { await recordFail(); return ERR('登録番号またはパスワードが違います', 401); }
       const salt = rnd();
@@ -1466,6 +1475,24 @@ async function api(req, env, url) {
     const newTok = 'tok_' + rnd().slice(0, 32);
     await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('import_token',?)").bind(newTok).run();
     return J({ token: newTok });
+  }
+  // メンテナンスモード: 有効にすると、管理者以外の全員を強制ログアウトし、
+  // メンテナンス終了まで管理者以外はログインできなくする(login/authの両方でチェックしている)。
+  if (method === 'GET' && path === '/settings/maintenance') {
+    if (me.role !== 'admin') return ERR('ページが見つかりません', 404);
+    return J({ enabled: (await getSetting(env, 'maintenance_mode', '0')) === '1' });
+  }
+  if (method === 'POST' && path === '/settings/maintenance') {
+    if (me.role !== 'admin') return ERR('管理者のみ操作できます', 403);
+    const enable = !!body.enabled;
+    await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('maintenance_mode',?)").bind(enable ? '1' : '0').run();
+    let loggedOut = 0;
+    if (enable) {
+      const targets = (await env.DB.prepare("SELECT s.token FROM sessions s JOIN users u ON u.id=s.user_id WHERE u.role!='admin'").all()).results;
+      loggedOut = targets.length;
+      await env.DB.prepare("DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE role!='admin')").run();
+    }
+    return J({ ok: 1, enabled: enable, loggedOut });
   }
   if (method === 'DELETE' && path === '/handler-mode') {
     await env.DB.prepare('UPDATE sessions SET handler=0 WHERE token=?').bind(me._tk).run();
