@@ -12,6 +12,9 @@
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",Meiryo,sans-serif;background:var(--paper);color:#222;font-size:14px}
+/* モーダル表示中、背景ページのスクロールを止める。position:fixedにしてtopをずらすのは、
+   iOS Safari等でoverflow:hiddenだけでは背景スクロールを防ぎきれないための定番の対処法。 */
+body.modal-open{position:fixed;left:0;right:0;overflow:hidden}
 button{cursor:pointer;font-family:inherit}
 input,select,textarea{font-family:inherit;font-size:13px;padding:6px 8px;border:1px solid var(--line);border-radius:4px;background:#fff}
 input:focus,select:focus,textarea:focus{outline:2px solid var(--gold);outline-offset:0}
@@ -67,7 +70,7 @@ header{background:var(--ink);color:#f3f1ea;display:flex;align-items:center;gap:1
 .drawer-sublink:hover{background:#efece1}
 .drawer-sublink:active{padding-left:40px!important}
 .drawer-sublink.active{background:#fdf6e0}
-.dropdown{position:absolute;right:12px;top:50px;background:#fff;color:#222;border:1px solid var(--line);border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.2);min-width:230px;z-index:100;overflow:hidden;animation:dropIn .18s cubic-bezier(.25,.8,.35,1)}
+.dropdown{position:fixed;right:12px;top:50px;background:#fff;color:#222;border:1px solid var(--line);border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,.2);min-width:230px;max-height:calc(100vh - 66px);overflow-y:auto;z-index:100;animation:dropIn .18s cubic-bezier(.25,.8,.35,1)}
 @keyframes dropIn{from{opacity:0;transform:translateY(-6px) scale(.97)}to{opacity:1;transform:translateY(0) scale(1)}}
 .dropdown button,.dropdown a{display:block;width:100%;text-align:left;padding:11px 14px;border:none;background:none;font-size:13px;text-decoration:none;color:#222}
 .dropdown button:hover,.dropdown a:hover{background:#f0eee7}

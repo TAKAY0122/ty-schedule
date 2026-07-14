@@ -26,6 +26,7 @@ function notFound(app){ app.innerHTML = '<div class="card" style="text-align:cen
 let TOKEN = localStorage.getItem('tk') || '';
 let ME = null;
 let UPDATE_NOTICE_SHOWN = false; // 1セッション中に一度だけ表示するためのフラグ
+let modalScrollY = 0; // モーダルを開いた時点のスクロール位置(閉じた時に復元する)
 let MONTH = new Date(Date.now()+9*3600e3).toISOString().slice(0,7);
 // ページ遷移をまたいで保持したいフィルタ・タブ・検索語などの状態。
 // #app要素はページ遷移のたびに作り直されるため、そこに状態を持たせると戻った時に消えてしまう。
@@ -174,10 +175,24 @@ async function downloadFile(path, filename){
 }
 
 /* ===== モーダル ===== */
+// モーダル表示中は背景ページのスクロールを止める(スマホでモーダルの後ろが動いてしまい
+// 「画面に固定されていない」ように見えるのを防ぐ)。modal()・popup()の両方から呼ばれる。
+function lockBodyScroll(){
+  if(document.body.classList.contains('modal-open')) return;
+  modalScrollY = window.scrollY;
+  document.body.classList.add('modal-open');
+  document.body.style.top = `-${modalScrollY}px`;
+}
+function unlockBodyScroll(){
+  document.body.classList.remove('modal-open');
+  document.body.style.top = '';
+  window.scrollTo(0, modalScrollY || 0);
+}
 function modal(html){
   $('#modal-layer').innerHTML = `<div class="modal-bg"><div class="modal"><button class="close-x">✕</button>${html}</div></div>`;
   $('#modal-layer .close-x').onclick = closeModal;
   $('#modal-layer .modal-bg').onclick = e => { if(e.target.classList.contains('modal-bg')) closeModal(); };
+  lockBodyScroll();
 }
 // モーダルを閉じる際、フェードアウト+スケールダウンのアニメーションを再生してから中身を空にする
 function closeModal(){
@@ -185,13 +200,13 @@ function closeModal(){
   if(!layer) return;
   const bg = layer.querySelector('.modal-bg');
   const box = layer.querySelector('.modal');
-  if(!bg && !box){ layer.innerHTML=''; return; }
+  if(!bg && !box){ layer.innerHTML=''; unlockBodyScroll(); return; }
   if(bg) bg.classList.add('closing');
   if(box) box.classList.add('closing');
   setTimeout(() => {
     // このタイマーが発火するまでの間に、別の新しいモーダルが開かれていた場合は消さない
     // (閉じるアニメーション中に次のモーダルを即座に開くケースがあるため)
-    if(layer.querySelector('.closing')) layer.innerHTML='';
+    if(layer.querySelector('.closing')){ layer.innerHTML=''; unlockBodyScroll(); }
   }, 160);
 }
 
@@ -204,6 +219,7 @@ function popup(message, kind){
     <div class="popup-msg">${h(message)}</div>
     <button class="btn gold" id="popup-ok" style="width:100%;margin-top:14px">OK</button>
   </div></div>`;
+  lockBodyScroll();
   const ok = $('#popup-ok');
   ok.focus();
   ok.onclick = closeModal;
