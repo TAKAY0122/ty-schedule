@@ -1237,7 +1237,7 @@ async function pageNominationsApprove(app){
 
   app.innerHTML = `
   <h2 style="margin-bottom:8px">🙋 メンバー指名の承認</h2>
-  <div class="muted" style="margin-bottom:14px">チーフから「この人が欲しい」という指名があると、ここに表示されます。承認するとスケジュールに追加されます。承認・見送りには手配者モードが必要です。</div>
+  <div class="muted" style="margin-bottom:14px">チーフから「この人が欲しい」という指名があると、ここに表示されます。承認するとスケジュールに追加されます。承認・見送りには手配者モードが必要です。専任の手配担当者が設定されていないメンバーへの指名は、同じ課の手配担当者全員に表示されます。</div>
   ${rows.length ? `
   <div class="cards" style="display:flex">
     ${rows.map(r=>`<div class="dcard" data-id="${r.id}">

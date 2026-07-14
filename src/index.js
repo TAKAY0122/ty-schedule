@@ -417,6 +417,17 @@ async function addNominatedSite(env, uid, date, site, venue, nominatorName) {
     .bind(jstTs(), uid, uid, date, beforeJson, JSON.stringify({ slots: after.map(stripRow), _src: `メンバー指名(${nominatorName})` })).run();
 }
 
+// メンバー指名の承認・却下権限があるかを判定する。管理者は常に可。対象者に専任の手配担当者
+// (manager_id)が設定されていればその人のみ、未設定(チーフが直接手配している状態)なら、
+// 同じ課の手配担当者(handler以上)なら誰でも操作できる。
+async function canDecideNomination(env, me, targetId) {
+  if (me.role === 'admin') return true;
+  const target = await env.DB.prepare('SELECT manager_id, ka FROM users WHERE id=?').bind(targetId).first();
+  if (!target) return false;
+  if (target.manager_id) return String(target.manager_id) === String(me.id);
+  return lv(me) >= 2 && target.ka === me.ka;
+}
+
 // 名前から姓(先頭の語)を取り出す。「吉崎 天晴」→「吉崎」/「吉崎天晴」→そのまま
 function surname(name) {
   const n = String(name || '').trim();
@@ -2252,15 +2263,24 @@ async function api(req, env, url) {
     ).bind(me.id, targetId, date, site, venue, 'pending', jstTs()).run();
     const msg = `🙋 ${me.name}さんから、${date}の現場「${[site, venue].filter(Boolean).join('／')}」に${target.name}さんを希望する報告がありました。承認をお願いします。`;
     try {
-      if (target.manager_id) await notify(env, [Number(target.manager_id)], 'nomination', msg, '#/nominations');
-      else {
-        const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
-        if (admins.length) await notify(env, admins.map(a => a.id), 'nomination', msg, '#/nominations');
+      if (target.manager_id) {
+        await notify(env, [Number(target.manager_id)], 'nomination', msg, '#/nominations');
+      } else {
+        // 専任の手配担当者(manager_id)が設定されていない場合は、対象者と同じ課の
+        // 手配担当者(handler以上)全員に通知する。同じ課に該当者がいなければ管理者に通知する。
+        const targetFull = await env.DB.prepare('SELECT ka FROM users WHERE id=?').bind(targetId).first();
+        let recipients = (await env.DB.prepare(
+          "SELECT id FROM users WHERE ka=? AND role IN ('handler','admin') AND COALESCE(suspended,0)=0"
+        ).bind(targetFull ? targetFull.ka : '').all()).results;
+        if (!recipients.length) {
+          recipients = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
+        }
+        if (recipients.length) await notify(env, recipients.map(r => r.id), 'nomination', msg, '#/nominations');
       }
     } catch (e) {}
     return J({ ok: 1 });
   }
-  // 承認待ちの指名一覧(自分が手配担当している人への指名。管理者は全員分)
+  // 承認待ちの指名一覧: 自分が直接担当している人 + 専任の手配担当者がいない同じ課の人(管理者は全員分)
   if (method === 'GET' && path === '/site-nominations') {
     if (lv(me) < 1) return ERR('ページが見つかりません', 404);
     const rows = me.role === 'admin'
@@ -2268,8 +2288,10 @@ async function api(req, env, url) {
           `SELECT sn.*, nom.name AS nominator_name, t.name AS target_name, t.regno AS target_regno FROM site_nominations sn JOIN users nom ON nom.id=sn.nominator_id JOIN users t ON t.id=sn.target_id WHERE sn.status='pending' ORDER BY sn.created_at DESC`
         ).all()).results
       : (await env.DB.prepare(
-          `SELECT sn.*, nom.name AS nominator_name, t.name AS target_name, t.regno AS target_regno FROM site_nominations sn JOIN users nom ON nom.id=sn.nominator_id JOIN users t ON t.id=sn.target_id WHERE sn.status='pending' AND t.manager_id=? ORDER BY sn.created_at DESC`
-        ).bind(me.id).all()).results;
+          `SELECT sn.*, nom.name AS nominator_name, t.name AS target_name, t.regno AS target_regno FROM site_nominations sn JOIN users nom ON nom.id=sn.nominator_id JOIN users t ON t.id=sn.target_id
+           WHERE sn.status='pending' AND (t.manager_id=? OR (t.manager_id IS NULL AND t.ka=(SELECT ka FROM users WHERE id=?) AND ? IN ('handler','admin')))
+           ORDER BY sn.created_at DESC`
+        ).bind(me.id, me.id, me.role).all()).results;
     return J(rows);
   }
   let snm;
@@ -2278,8 +2300,7 @@ async function api(req, env, url) {
     const nom = await env.DB.prepare('SELECT * FROM site_nominations WHERE id=?').bind(id).first();
     if (!nom) return ERR('見つかりません', 404);
     if (nom.status !== 'pending') return ERR('すでに処理されています');
-    const target = await env.DB.prepare('SELECT manager_id FROM users WHERE id=?').bind(nom.target_id).first();
-    if (me.role !== 'admin' && String(target ? target.manager_id : '') !== String(me.id)) return ERR('権限がありません', 403);
+    if (!(await canDecideNomination(env, me, nom.target_id))) return ERR('権限がありません', 403);
     const nominator = await env.DB.prepare('SELECT name FROM users WHERE id=?').bind(nom.nominator_id).first();
     await addNominatedSite(env, nom.target_id, nom.date, nom.site, nom.venue, nominator ? nominator.name : '');
     await env.DB.prepare('UPDATE site_nominations SET status=?, decided_at=?, decided_by=? WHERE id=?').bind('approved', jstTs(), me.id, id).run();
@@ -2295,8 +2316,7 @@ async function api(req, env, url) {
     const nom = await env.DB.prepare('SELECT * FROM site_nominations WHERE id=?').bind(id).first();
     if (!nom) return ERR('見つかりません', 404);
     if (nom.status !== 'pending') return ERR('すでに処理されています');
-    const target = await env.DB.prepare('SELECT manager_id FROM users WHERE id=?').bind(nom.target_id).first();
-    if (me.role !== 'admin' && String(target ? target.manager_id : '') !== String(me.id)) return ERR('権限がありません', 403);
+    if (!(await canDecideNomination(env, me, nom.target_id))) return ERR('権限がありません', 403);
     await env.DB.prepare('UPDATE site_nominations SET status=?, decided_at=?, decided_by=? WHERE id=?').bind('rejected', jstTs(), me.id, id).run();
     try {
       await notify(env, [nom.nominator_id], 'nomination',
