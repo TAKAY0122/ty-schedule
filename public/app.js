@@ -193,9 +193,27 @@ function modal(html){
   $('#modal-layer .close-x').onclick = closeModal;
   $('#modal-layer .modal-bg').onclick = e => { if(e.target.classList.contains('modal-bg')) closeModal(); };
   lockBodyScroll();
+  fitModalToViewport();
+  // キーボードの開閉などで表示領域の高さが変わった時も、その都度モーダルを追従させる
+  if(window.visualViewport) window.visualViewport.addEventListener('resize', fitModalToViewport);
+}
+// iOS Safari等では、アドレスバー/ツールバーの表示状態によって実際に見えている高さが
+// CSSのvh/dvh単位の計算とズレることがあり、モーダルが画面下に偏って表示されることがある。
+// visualViewport(実際に見えている領域)が使える環境では、その高さをそのままpxで指定して
+// 確実に中央に来るようにする。
+function fitModalToViewport(){
+  const bg = document.querySelector('#modal-layer .modal-bg');
+  if(!bg) return;
+  if(window.visualViewport){
+    bg.style.height = window.visualViewport.height + 'px';
+    bg.style.top = window.visualViewport.offsetTop + 'px';
+  } else {
+    bg.style.height = window.innerHeight + 'px';
+  }
 }
 // モーダルを閉じる際、フェードアウト+スケールダウンのアニメーションを再生してから中身を空にする
 function closeModal(){
+  if(window.visualViewport) window.visualViewport.removeEventListener('resize', fitModalToViewport);
   const layer = $('#modal-layer');
   if(!layer) return;
   const bg = layer.querySelector('.modal-bg');
@@ -220,6 +238,8 @@ function popup(message, kind){
     <button class="btn gold" id="popup-ok" style="width:100%;margin-top:14px">OK</button>
   </div></div>`;
   lockBodyScroll();
+  fitModalToViewport();
+  if(window.visualViewport) window.visualViewport.addEventListener('resize', fitModalToViewport);
   const ok = $('#popup-ok');
   ok.focus();
   ok.onclick = closeModal;
