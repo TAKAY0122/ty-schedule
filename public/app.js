@@ -302,7 +302,7 @@ function openHandlerPin(onSuccess){
     <input id="hp-pin" type="tel" inputmode="numeric" autocomplete="off" placeholder="PIN" style="width:100%;font-size:18px;letter-spacing:4px;text-align:center;padding:12px">
     <div id="hp-err"></div>
     <div class="row" style="margin-top:14px"><button class="btn gold" id="hp-go" style="flex:1">切り替える</button></div>`);
-  const pin = $('#hp-pin'); if(pin) pin.focus();
+  const pin = $('#hp-pin'); if(pin) setTimeout(() => pin.focus(), 80);
   const go = async () => {
     const v = $('#hp-pin').value.trim();
     if(!v){ $('#hp-err').innerHTML='<div class="msg err">PINを入力してください</div>'; return; }
@@ -585,6 +585,15 @@ window.addEventListener('hashchange', () => {
   render();
 });
 window.addEventListener('load', render);
+// 通知ドロップダウンは、開いた状態で他の場所をタップ/クリックしたら閉じる
+// (ベル・ドロップダウン自体の内側クリックは、それぞれ個別のonclickで処理されるので対象外)
+document.addEventListener('click', (e) => {
+  const dd = document.getElementById('dd');
+  const bell = document.getElementById('bell');
+  if(dd && dd.innerHTML && bell && !dd.contains(e.target) && !bell.contains(e.target)){
+    dd.innerHTML = '';
+  }
+});
 
 // ホーム画面へ移動する。location.hash の代入は、値が変化する場合のみ hashchange イベントを
 // 発火させる(その場合はイベント側で render() が呼ばれるため、ここでは呼ばない)。既にハッシュが
