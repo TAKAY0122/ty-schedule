@@ -417,15 +417,18 @@ async function addNominatedSite(env, uid, date, site, venue, nominatorName) {
     .bind(jstTs(), uid, uid, date, beforeJson, JSON.stringify({ slots: after.map(stripRow), _src: `メンバー指名(${nominatorName})` })).run();
 }
 
-// メンバー指名の承認・却下権限があるかを判定する。管理者は常に可。対象者に専任の手配担当者
-// (manager_id)が設定されていればその人のみ、未設定(チーフが直接手配している状態)なら、
-// 同じ課の手配担当者(handler以上)なら誰でも操作できる。
-async function canDecideNomination(env, me, targetId) {
+// 「対象ユーザーに関する手配関連の申請(メンバー指名・現場変更報告)」を承認・却下する権限が
+// あるかを判定する。管理者は常に可。チーフ(手配担当者ではない)は、たとえ何らかの理由で
+// manager_idに設定されていたとしても対象外とする(承認業務は手配担当者以上に限定するため)。
+// 専任の手配担当者(manager_id)が設定されていればその人のみ、未設定(チーフが直接手配している
+// 状態)なら、同じ課の手配担当者(handler以上)なら誰でも操作できる。
+async function canManageTarget(env, me, targetId) {
   if (me.role === 'admin') return true;
+  if (lv(me) < 2) return false;
   const target = await env.DB.prepare('SELECT manager_id, ka FROM users WHERE id=?').bind(targetId).first();
   if (!target) return false;
   if (target.manager_id) return String(target.manager_id) === String(me.id);
-  return lv(me) >= 2 && target.ka === me.ka;
+  return target.ka === me.ka;
 }
 
 // 名前から姓(先頭の語)を取り出す。「吉崎 天晴」→「吉崎」/「吉崎天晴」→そのまま
@@ -1338,7 +1341,7 @@ async function auth(req, env) {
 async function api(req, env, url) {
   const path = url.pathname.replace(/^\/api/, '');
   const method = req.method;
-  const body = method === 'GET' || method === 'DELETE' ? {} : await req.json().catch(() => ({}));
+  const body = method === 'GET' ? {} : await req.json().catch(() => ({}));
 
   // ---- 認証不要 ----
   if (method === 'POST' && path === '/login') {
@@ -2282,16 +2285,16 @@ async function api(req, env, url) {
   }
   // 承認待ちの指名一覧: 自分が直接担当している人 + 専任の手配担当者がいない同じ課の人(管理者は全員分)
   if (method === 'GET' && path === '/site-nominations') {
-    if (lv(me) < 1) return ERR('ページが見つかりません', 404);
+    if (lv(me) < 2) return ERR('ページが見つかりません', 404);
     const rows = me.role === 'admin'
       ? (await env.DB.prepare(
           `SELECT sn.*, nom.name AS nominator_name, t.name AS target_name, t.regno AS target_regno FROM site_nominations sn JOIN users nom ON nom.id=sn.nominator_id JOIN users t ON t.id=sn.target_id WHERE sn.status='pending' ORDER BY sn.created_at DESC`
         ).all()).results
       : (await env.DB.prepare(
           `SELECT sn.*, nom.name AS nominator_name, t.name AS target_name, t.regno AS target_regno FROM site_nominations sn JOIN users nom ON nom.id=sn.nominator_id JOIN users t ON t.id=sn.target_id
-           WHERE sn.status='pending' AND (t.manager_id=? OR (t.manager_id IS NULL AND t.ka=(SELECT ka FROM users WHERE id=?) AND ? IN ('handler','admin')))
+           WHERE sn.status='pending' AND (t.manager_id=? OR (t.manager_id IS NULL AND t.ka=(SELECT ka FROM users WHERE id=?)))
            ORDER BY sn.created_at DESC`
-        ).bind(me.id, me.id, me.role).all()).results;
+        ).bind(me.id, me.id).all()).results;
     return J(rows);
   }
   let snm;
@@ -2300,7 +2303,7 @@ async function api(req, env, url) {
     const nom = await env.DB.prepare('SELECT * FROM site_nominations WHERE id=?').bind(id).first();
     if (!nom) return ERR('見つかりません', 404);
     if (nom.status !== 'pending') return ERR('すでに処理されています');
-    if (!(await canDecideNomination(env, me, nom.target_id))) return ERR('権限がありません', 403);
+    if (!(await canManageTarget(env, me, nom.target_id))) return ERR('権限がありません', 403);
     const nominator = await env.DB.prepare('SELECT name FROM users WHERE id=?').bind(nom.nominator_id).first();
     await addNominatedSite(env, nom.target_id, nom.date, nom.site, nom.venue, nominator ? nominator.name : '');
     await env.DB.prepare('UPDATE site_nominations SET status=?, decided_at=?, decided_by=? WHERE id=?').bind('approved', jstTs(), me.id, id).run();
@@ -2316,7 +2319,7 @@ async function api(req, env, url) {
     const nom = await env.DB.prepare('SELECT * FROM site_nominations WHERE id=?').bind(id).first();
     if (!nom) return ERR('見つかりません', 404);
     if (nom.status !== 'pending') return ERR('すでに処理されています');
-    if (!(await canDecideNomination(env, me, nom.target_id))) return ERR('権限がありません', 403);
+    if (!(await canManageTarget(env, me, nom.target_id))) return ERR('権限がありません', 403);
     await env.DB.prepare('UPDATE site_nominations SET status=?, decided_at=?, decided_by=? WHERE id=?').bind('rejected', jstTs(), me.id, id).run();
     try {
       await notify(env, [nom.nominator_id], 'nomination',
@@ -2378,14 +2381,16 @@ async function api(req, env, url) {
 
   // 承認待ちの現場変更報告一覧(自分が手配担当している人からの分。管理者は全員分)
   if (method === 'GET' && path === '/self-reports') {
-    if (lv(me) < 1) return ERR('ページが見つかりません', 404);
+    if (lv(me) < 2) return ERR('ページが見つかりません', 404);
     const rows = me.role === 'admin'
       ? (await env.DB.prepare(
           `SELECT sr.*, u.name AS user_name, u.regno AS user_regno FROM self_reports sr JOIN users u ON u.id=sr.user_id WHERE sr.status='pending' ORDER BY sr.created_at DESC`
         ).all()).results
       : (await env.DB.prepare(
-          `SELECT sr.*, u.name AS user_name, u.regno AS user_regno FROM self_reports sr JOIN users u ON u.id=sr.user_id WHERE sr.status='pending' AND u.manager_id=? ORDER BY sr.created_at DESC`
-        ).bind(me.id).all()).results;
+          `SELECT sr.*, u.name AS user_name, u.regno AS user_regno FROM self_reports sr JOIN users u ON u.id=sr.user_id
+           WHERE sr.status='pending' AND (u.manager_id=? OR (u.manager_id IS NULL AND u.ka=(SELECT ka FROM users WHERE id=?)))
+           ORDER BY sr.created_at DESC`
+        ).bind(me.id, me.id).all()).results;
     return J(rows);
   }
   let srm;
@@ -2395,8 +2400,7 @@ async function api(req, env, url) {
     const rep = await env.DB.prepare('SELECT * FROM self_reports WHERE id=?').bind(id).first();
     if (!rep) return ERR('見つかりません', 404);
     if (rep.status !== 'pending') return ERR('すでに処理されています');
-    const tgt = await env.DB.prepare('SELECT manager_id FROM users WHERE id=?').bind(rep.user_id).first();
-    if (me.role !== 'admin' && String(tgt ? tgt.manager_id : '') !== String(me.id)) return ERR('権限がありません', 403);
+    if (!(await canManageTarget(env, me, rep.user_id))) return ERR('権限がありません', 403);
     // 承認時に、通常の現場入力と同じ項目(現場名・会場名・時刻・業務名など)を指定できる。
     // 指定がなければ報告内容(現場名/会場名)のみで反映される。
     const detail = rep.type !== 'work'
@@ -2430,8 +2434,7 @@ async function api(req, env, url) {
     const rep = await env.DB.prepare('SELECT * FROM self_reports WHERE id=?').bind(id).first();
     if (!rep) return ERR('見つかりません', 404);
     if (rep.status !== 'pending') return ERR('すでに処理されています');
-    const tgt = await env.DB.prepare('SELECT manager_id FROM users WHERE id=?').bind(rep.user_id).first();
-    if (me.role !== 'admin' && String(tgt ? tgt.manager_id : '') !== String(me.id)) return ERR('権限がありません', 403);
+    if (!(await canManageTarget(env, me, rep.user_id))) return ERR('権限がありません', 403);
     await env.DB.prepare('UPDATE self_reports SET status=?, decided_at=?, decided_by=? WHERE id=?').bind('rejected', jstTs(), me.id, id).run();
     const typeLabelRow2 = rep.type !== 'work' ? await env.DB.prepare('SELECT label FROM report_type_options WHERE type=?').bind(rep.type).first() : null;
     const label = rep.type === 'work' ? [rep.site, rep.venue].filter(Boolean).join('／') : ((typeLabelRow2 && typeLabelRow2.label) || rep.type);

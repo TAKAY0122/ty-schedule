@@ -776,13 +776,13 @@ function renderShell(hash){
     { label:'📅 スケジュール', show:true, children:[
       ['#/schedule','📅 マイスケジュール'],
       ...(canEdit ? [['#/edit','✏️ スケジュール入力']] : []),
-      ...(isChief ? [['#/self-reports','📝 現場変更報告の承認']] : []),
+      ...(isHandlerRole ? [['#/self-reports','📝 現場変更報告の承認']] : []),
     ]},
     { label:'🙋 希望', show:true, children:[
       ['#/availability','🙋 休み希望・稼働時間の提出'],
       ...(isHandlerRole ? [['#/availability-team','📋 チームの希望一覧']] : []),
       ...(isChief ? [['#/nominate','👤 メンバーを希望する']] : []),
-      ...(isChief ? [['#/nominations','✅ メンバー指名の承認']] : []),
+      ...(isHandlerRole ? [['#/nominations','✅ メンバー指名の承認']] : []),
     ]},
     { path:'#/sites', label:'🏟️ 現場一覧', show:isChief },
     { label:'👥 メンバー', show:isChief, children:[
@@ -1229,7 +1229,7 @@ async function pageNominate(app){
 
 /* ===== メンバー指名の承認(手配担当者向け) ===== */
 async function pageNominationsApprove(app){
-  if(LV[ME.role] < 1){ notFound(app); return; }
+  if(LV[ME.role] < 2){ notFound(app); return; }
   app.innerHTML = '<h2>🙋 メンバー指名の承認</h2><div class="card"><div class="muted">読み込み中…</div></div>';
   let rows;
   try{ rows = await api('/site-nominations'); }
@@ -1376,7 +1376,7 @@ async function pageHome(app){
   const [schedData, notifData, selfReports] = await Promise.all([
     api(`/schedule?uid=${ME.id}&month=${month}`).catch(()=>null),
     api('/notifications').catch(()=>({ items:[], unread:0 })),
-    isChief ? api('/self-reports').catch(()=>[]) : Promise.resolve([]),
+    isHandlerRole ? api('/self-reports').catch(()=>[]) : Promise.resolve([]),
   ]);
 
   const entries = (schedData && schedData.entries) || {};
@@ -1409,12 +1409,12 @@ async function pageHome(app){
     ['#/edit','✏️','スケジュール入力', ME.handler===1],
     ['#/availability-team','📋','チーム希望一覧', isHandlerRole],
     ['#/nominate','👤','メンバー指名', isChief],
-    ['#/nominations','✅','指名の承認', isChief],
+    ['#/nominations','✅','指名の承認', isHandlerRole],
     ['#/sites','🏟️','現場一覧', isChief],
     ['#/members/mine','📋',`${h(ME.name)}手配`, isHandlerRole],
     ['#/members','👥','メンバー一覧', isChief],
     ['#/summary','📊','稼働サマリー', isChief],
-    ['#/self-reports','📝','変更報告承認', isChief],
+    ['#/self-reports','📝','変更報告承認', isHandlerRole],
     ['#/report','🆕','新人報告', true],
     ['#/reports','📋','報告一覧', true],
     ['#/import','📥','スプレッド取込', has('import_data')],
@@ -1434,7 +1434,7 @@ async function pageHome(app){
         <a href="#/schedule" class="home-stat">
           <span class="home-stat-num">${unreadCount}</span><span class="home-stat-label">🔔 未読の通知</span>
         </a>
-        ${isChief ? `<a href="#/self-reports" class="home-stat">
+        ${isHandlerRole ? `<a href="#/self-reports" class="home-stat">
           <span class="home-stat-num">${pendingCount}</span><span class="home-stat-label">📝 承認待ちの報告</span>
         </a>` : ''}
       </div>
@@ -3052,7 +3052,7 @@ async function pageImport(app){
 /* ===== ログイン中メンバー・編集履歴(handler_tools権限・専用ページ) ===== */
 /* ===== 現場変更報告の承認(手配担当者・管理者向け) ===== */
 async function pageSelfReports(app){
-  if(LV[ME.role] < 1){ notFound(app); return; }
+  if(LV[ME.role] < 2){ notFound(app); return; }
   app.innerHTML = '<h2>📝 現場変更報告の承認</h2><div class="card"><div class="muted">読み込み中…</div></div>';
   let rows, typeOptions;
   try{ [rows, typeOptions] = await Promise.all([api('/self-reports'), api('/report-type-options').catch(()=>[])]); }
