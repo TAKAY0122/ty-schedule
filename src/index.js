@@ -329,6 +329,40 @@ function stripRow(r) {
   return { type: r.type, site: r.site, venue: r.venue, tin: r.tin, tout: r.tout, pay: r.pay, note: r.note, duty: r.duty, load_end: r.load_end, show_end: r.show_end, multi: r.multi };
 }
 
+// 編集履歴1件を取り消す(before_jsonの状態に、対象者のその日のスケジュールを復元する)。
+// 単一取り消し・一括取り消しの両方から呼ばれる共通処理。失敗時は例外を投げる(呼び出し側でcatchする)。
+async function undoHistoryEntry(env, id, me) {
+  const hist = await env.DB.prepare('SELECT * FROM schedule_history WHERE id=?').bind(id).first();
+  if (!hist) throw new Error(`履歴#${id}が見つかりません`);
+  const uid = hist.target_id, date = hist.date;
+  let restoreRows;
+  try {
+    const parsed = JSON.parse(hist.before_json);
+    restoreRows = Array.isArray(parsed) ? parsed : (parsed.slots || []);
+  } catch (e) { throw new Error(`履歴#${id}は形式が壊れているため復元できません`); }
+
+  const target = await env.DB.prepare('SELECT rank FROM users WHERE id=?').bind(uid).first();
+  const rank = target ? target.rank : '';
+  const resolve = await loadWageResolver(env);
+  const currentRows = (await env.DB.prepare('SELECT * FROM schedule WHERE user_id=? AND date=? ORDER BY slot').bind(uid, date).all()).results;
+  const currentJson = JSON.stringify(currentRows.map(stripRow));
+
+  await env.DB.prepare('DELETE FROM schedule WHERE user_id=? AND date=?').bind(uid, date).run();
+  let slot = 0;
+  for (const r of restoreRows) {
+    let hours = 0, overtime = 0, pay = r.pay || 0;
+    if (r.type === 'work' || r.type === 'paid') {
+      const c = calcPay({ rank, date, tin: r.tin, tout: r.tout, duty: r.duty, loadEnd: r.load_end, showEnd: r.show_end, multi: r.multi ? 1 : 0 }, resolve);
+      if (c) ({ hours, overtime, pay } = c);
+    }
+    await env.DB.prepare('INSERT INTO schedule(user_id,date,slot,type,site,venue,tin,tout,hours,overtime,pay,note,duty,load_end,show_end,multi) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+      .bind(uid, date, slot, r.type || 'work', r.site || '', r.venue || '', r.tin || '', r.tout || '', hours, overtime, pay, r.note || '', r.duty || '', r.load_end || '', r.show_end || '', r.multi ? 1 : 0).run();
+    slot++;
+  }
+  await env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
+    .bind(jstTs(), me.id, uid, date, currentJson, JSON.stringify({ slots: restoreRows, _src: `編集の取り消し(履歴#${id}を元に復元、実行者:${me.name})` })).run();
+}
+
 // 本人による現場変更の報告を、実際にscheduleへ反映する共通処理。
 // チーフ以上の即時反映(詳細なし)と、承認時(手配担当者が現場名・時刻・業務名などを補って確定する)の両方から呼ばれる。
 // detail: { type:'work'|'off', site, venue, tin, tout, duty, load_end, show_end, multi, note }
@@ -2720,37 +2754,24 @@ async function api(req, env, url) {
   let hum;
   if (method === 'POST' && (hum = path.match(/^\/history\/(\d+)\/undo$/))) {
     if (!handlerMode && !has(me, 'handler_tools')) return ERR('取り消しには手配モードが必要です', 403);
-    const id = Number(hum[1]);
-    const hist = await env.DB.prepare('SELECT * FROM schedule_history WHERE id=?').bind(id).first();
-    if (!hist) return ERR('履歴が見つかりません', 404);
-    const uid = hist.target_id, date = hist.date;
-    let restoreRows;
-    try {
-      const parsed = JSON.parse(hist.before_json);
-      restoreRows = Array.isArray(parsed) ? parsed : (parsed.slots || []);
-    } catch (e) { return ERR('この履歴は形式が壊れているため復元できません'); }
-
-    const target = await env.DB.prepare('SELECT rank FROM users WHERE id=?').bind(uid).first();
-    const rank = target ? target.rank : '';
-    const resolve = await loadWageResolver(env);
-    const currentRows = (await env.DB.prepare('SELECT * FROM schedule WHERE user_id=? AND date=? ORDER BY slot').bind(uid, date).all()).results;
-    const currentJson = JSON.stringify(currentRows.map(stripRow));
-
-    await env.DB.prepare('DELETE FROM schedule WHERE user_id=? AND date=?').bind(uid, date).run();
-    let slot = 0;
-    for (const r of restoreRows) {
-      let hours = 0, overtime = 0, pay = r.pay || 0;
-      if (r.type === 'work' || r.type === 'paid') {
-        const c = calcPay({ rank, date, tin: r.tin, tout: r.tout, duty: r.duty, loadEnd: r.load_end, showEnd: r.show_end, multi: r.multi ? 1 : 0 }, resolve);
-        if (c) ({ hours, overtime, pay } = c);
-      }
-      await env.DB.prepare('INSERT INTO schedule(user_id,date,slot,type,site,venue,tin,tout,hours,overtime,pay,note,duty,load_end,show_end,multi) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-        .bind(uid, date, slot, r.type || 'work', r.site || '', r.venue || '', r.tin || '', r.tout || '', hours, overtime, pay, r.note || '', r.duty || '', r.load_end || '', r.show_end || '', r.multi ? 1 : 0).run();
-      slot++;
-    }
-    await env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
-      .bind(jstTs(), me.id, uid, date, currentJson, JSON.stringify({ slots: restoreRows, _src: `編集の取り消し(履歴#${id}を元に復元、実行者:${me.name})` })).run();
+    try { await undoHistoryEntry(env, Number(hum[1]), me); }
+    catch (e) { return ERR(e.message); }
     return J({ ok: 1 });
+  }
+  // 複数の履歴をまとめて取り消す。新しいもの(id降順)から順に1件ずつ処理することで、
+  // 同じ対象者・同じ日に複数の変更が選ばれた場合でも、直後の変更が古い状態を上書きしてしまう
+  // ことなく、正しく元の状態まで辿り着けるようにする。
+  if (method === 'POST' && path === '/history/undo-batch') {
+    if (!handlerMode && !has(me, 'handler_tools')) return ERR('取り消しには手配モードが必要です', 403);
+    const ids = Array.isArray(body.ids) ? body.ids.map(Number).filter(n => n > 0) : [];
+    if (!ids.length) return ERR('取り消す履歴を選択してください');
+    const sorted = [...new Set(ids)].sort((a, b) => b - a);
+    let okCount = 0; const failed = [];
+    for (const id of sorted) {
+      try { await undoHistoryEntry(env, id, me); okCount++; }
+      catch (e) { failed.push({ id, error: e.message }); }
+    }
+    return J({ ok: 1, okCount, failed });
   }
 
   // ---- 新人報告 ----

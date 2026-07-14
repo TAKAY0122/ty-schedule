@@ -898,26 +898,64 @@ async function pollBell(){
 // 個人スケジュール画面から、その人の変更履歴(誰が・いつ・どこを・どう変更したか)を見る。
 // 閲覧は手配者以上(pageSchedule側で呼び出しボタンの表示を制御済み)。
 async function openScheduleHistory(uid, name){
-  modal(`<h3>${h(name)} さんの変更履歴</h3><div class="muted" style="margin-bottom:10px">直近500件を新しい順に表示します。誤った変更は「取り消す」で1つ前の状態に戻せます。</div><div id="sh-list" class="muted">読み込み中…</div>`);
+  modal(`<h3>${h(name)} さんの変更履歴</h3><div class="muted" style="margin-bottom:10px">直近500件を新しい順に表示します。誤った変更は選択して「取り消す」で1つ前の状態に戻せます。</div>
+    <div class="row" id="sh-bulk-bar" style="margin-bottom:10px;gap:8px;align-items:center">
+      <button class="btn danger sm" id="sh-bulk-undo" disabled>選択した項目を取り消す(<span id="sh-sel-count">0</span>)</button>
+    </div>
+    <div id="sh-list" class="muted">読み込み中…</div>`);
   const render2 = async () => {
     try{
       const hist = await api(`/history?uid=${uid}`);
       const el = $('#sh-list'); if(!el) return;
       el.innerHTML = hist.length ? hist.map(x=>`<div class="dcard" style="margin-bottom:8px">
-        <div class="dcard-head"><span class="dcard-title">${h(x.date)}</span><span class="dcard-sub">${h(x.editor_name)}</span></div>
+        <div class="dcard-head">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" class="sh-check" data-id="${x.id}" data-date="${h(x.date)}">
+            <span class="dcard-title">${h(x.date)}</span>
+          </label>
+          <span class="dcard-sub">${h(x.editor_name)}</span>
+        </div>
         <div class="drow"><span class="dk">変更</span><span class="dv">${h(summarizeHistory(x.before_json, x.after_json))}</span></div>
         <div class="drow"><span class="dk">日時</span><span class="dv dcard-sub">${h(x.ts)}</span></div>
         <div class="row" style="margin-top:6px"><button class="btn ghost xs sh-undo" data-id="${x.id}" data-date="${h(x.date)}">↩️ この変更を取り消す</button></div>
       </div>`).join('') : '<div class="muted" style="text-align:center;padding:16px 0">変更履歴はありません</div>';
+
+      const updateBulkBar = () => {
+        const checked = el.querySelectorAll('.sh-check:checked');
+        $('#sh-sel-count').textContent = checked.length;
+        $('#sh-bulk-undo').disabled = checked.length === 0;
+        $('#sh-bulk-bar').style.display = hist.length ? '' : 'none';
+      };
+      el.querySelectorAll('.sh-check').forEach(cb => cb.onchange = updateBulkBar);
+      updateBulkBar();
+
+      const undoIds = async (ids) => {
+        try{
+          const r = await api('/history/undo-batch', { method:'POST', body:{ ids } });
+          if(r.failed && r.failed.length) popup(`${r.okCount}件を取り消しました(${r.failed.length}件は失敗)`, 'error');
+          else popup(`${r.okCount}件を取り消しました`);
+          render2();
+        }catch(e){ popup(e.message,'error'); }
+      };
+
       el.querySelectorAll('.sh-undo').forEach(b => b.onclick = () => {
-        const doUndo = async () => {
+        const doUndo = () => {
           if(!confirm(`${b.dataset.date} の内容を、この変更が行われる前の状態に戻します。よろしいですか？`)) return;
-          try{ await api(`/history/${b.dataset.id}/undo`, { method:'POST' }); popup('取り消しました'); render2(); }
-          catch(e){ popup(e.message,'error'); }
+          undoIds([Number(b.dataset.id)]);
         };
         if(ME.handler !== 1 && ME.role !== 'admin'){ openHandlerPin(doUndo); return; }
         doUndo();
       });
+      $('#sh-bulk-undo').onclick = () => {
+        const ids = [...el.querySelectorAll('.sh-check:checked')].map(cb => Number(cb.dataset.id));
+        if(!ids.length) return;
+        const doUndo = () => {
+          if(!confirm(`選択した${ids.length}件の変更を、それぞれ行われる前の状態に戻します。よろしいですか？`)) return;
+          undoIds(ids);
+        };
+        if(ME.handler !== 1 && ME.role !== 'admin'){ openHandlerPin(doUndo); return; }
+        doUndo();
+      };
     }catch(e){
       const el = $('#sh-list'); if(el) el.innerHTML = `<div class="msg err">${h(e.message)}</div>`;
     }
@@ -3133,26 +3171,65 @@ async function pageHandlerStatus(app){
 
   const loadHistory = async () => {
     const hist = await api('/history');
-    $('#hd-history').innerHTML = hist.length ? `<div class="sched-wrap pc-only"><table class="list">
-      <tr><th>日時</th><th>編集者</th><th>対象メンバー</th><th>対象日</th><th>変更内容</th><th></th></tr>
-      ${hist.map(x=>`<tr><td>${h(x.ts)}</td><td>${h(x.editor_name)}</td><td>${x.target_id?`<span class="name-link" data-goto-uid="${x.target_id}">${h(x.target_name)}</span>`:h(x.target_name)}</td><td>${h(x.date)}</td><td>${h(summarize(x.before_json, x.after_json))}</td><td><button class="btn ghost xs hd-undo" data-id="${x.id}" data-date="${h(x.date)}">↩️ 取り消す</button></td></tr>`).join('')}
+    $('#hd-history').innerHTML = hist.length ? `
+    <div class="row" id="hd-bulk-bar" style="margin-bottom:10px;gap:8px;align-items:center">
+      <button class="btn danger sm" id="hd-bulk-undo" disabled>選択した項目を取り消す(<span id="hd-sel-count">0</span>)</button>
+    </div>
+    <div class="sched-wrap pc-only"><table class="list">
+      <tr><th></th><th>日時</th><th>編集者</th><th>対象メンバー</th><th>対象日</th><th>変更内容</th><th></th></tr>
+      ${hist.map(x=>`<tr><td><input type="checkbox" class="hd-check" data-id="${x.id}" data-date="${h(x.date)}"></td><td>${h(x.ts)}</td><td>${h(x.editor_name)}</td><td>${x.target_id?`<span class="name-link" data-goto-uid="${x.target_id}">${h(x.target_name)}</span>`:h(x.target_name)}</td><td>${h(x.date)}</td><td>${h(summarize(x.before_json, x.after_json))}</td><td><button class="btn ghost xs hd-undo" data-id="${x.id}" data-date="${h(x.date)}">↩️ 取り消す</button></td></tr>`).join('')}
     </table></div>
     <div class="cards sp-only">${hist.map(x=>`<div class="dcard">
-      <div class="dcard-head"><span class="dcard-title">${x.target_id?`<span class="name-link" data-goto-uid="${x.target_id}">${h(x.target_name)}</span>`:h(x.target_name)} / ${h(x.date)}</span><span class="dcard-sub">${h(x.editor_name)}</span></div>
+      <div class="dcard-head">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" class="hd-check" data-id="${x.id}" data-date="${h(x.date)}">
+          <span class="dcard-title">${x.target_id?`<span class="name-link" data-goto-uid="${x.target_id}">${h(x.target_name)}</span>`:h(x.target_name)} / ${h(x.date)}</span>
+        </label>
+        <span class="dcard-sub">${h(x.editor_name)}</span>
+      </div>
       <div class="drow"><span class="dk">変更</span><span class="dv">${h(summarize(x.before_json, x.after_json))}</span></div>
       <div class="drow"><span class="dk">日時</span><span class="dv dcard-sub">${h(x.ts)}</span></div>
       <div class="row" style="margin-top:6px"><button class="btn ghost xs hd-undo" data-id="${x.id}" data-date="${h(x.date)}">↩️ この変更を取り消す</button></div>
     </div>`).join('')}</div>` : '<div class="muted">編集履歴はありません</div>';
     wireNameLinks($('#hd-history'));
+
+    const updateBulkBar = () => {
+      const checked = $('#hd-history').querySelectorAll('.hd-check:checked');
+      const cnt = $('#hd-sel-count'), btn = $('#hd-bulk-undo');
+      if(cnt) cnt.textContent = checked.length;
+      if(btn) btn.disabled = checked.length === 0;
+    };
+    $('#hd-history').querySelectorAll('.hd-check').forEach(cb => cb.onchange = updateBulkBar);
+    updateBulkBar();
+
+    const undoIds = async (ids) => {
+      try{
+        const r = await api('/history/undo-batch', { method:'POST', body:{ ids } });
+        if(r.failed && r.failed.length) popup(`${r.okCount}件を取り消しました(${r.failed.length}件は失敗)`, 'error');
+        else popup(`${r.okCount}件を取り消しました`);
+        loadHistory();
+      }catch(e){ popup(e.message,'error'); }
+    };
+
     $('#hd-history').querySelectorAll('.hd-undo').forEach(b => b.onclick = () => {
-      const doUndo = async () => {
+      const doUndo = () => {
         if(!confirm(`${b.dataset.date} の内容を、この変更が行われる前の状態に戻します。よろしいですか？`)) return;
-        try{ await api(`/history/${b.dataset.id}/undo`, { method:'POST' }); popup('取り消しました'); loadHistory(); }
-        catch(e){ popup(e.message,'error'); }
+        undoIds([Number(b.dataset.id)]);
       };
       if(ME.handler !== 1 && ME.role !== 'admin'){ openHandlerPin(doUndo); return; }
       doUndo();
     });
+    const bulkBtn = $('#hd-bulk-undo');
+    if(bulkBtn) bulkBtn.onclick = () => {
+      const ids = [...$('#hd-history').querySelectorAll('.hd-check:checked')].map(cb => Number(cb.dataset.id));
+      if(!ids.length) return;
+      const doUndo = () => {
+        if(!confirm(`選択した${ids.length}件の変更を、それぞれ行われる前の状態に戻します。よろしいですか？`)) return;
+        undoIds(ids);
+      };
+      if(ME.handler !== 1 && ME.role !== 'admin'){ openHandlerPin(doUndo); return; }
+      doUndo();
+    };
   };
   loadHistory();
 }
