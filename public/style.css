@@ -420,6 +420,10 @@ table.sched tbody tr.editable-row:hover td:not(.site-multi):not(.plan-cell){ bac
 /* ===== 稼働サマリー ===== */
 .sum-stats{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:12px}
 .sum-stat{background:#fff;border:1px solid var(--line);border-radius:8px;padding:10px 6px;text-align:center}
+.sum-stat-clickable{cursor:pointer;transition:transform .1s ease,box-shadow .15s ease}
+.sum-stat-clickable:hover{box-shadow:0 2px 8px rgba(0,0,0,.1)}
+.sum-stat-clickable:active{transform:scale(.96)}
+.sum-stat.st-sel{border:2px solid var(--gold);box-shadow:0 0 0 2px rgba(201,162,39,.2)}
 .sum-stat .sum-num{font-size:22px;font-weight:700;color:var(--ink);line-height:1.1}
 .sum-stat .sum-lbl{font-size:11px;color:#666;margin-top:2px}
 .sum-stat.st-over{background:#fdecec;border-color:var(--cell-off)}

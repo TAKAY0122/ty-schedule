@@ -1239,9 +1239,18 @@ async function pageNominationsApprove(app){
   <h2 style="margin-bottom:8px">🙋 メンバー指名の承認</h2>
   <div class="muted" style="margin-bottom:14px">チーフから「この人が欲しい」という指名があると、ここに表示されます。承認するとスケジュールに追加されます。承認・見送りには手配者モードが必要です。専任の手配担当者が設定されていないメンバーへの指名は、同じ課の手配担当者全員に表示されます。</div>
   ${rows.length ? `
+  <div class="row" id="sn-bulk-bar" style="margin-bottom:10px;gap:8px;align-items:center">
+    <button class="btn gold sm" id="sn-bulk-approve" disabled>選択した項目を承認(<span id="sn-sel-count">0</span>)</button>
+    <button class="btn danger sm" id="sn-bulk-reject" disabled>選択した項目を見送る</button>
+  </div>
   <div class="cards" style="display:flex">
     ${rows.map(r=>`<div class="dcard" data-id="${r.id}">
-      <div class="dcard-head"><span class="dcard-title">${h(r.target_name)}さん<span class="muted" style="font-size:12px"> (${h(r.target_regno)})</span></span></div>
+      <div class="dcard-head">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" class="sn-check" data-id="${r.id}">
+          <span class="dcard-title">${h(r.target_name)}さん<span class="muted" style="font-size:12px"> (${h(r.target_regno)})</span></span>
+        </label>
+      </div>
       <div class="drow"><span class="dk">現場日</span><span class="dv">${h(r.date)}</span></div>
       <div class="drow"><span class="dk">現場</span><span class="dv"><b>${h([r.site,r.venue].filter(Boolean).join('／'))}</b></span></div>
       <div class="drow"><span class="dk">指名した人</span><span class="dv">${h(r.nominator_name)}</span></div>
@@ -1266,6 +1275,34 @@ async function pageNominationsApprove(app){
     if(ME.handler !== 1 && ME.role !== 'admin'){ openHandlerPin(() => proceed(b.dataset.id,'reject')); return; }
     proceed(b.dataset.id,'reject');
   });
+
+  // 複数選択・一括承認/却下
+  const updateBulkBar = () => {
+    const checked = app.querySelectorAll('.sn-check:checked');
+    const cnt = $('#sn-sel-count'); if(cnt) cnt.textContent = checked.length;
+    const ab = $('#sn-bulk-approve'); if(ab) ab.disabled = checked.length === 0;
+    const rb = $('#sn-bulk-reject'); if(rb) rb.disabled = checked.length === 0;
+  };
+  app.querySelectorAll('.sn-check').forEach(cb => cb.onchange = updateBulkBar);
+  const bulkProceed = async (action) => {
+    const ids = [...app.querySelectorAll('.sn-check:checked')].map(cb => Number(cb.dataset.id));
+    if(!ids.length) return;
+    if(!confirm(`選択した${ids.length}件を${action==='approve'?'承認':'見送り'}します。よろしいですか？`)) return;
+    try{
+      const r = await api('/site-nominations/bulk-decide', { method:'POST', body:{ ids, action } });
+      if(r.failed && r.failed.length) popup(`${r.okCount}件処理しました(${r.failed.length}件は失敗: ${r.failed[0].error})`, 'error');
+      else popup(`${r.okCount}件処理しました`);
+      pageNominationsApprove(app);
+    }catch(e){ popup(e.message,'error'); }
+  };
+  const bab = $('#sn-bulk-approve'); if(bab) bab.onclick = () => {
+    if(ME.handler !== 1 && ME.role !== 'admin'){ openHandlerPin(() => bulkProceed('approve')); return; }
+    bulkProceed('approve');
+  };
+  const brb = $('#sn-bulk-reject'); if(brb) brb.onclick = () => {
+    if(ME.handler !== 1 && ME.role !== 'admin'){ openHandlerPin(() => bulkProceed('reject')); return; }
+    bulkProceed('reject');
+  };
 }
 
 /* ===== Googleカレンダー連携の詳しいやり方ページ ===== */
@@ -1941,6 +1978,7 @@ const SUM_TH = { over: 18, streak: 6, few: 3, sameSiteCount: 3, sameSiteRatio: 0
 let SUMMARY_SORT = 'workDays';
 let SUMMARY_MEMBERS_ONLY = false;
 let SUMMARY_MGR = null; // 選択中の手配担当(絞り込み)。null=全体
+let SUMMARY_FILTER = null; // 統計カード(働きすぎ等)をタップした際の絞り込み。null=絞り込みなし
 async function pageSummary(app){
   if(LV[ME.role] < 1){ notFound(app); return; }
   const stSummary = PAGE_STATE.summary || (PAGE_STATE.summary = { month: jstToday().slice(0,7) });
@@ -1974,15 +2012,24 @@ async function pageSummary(app){
     streak:(a,b)=>b.maxStreak-a.maxStreak,
     name:(a,b)=>String(a.regno).localeCompare(String(b.regno)),
   };
-  view.sort(sorters[SUMMARY_SORT]||sorters.workDays);
 
-  // 統計(絞り込み中はその手配担当のチーム)
+  // 統計(絞り込み中はその手配担当のチーム。統計カード自体の絞り込みは反映しない全体数を出す)
   const active = view.filter(it=>it.workDays>0);
   const avg = active.length ? (active.reduce((s,it)=>s+it.workDays,0)/active.length) : 0;
   const overN = view.filter(it=>it.workDays>=SUM_TH.over).length;
   const streakN = view.filter(it=>it.maxStreak>=SUM_TH.streak).length;
   const fewN = view.filter(it=>it.workDays<=SUM_TH.few && it.workDays>0).length;
   const sameSiteN = view.filter(isSameSite).length;
+
+  // 統計カード(働きすぎ等)をタップした場合の絞り込みを、実際に表の対象へ適用する
+  const statFilters = {
+    over: it => it.workDays>=SUM_TH.over,
+    streak: it => it.maxStreak>=SUM_TH.streak,
+    few: it => it.workDays<=SUM_TH.few && it.workDays>0,
+    samesite: isSameSite,
+  };
+  const filtered = (SUMMARY_FILTER && statFilters[SUMMARY_FILTER]) ? view.filter(statFilters[SUMMARY_FILTER]) : view;
+  filtered.sort(sorters[SUMMARY_SORT]||sorters.workDays);
 
   // 手配の偏り(タップで絞り込み)。ランキング順=現場数降順は維持
   const maxShifts = Math.max(1, ...data.managers.map(m=>m.shifts));
@@ -1994,7 +2041,7 @@ async function pageSummary(app){
 
   const canPay = data.items.some(it=>it.hours!==null);
   // PC表
-  const trows = view.map(it=>`
+  const trows = filtered.map(it=>`
     <tr class="${rowcls(it)} sum-link" data-uid="${it.uid}" title="個人スケジュールを開く">
       <td class="s-name">${h(it.name)} ${it.rank?`<span class="muted">${h(it.rank)}</span>`:''} <span class="sum-go">📅</span></td>
       <td class="c">${h(it.manager_name||'—')}</td>
@@ -2005,7 +2052,7 @@ async function pageSummary(app){
       <td>${badge(it)}</td>
     </tr>`).join('');
   // スマホカード
-  const cards = view.map(it=>`
+  const cards = filtered.map(it=>`
     <div class="sum-card ${rowcls(it)} sum-link" data-uid="${it.uid}">
       <div class="sc-top"><span class="sc-name">${h(it.name)}</span>${it.rank?`<span class="sc-rank">${h(it.rank)}</span>`:''}<span class="sc-go">📅 スケジュール</span></div>
       <div class="sc-mgr">${h(it.manager_name||'—')}</div>
@@ -2030,14 +2077,15 @@ async function pageSummary(app){
     </label>
   </div>
   ${SUMMARY_MGR?`<div class="sum-filter">絞り込み中：<b>${h(SUMMARY_MGR)}</b><button class="sum-clear" id="sm-clear">✕ 全体に戻す</button></div>`:''}
+  ${SUMMARY_FILTER?`<div class="sum-filter">条件で絞り込み中：<b>${{over:'働きすぎ',streak:'連勤注意',few:'機会少',samesite:'同じ現場ばかり'}[SUMMARY_FILTER]||SUMMARY_FILTER}</b><button class="sum-clear" id="sm-filter-clear">✕ 解除</button></div>`:''}
 
   <div class="sum-stats">
     <div class="sum-stat"><div class="sum-num">${active.length}</div><div class="sum-lbl">稼働人数</div></div>
     <div class="sum-stat"><div class="sum-num">${avg.toFixed(1)}</div><div class="sum-lbl">平均出勤日</div></div>
-    <div class="sum-stat ${overN?'st-over':''}"><div class="sum-num">${overN}</div><div class="sum-lbl">働きすぎ</div></div>
-    <div class="sum-stat ${streakN?'st-streak':''}"><div class="sum-num">${streakN}</div><div class="sum-lbl">連勤注意</div></div>
-    <div class="sum-stat ${fewN?'st-few':''}"><div class="sum-num">${fewN}</div><div class="sum-lbl">機会少</div></div>
-    <div class="sum-stat ${sameSiteN?'st-samesite':''}"><div class="sum-num">${sameSiteN}</div><div class="sum-lbl">同じ現場ばかり</div></div>
+    <div class="sum-stat sum-stat-clickable ${overN?'st-over':''} ${SUMMARY_FILTER==='over'?'st-sel':''}" data-filter="over"><div class="sum-num">${overN}</div><div class="sum-lbl">働きすぎ</div></div>
+    <div class="sum-stat sum-stat-clickable ${streakN?'st-streak':''} ${SUMMARY_FILTER==='streak'?'st-sel':''}" data-filter="streak"><div class="sum-num">${streakN}</div><div class="sum-lbl">連勤注意</div></div>
+    <div class="sum-stat sum-stat-clickable ${fewN?'st-few':''} ${SUMMARY_FILTER==='few'?'st-sel':''}" data-filter="few"><div class="sum-num">${fewN}</div><div class="sum-lbl">機会少</div></div>
+    <div class="sum-stat sum-stat-clickable ${sameSiteN?'st-samesite':''} ${SUMMARY_FILTER==='samesite'?'st-sel':''}" data-filter="samesite"><div class="sum-num">${sameSiteN}</div><div class="sum-lbl">同じ現場ばかり</div></div>
   </div>
 
   <div class="card" style="margin-top:12px">
@@ -2050,7 +2098,7 @@ async function pageSummary(app){
     <div class="row" style="gap:6px;margin-bottom:8px;flex-wrap:wrap;align-items:center">
       <span class="muted" style="font-size:12px">並び替え:</span>
       ${[['workDays','出勤日'],['shifts','現場数'],['streak','連勤'],['name','番号']].map(s=>`<button class="btn ghost xs sm-sort ${SUMMARY_SORT===s[0]?'on':''}" data-s="${s[0]}">${s[1]}</button>`).join('')}
-      <span class="muted" style="font-size:11px;margin-left:auto">${view.length}名</span>
+      <span class="muted" style="font-size:11px;margin-left:auto">${filtered.length}名</span>
     </div>
     <div class="sum-table-wrap">
       <table class="sum-table">
@@ -2066,6 +2114,10 @@ async function pageSummary(app){
   $('#sm-next').onclick = () => { stSummary.month = shiftMonth(month, 1); pageSummary(app); };
   $('#sm-mem').onchange = e => { SUMMARY_MEMBERS_ONLY = e.target.checked; pageSummary(app); };
   const clr = $('#sm-clear'); if(clr) clr.onclick = () => { SUMMARY_MGR = null; pageSummary(app); };
+  const fclr = $('#sm-filter-clear'); if(fclr) fclr.onclick = () => { SUMMARY_FILTER = null; pageSummary(app); };
+  app.querySelectorAll('.sum-stat-clickable').forEach(b => b.onclick = () => {
+    SUMMARY_FILTER = (SUMMARY_FILTER===b.dataset.filter) ? null : b.dataset.filter; pageSummary(app);
+  });
   app.querySelectorAll('.sm-sort').forEach(b => b.onclick = () => { SUMMARY_SORT = b.dataset.s; pageSummary(app); });
   app.querySelectorAll('.mgr-row').forEach(b => b.onclick = () => {
     SUMMARY_MGR = (SUMMARY_MGR===b.dataset.mgr) ? null : b.dataset.mgr; pageSummary(app);
@@ -3063,11 +3115,20 @@ async function pageSelfReports(app){
 
   app.innerHTML = `
   <h2 style="margin-bottom:8px">📝 現場変更報告の承認</h2>
-  <div class="muted" style="margin-bottom:14px">メンツから「手配担当者以外に言われた現場変更」の報告があると、ここに表示されます。承認するとスケジュールに反映され、本人に通知されます。承認・見送りには手配者モードが必要です(未入力の場合はPIN入力が求められます)。</div>
+  <div class="muted" style="margin-bottom:14px">メンツから「手配担当者以外に言われた現場変更」の報告があると、ここに表示されます。承認するとスケジュールに反映され、本人に通知されます。承認・見送りには手配者モードが必要です(未入力の場合はPIN入力が求められます)。「現場への変更」は詳細入力が必要なため個別に承認してください(まとめて承認は休暇等への変更のみ対象です)。</div>
   ${rows.length ? `
+  <div class="row" id="sr-bulk-bar" style="margin-bottom:10px;gap:8px;align-items:center;flex-wrap:wrap">
+    <button class="btn gold sm" id="sr-bulk-approve" disabled>選択した項目を承認(<span id="sr-sel-count">0</span>)</button>
+    <button class="btn danger sm" id="sr-bulk-reject" disabled>選択した項目を見送る</button>
+  </div>
   <div class="cards" style="display:flex">
     ${rows.map(r=>`<div class="dcard" data-id="${r.id}">
-      <div class="dcard-head"><span class="dcard-title">${h(r.user_name)}さん<span class="muted" style="font-size:12px"> (${h(r.user_regno)})</span></span></div>
+      <div class="dcard-head">
+        <label style="display:flex;align-items:center;gap:8px;cursor:${r.type==='work'?'not-allowed':'pointer'}">
+          <input type="checkbox" class="sr-check" data-id="${r.id}" data-type="${h(r.type)}" ${r.type==='work'?'disabled title="現場への変更は個別に承認してください"':''}>
+          <span class="dcard-title">${h(r.user_name)}さん<span class="muted" style="font-size:12px"> (${h(r.user_regno)})</span></span>
+        </label>
+      </div>
       <div class="drow"><span class="dk">現場日</span><span class="dv">${h(r.date)}</span></div>
       <div class="drow"><span class="dk">変更内容</span><span class="dv"><b>${h(labelOf(r))}</b></span></div>
       <div class="drow"><span class="dk">伝えた人</span><span class="dv">${h(r.told_by)}</span></div>
@@ -3107,6 +3168,34 @@ async function pageSelfReports(app){
     if(ME.handler !== 1 && ME.role !== 'admin'){ openHandlerPin(proceed); return; }
     proceed();
   });
+
+  // 複数選択・一括処理(承認は「現場への変更」以外のみ選択可能、却下は全件対象)
+  const updateBulkBar = () => {
+    const checked = app.querySelectorAll('.sr-check:checked');
+    const cnt = $('#sr-sel-count'); if(cnt) cnt.textContent = checked.length;
+    const ab = $('#sr-bulk-approve'); if(ab) ab.disabled = checked.length === 0;
+    const rb = $('#sr-bulk-reject'); if(rb) rb.disabled = checked.length === 0;
+  };
+  app.querySelectorAll('.sr-check').forEach(cb => cb.onchange = updateBulkBar);
+  const bulkProceed = async (action) => {
+    const ids = [...app.querySelectorAll('.sr-check:checked')].map(cb => Number(cb.dataset.id));
+    if(!ids.length) return;
+    if(!confirm(`選択した${ids.length}件を${action==='approve'?'承認':'見送り'}します。よろしいですか？`)) return;
+    try{
+      const r = await api('/self-reports/bulk-decide', { method:'POST', body:{ ids, action } });
+      if(r.failed && r.failed.length) popup(`${r.okCount}件処理しました(${r.failed.length}件は失敗: ${r.failed[0].error})`, 'error');
+      else popup(`${r.okCount}件処理しました`);
+      pageSelfReports(app);
+    }catch(e){ popup(e.message,'error'); }
+  };
+  const bab = $('#sr-bulk-approve'); if(bab) bab.onclick = () => {
+    if(ME.handler !== 1 && ME.role !== 'admin'){ openHandlerPin(() => bulkProceed('approve')); return; }
+    bulkProceed('approve');
+  };
+  const brb = $('#sr-bulk-reject'); if(brb) brb.onclick = () => {
+    if(ME.handler !== 1 && ME.role !== 'admin'){ openHandlerPin(() => bulkProceed('reject')); return; }
+    bulkProceed('reject');
+  };
 }
 
 // 現場変更報告の承認時に、通常の現場入力と同じ項目(現場名・会場・時刻・業務名など)を
@@ -3858,10 +3947,16 @@ async function pageAdmin(app){
     const area = $('#ad-list-area'); if(!area) return;
     const countEl = $('#ad-count'); if(countEl) countEl.textContent = `(${aList.length}名)`;
     area.innerHTML = `
-      <div class="muted" style="margin:2px 0 10px">${aList.length}名 表示中</div>
+      <div class="row" id="ad-bulk-bar" style="margin:2px 0 10px;gap:8px;align-items:center">
+        <span class="muted">${aList.length}名 表示中</span>
+        <span class="muted" style="margin-left:auto">選択中: <span id="ad-sel-count">0</span>件</span>
+        <button class="btn ghost sm" id="ad-bulk-suspend" disabled>まとめて停止</button>
+        <button class="btn ghost sm" id="ad-bulk-restore" disabled>まとめて復活</button>
+      </div>
       <div class="sched-wrap pc-only"><table class="list">
-      <tr><th>登録番号</th><th>氏名</th><th>役割(管理者のみ変更可)</th><th>担当手配者</th><th>ランク</th><th>班</th><th>駅</th><th>操作</th></tr>
+      <tr><th><input type="checkbox" id="ad-check-all"></th><th>登録番号</th><th>氏名</th><th>役割(管理者のみ変更可)</th><th>担当手配者</th><th>ランク</th><th>班</th><th>駅</th><th>操作</th></tr>
       ${aList.map(u=>`<tr class="${u.suspended?'is-suspended':''}">
+        <td>${u.id===ME.id?'':`<input type="checkbox" class="ad-check" data-id="${u.id}">`}</td>
         <td class="nowrap">${h(u.regno)}${ME.role==='admin'?` <button class="btn ghost xs regno-edit" data-id="${u.id}" data-cur="${h(u.regno)}" data-name="${h(u.name)}" title="登録番号を変更">✏️</button>`:''}</td><td class="nowrap">${h(u.name)}${u.suspended?' <span class="susp-tag">停止</span>':''}</td>
         <td><select data-role="${u.id}">${['member','chief','handler','admin'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${ROLE_JP[r]}</option>`).join('')}</select></td>
         <td><select data-mgr="${u.id}"><option value="">(なし)</option>${mgrs.map(m=>`<option value="${m.id}" ${String(u.manager_id)===String(m.id)?'selected':''}>${h(m.name)}手配</option>`).join('')}</select></td>
@@ -3870,11 +3965,17 @@ async function pageAdmin(app){
             <button class="btn ghost sm" data-suspend="${u.id}" data-cur="${u.suspended?1:0}">${u.suspended?'復活':'停止'}</button>
             <button class="btn ghost sm" data-reset="${u.id}">PWリセット</button>
             <button class="btn danger sm" data-del="${u.id}">削除</button></td>
-      </tr>`).join('') || '<tr><td colspan="8" class="muted" style="text-align:center;padding:16px">該当するアカウントはありません</td></tr>'}
+      </tr>`).join('') || '<tr><td colspan="9" class="muted" style="text-align:center;padding:16px">該当するアカウントはありません</td></tr>'}
       </table></div>
       <div class="cards sp-only">
       ${aList.map(u=>`<div class="dcard ${u.suspended?'is-suspended':''}">
-        <div class="dcard-head"><span class="dcard-title">${h(u.name)}${u.suspended?' <span class="susp-tag">停止</span>':''}</span><span class="dcard-sub">${h(u.regno)}${ME.role==='admin'?` <button class="btn ghost xs regno-edit" data-id="${u.id}" data-cur="${h(u.regno)}" data-name="${h(u.name)}" title="登録番号を変更">✏️</button>`:''}</span></div>
+        <div class="dcard-head">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            ${u.id===ME.id?'<span style="width:16px;display:inline-block"></span>':`<input type="checkbox" class="ad-check" data-id="${u.id}">`}
+            <span class="dcard-title">${h(u.name)}${u.suspended?' <span class="susp-tag">停止</span>':''}</span>
+          </label>
+          <span class="dcard-sub">${h(u.regno)}${ME.role==='admin'?` <button class="btn ghost xs regno-edit" data-id="${u.id}" data-cur="${h(u.regno)}" data-name="${h(u.name)}" title="登録番号を変更">✏️</button>`:''}</span>
+        </div>
         <div class="drow"><span class="dk">役割</span><span class="dv"><select data-role="${u.id}">${['member','chief','handler','admin'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${ROLE_JP[r]}</option>`).join('')}</select></span></div>
         <div class="drow"><span class="dk">担当手配</span><span class="dv"><select data-mgr="${u.id}"><option value="">(なし)</option>${mgrs.map(m=>`<option value="${m.id}" ${String(u.manager_id)===String(m.id)?'selected':''}>${h(m.name)}手配</option>`).join('')}</select></span></div>
         <div class="drow"><span class="dk">ランク/班</span><span class="dv">${h(u.rank)||'—'} / ${h(u.han)||'—'}</span></div>
@@ -3907,6 +4008,37 @@ async function pageAdmin(app){
       try{ await api('/users/'+b.dataset.del, { method:'DELETE' }); USERS_CACHE=null; render(); }
       catch(e){ alert(e.message); }
     });
+
+    // 複数選択・一括停止/復活
+    const updateBulkBar = () => {
+      const checked = area.querySelectorAll('.ad-check:checked');
+      const cnt = $('#ad-sel-count'), sb = $('#ad-bulk-suspend'), rb = $('#ad-bulk-restore');
+      if(cnt) cnt.textContent = checked.length;
+      if(sb) sb.disabled = checked.length === 0;
+      if(rb) rb.disabled = checked.length === 0;
+    };
+    const checkAll = $('#ad-check-all');
+    if(checkAll) checkAll.onchange = () => {
+      area.querySelectorAll('.ad-check').forEach(cb => cb.checked = checkAll.checked);
+      updateBulkBar();
+    };
+    area.querySelectorAll('.ad-check').forEach(cb => cb.onchange = updateBulkBar);
+    updateBulkBar();
+
+    const bulkAction = async (suspend) => {
+      const ids = [...area.querySelectorAll('.ad-check:checked')].map(cb => Number(cb.dataset.id));
+      if(!ids.length) return;
+      const verb = suspend ? '停止' : '復活';
+      if(!confirm(`選択した${ids.length}件のアカウントを、まとめて${verb}します。よろしいですか?`)) return;
+      try{
+        const r = await api('/users/bulk-suspend', { method:'POST', body:{ ids, suspended:suspend } });
+        USERS_CACHE = null;
+        popup(`${r.count}件を${verb}しました`);
+        pageAdmin(app);
+      }catch(e){ popup(e.message,'error'); }
+    };
+    const bsBtn = $('#ad-bulk-suspend'); if(bsBtn) bsBtn.onclick = () => bulkAction(true);
+    const brBtn = $('#ad-bulk-restore'); if(brBtn) brBtn.onclick = () => bulkAction(false);
   };
 
   app.innerHTML = `

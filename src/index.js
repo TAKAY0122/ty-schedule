@@ -431,6 +431,78 @@ async function canManageTarget(env, me, targetId) {
   return target.ka === me.ka;
 }
 
+// メンバー指名1件を承認/却下する。単一処理・一括処理の両方から呼ばれる共通処理。
+// 失敗時は例外を投げる(呼び出し側でメッセージを組み立てる)。
+async function decideNomination(env, me, id, action) {
+  const nom = await env.DB.prepare('SELECT * FROM site_nominations WHERE id=?').bind(id).first();
+  if (!nom) throw new Error(`指名#${id}が見つかりません`);
+  if (nom.status !== 'pending') throw new Error(`指名#${id}はすでに処理されています`);
+  if (!(await canManageTarget(env, me, nom.target_id))) throw new Error('権限がありません');
+  if (action === 'approve') {
+    const nominator = await env.DB.prepare('SELECT name FROM users WHERE id=?').bind(nom.nominator_id).first();
+    await addNominatedSite(env, nom.target_id, nom.date, nom.site, nom.venue, nominator ? nominator.name : '');
+    await env.DB.prepare('UPDATE site_nominations SET status=?, decided_at=?, decided_by=? WHERE id=?').bind('approved', jstTs(), me.id, id).run();
+    try {
+      await notify(env, [nom.target_id], 'nomination',
+        `✅ ${nom.date}の現場「${[nom.site, nom.venue].filter(Boolean).join('／')}」への指名が承認され、スケジュールに追加されました。(${nominator ? nominator.name : ''}さんの希望)`,
+        `#/schedule/${nom.target_id}?month=${nom.date.slice(0, 7)}`);
+    } catch (e) {}
+  } else {
+    await env.DB.prepare('UPDATE site_nominations SET status=?, decided_at=?, decided_by=? WHERE id=?').bind('rejected', jstTs(), me.id, id).run();
+    try {
+      await notify(env, [nom.nominator_id], 'nomination',
+        `❌ ${nom.date}の現場「${[nom.site, nom.venue].filter(Boolean).join('／')}」への指名は見送られました。`,
+        `#/nominations`);
+    } catch (e) {}
+  }
+}
+
+// 現場変更報告1件を承認/却下する。単一処理・一括処理の両方から呼ばれる共通処理。
+// bodyDetailは、承認時に現場名・時刻等を上書きしたい場合のみ渡す(一括処理ではnullを渡し、
+// 報告内容そのままで反映する)。type==='work'(現場への変更)を一括承認しようとした場合は、
+// 詳細入力が必要なため明確なエラーを投げて弾く。
+async function decideSelfReport(env, me, id, action, bodyDetail) {
+  const rep = await env.DB.prepare('SELECT * FROM self_reports WHERE id=?').bind(id).first();
+  if (!rep) throw new Error(`報告#${id}が見つかりません`);
+  if (rep.status !== 'pending') throw new Error(`報告#${id}はすでに処理されています`);
+  if (!(await canManageTarget(env, me, rep.user_id))) throw new Error('権限がありません');
+  if (action === 'approve') {
+    if (rep.type === 'work' && !bodyDetail) throw new Error(`報告#${id}は現場への変更のため、個別に詳細を入力して承認してください`);
+    const detail = rep.type !== 'work'
+      ? { type: rep.type }
+      : {
+          type: 'work',
+          site: String(bodyDetail.site ?? rep.site ?? '').trim(),
+          venue: String(bodyDetail.venue ?? rep.venue ?? '').trim(),
+          tin: String(bodyDetail.tin || '').trim(),
+          tout: String(bodyDetail.tout || '').trim(),
+          duty: String(bodyDetail.duty || '').trim(),
+          load_end: String(bodyDetail.load_end || '').trim(),
+          show_end: String(bodyDetail.show_end || '').trim(),
+          multi: bodyDetail.multi ? 1 : 0,
+          note: String(bodyDetail.note || '').trim(),
+        };
+    await applySelfReportToSchedule(env, rep.user_id, rep.date, rep.told_by, detail);
+    await env.DB.prepare('UPDATE self_reports SET status=?, decided_at=?, decided_by=? WHERE id=?').bind('approved', jstTs(), me.id, id).run();
+    const typeLabelRow = rep.type !== 'work' ? await env.DB.prepare('SELECT label FROM report_type_options WHERE type=?').bind(rep.type).first() : null;
+    const label = rep.type === 'work' ? [detail.site, detail.venue].filter(Boolean).join('／') : ((typeLabelRow && typeLabelRow.label) || rep.type);
+    try {
+      await notify(env, [rep.user_id], 'self_report',
+        `✅ ${rep.date}の「${label}」への変更報告が承認され、スケジュールに反映されました。`,
+        `#/schedule/${rep.user_id}?month=${rep.date.slice(0, 7)}`);
+    } catch (e) {}
+  } else {
+    await env.DB.prepare('UPDATE self_reports SET status=?, decided_at=?, decided_by=? WHERE id=?').bind('rejected', jstTs(), me.id, id).run();
+    const typeLabelRow = rep.type !== 'work' ? await env.DB.prepare('SELECT label FROM report_type_options WHERE type=?').bind(rep.type).first() : null;
+    const label = rep.type === 'work' ? [rep.site, rep.venue].filter(Boolean).join('／') : ((typeLabelRow && typeLabelRow.label) || rep.type);
+    try {
+      await notify(env, [rep.user_id], 'self_report',
+        `❌ ${rep.date}の「${label}」への変更報告は見送られました。手配担当者に確認してください。`,
+        `#/schedule/${rep.user_id}?month=${rep.date.slice(0, 7)}`);
+    } catch (e) {}
+  }
+}
+
 // 名前から姓(先頭の語)を取り出す。「吉崎 天晴」→「吉崎」/「吉崎天晴」→そのまま
 function surname(name) {
   const n = String(name || '').trim();
@@ -1842,6 +1914,19 @@ async function api(req, env, url) {
     return J({ ok: 1 });
   }
 
+  // アカウントの一括停止/復活。管理者・アカウント管理権限者向け。
+  if (method === 'POST' && path === '/users/bulk-suspend') {
+    if (!has(me, 'account_manage')) return ERR('権限がありません', 403);
+    const ids = Array.isArray(body.ids) ? [...new Set(body.ids.map(Number).filter(n => n > 0))] : [];
+    if (!ids.length) return ERR('対象を選択してください');
+    if (ids.includes(me.id)) return ERR('自分自身は選択できません');
+    const suspend = !!body.suspended;
+    const ph = ids.map(() => '?').join(',');
+    await env.DB.prepare(`UPDATE users SET suspended=? WHERE id IN (${ph})`).bind(suspend ? 1 : 0, ...ids).run();
+    if (suspend) await env.DB.prepare(`DELETE FROM sessions WHERE user_id IN (${ph})`).bind(...ids).run();
+    return J({ ok: 1, count: ids.length });
+  }
+
   if (method === 'POST' && path === '/users') {
     if (!has(me, 'account_manage') && !has(me, 'site_manage')) return ERR('ページが見つかりません', 404);
     const { regno, name, rank = '', han = '', ka = '', station = '', role = 'member', manager_id = null } = body;
@@ -2299,34 +2384,26 @@ async function api(req, env, url) {
   }
   let snm;
   if (method === 'POST' && (snm = path.match(/^\/site-nominations\/(\d+)\/approve$/))) {
-    const id = Number(snm[1]);
-    const nom = await env.DB.prepare('SELECT * FROM site_nominations WHERE id=?').bind(id).first();
-    if (!nom) return ERR('見つかりません', 404);
-    if (nom.status !== 'pending') return ERR('すでに処理されています');
-    if (!(await canManageTarget(env, me, nom.target_id))) return ERR('権限がありません', 403);
-    const nominator = await env.DB.prepare('SELECT name FROM users WHERE id=?').bind(nom.nominator_id).first();
-    await addNominatedSite(env, nom.target_id, nom.date, nom.site, nom.venue, nominator ? nominator.name : '');
-    await env.DB.prepare('UPDATE site_nominations SET status=?, decided_at=?, decided_by=? WHERE id=?').bind('approved', jstTs(), me.id, id).run();
-    try {
-      await notify(env, [nom.target_id], 'nomination',
-        `✅ ${nom.date}の現場「${[nom.site, nom.venue].filter(Boolean).join('／')}」への指名が承認され、スケジュールに追加されました。(${nominator ? nominator.name : ''}さんの希望)`,
-        `#/schedule/${nom.target_id}?month=${nom.date.slice(0, 7)}`);
-    } catch (e) {}
+    try { await decideNomination(env, me, Number(snm[1]), 'approve'); }
+    catch (e) { return ERR(e.message); }
     return J({ ok: 1 });
   }
   if (method === 'POST' && (snm = path.match(/^\/site-nominations\/(\d+)\/reject$/))) {
-    const id = Number(snm[1]);
-    const nom = await env.DB.prepare('SELECT * FROM site_nominations WHERE id=?').bind(id).first();
-    if (!nom) return ERR('見つかりません', 404);
-    if (nom.status !== 'pending') return ERR('すでに処理されています');
-    if (!(await canManageTarget(env, me, nom.target_id))) return ERR('権限がありません', 403);
-    await env.DB.prepare('UPDATE site_nominations SET status=?, decided_at=?, decided_by=? WHERE id=?').bind('rejected', jstTs(), me.id, id).run();
-    try {
-      await notify(env, [nom.nominator_id], 'nomination',
-        `❌ ${nom.date}の現場「${[nom.site, nom.venue].filter(Boolean).join('／')}」への指名は見送られました。`,
-        `#/nominations`);
-    } catch (e) {}
+    try { await decideNomination(env, me, Number(snm[1]), 'reject'); }
+    catch (e) { return ERR(e.message); }
     return J({ ok: 1 });
+  }
+  // 複数の指名をまとめて承認/却下する(承認・却下ともに詳細入力が不要なため一括処理に対応)
+  if (method === 'POST' && path === '/site-nominations/bulk-decide') {
+    const ids = Array.isArray(body.ids) ? [...new Set(body.ids.map(Number).filter(n => n > 0))] : [];
+    const action = body.action === 'reject' ? 'reject' : 'approve';
+    if (!ids.length) return ERR('対象を選択してください');
+    let okCount = 0; const failed = [];
+    for (const id of ids) {
+      try { await decideNomination(env, me, id, action); okCount++; }
+      catch (e) { failed.push({ id, error: e.message }); }
+    }
+    return J({ ok: 1, okCount, failed });
   }
 
   // ---- 本人による現場変更の報告 ----
@@ -2396,54 +2473,29 @@ async function api(req, env, url) {
   let srm;
   if (method === 'POST' && (srm = path.match(/^\/self-reports\/(\d+)\/approve$/))) {
     if (!handlerMode && me.role !== 'admin') return ERR('手配者モードでのみ操作できます', 403);
-    const id = Number(srm[1]);
-    const rep = await env.DB.prepare('SELECT * FROM self_reports WHERE id=?').bind(id).first();
-    if (!rep) return ERR('見つかりません', 404);
-    if (rep.status !== 'pending') return ERR('すでに処理されています');
-    if (!(await canManageTarget(env, me, rep.user_id))) return ERR('権限がありません', 403);
-    // 承認時に、通常の現場入力と同じ項目(現場名・会場名・時刻・業務名など)を指定できる。
-    // 指定がなければ報告内容(現場名/会場名)のみで反映される。
-    const detail = rep.type !== 'work'
-      ? { type: rep.type }
-      : {
-          type: 'work',
-          site: String(body.site ?? rep.site ?? '').trim(),
-          venue: String(body.venue ?? rep.venue ?? '').trim(),
-          tin: String(body.tin || '').trim(),
-          tout: String(body.tout || '').trim(),
-          duty: String(body.duty || '').trim(),
-          load_end: String(body.load_end || '').trim(),
-          show_end: String(body.show_end || '').trim(),
-          multi: body.multi ? 1 : 0,
-          note: String(body.note || '').trim(),
-        };
-    await applySelfReportToSchedule(env, rep.user_id, rep.date, rep.told_by, detail);
-    await env.DB.prepare('UPDATE self_reports SET status=?, decided_at=?, decided_by=? WHERE id=?').bind('approved', jstTs(), me.id, id).run();
-    const typeLabelRow1 = rep.type !== 'work' ? await env.DB.prepare('SELECT label FROM report_type_options WHERE type=?').bind(rep.type).first() : null;
-    const label = rep.type === 'work' ? [detail.site, detail.venue].filter(Boolean).join('／') : ((typeLabelRow1 && typeLabelRow1.label) || rep.type);
-    try {
-      await notify(env, [rep.user_id], 'self_report',
-        `✅ ${rep.date}の「${label}」への変更報告が承認され、スケジュールに反映されました。`,
-        `#/schedule/${rep.user_id}?month=${rep.date.slice(0, 7)}`);
-    } catch (e) {}
+    try { await decideSelfReport(env, me, Number(srm[1]), 'approve', body); }
+    catch (e) { return ERR(e.message); }
     return J({ ok: 1 });
   }
   if (method === 'POST' && (srm = path.match(/^\/self-reports\/(\d+)\/reject$/))) {
     if (!handlerMode && me.role !== 'admin') return ERR('手配者モードでのみ操作できます', 403);
-    const id = Number(srm[1]);
-    const rep = await env.DB.prepare('SELECT * FROM self_reports WHERE id=?').bind(id).first();
-    if (!rep) return ERR('見つかりません', 404);
-    if (rep.status !== 'pending') return ERR('すでに処理されています');
-    if (!(await canManageTarget(env, me, rep.user_id))) return ERR('権限がありません', 403);
-    await env.DB.prepare('UPDATE self_reports SET status=?, decided_at=?, decided_by=? WHERE id=?').bind('rejected', jstTs(), me.id, id).run();
-    const typeLabelRow2 = rep.type !== 'work' ? await env.DB.prepare('SELECT label FROM report_type_options WHERE type=?').bind(rep.type).first() : null;
-    const label = rep.type === 'work' ? [rep.site, rep.venue].filter(Boolean).join('／') : ((typeLabelRow2 && typeLabelRow2.label) || rep.type);
-    try {
-      await notify(env, [rep.user_id], 'self_report',
-        `❌ ${rep.date}の「${label}」への変更報告は見送られました。手配担当者に確認してください。`,
-        `#/schedule/${rep.user_id}?month=${rep.date.slice(0, 7)}`);
-    } catch (e) {}
+    try { await decideSelfReport(env, me, Number(srm[1]), 'reject', body); }
+    catch (e) { return ERR(e.message); }
     return J({ ok: 1 });
+  }
+  // 複数の報告をまとめて却下する。承認は「現場への変更(type='work')」だと詳細入力が必要な
+  // ため一括処理に対応せず、休暇等(type!=='work')への変更のみ一括承認できる。
+  if (method === 'POST' && path === '/self-reports/bulk-decide') {
+    if (!handlerMode && me.role !== 'admin') return ERR('手配者モードでのみ操作できます', 403);
+    const ids = Array.isArray(body.ids) ? [...new Set(body.ids.map(Number).filter(n => n > 0))] : [];
+    const action = body.action === 'reject' ? 'reject' : 'approve';
+    if (!ids.length) return ERR('対象を選択してください');
+    let okCount = 0; const failed = [];
+    for (const id of ids) {
+      try { await decideSelfReport(env, me, id, action, null); okCount++; }
+      catch (e) { failed.push({ id, error: e.message }); }
+    }
+    return J({ ok: 1, okCount, failed });
   }
 
   // ---- 現場記録(配置・休憩時間・自由記入欄)。閲覧・編集は本人と管理者のみ ----
