@@ -2711,7 +2711,7 @@ async function api(req, env, url) {
     const rows = (await env.DB.prepare(
       "SELECT user_id, date, site, hours, overtime FROM schedule WHERE type='work' AND site<>'' AND date LIKE ? ORDER BY user_id, date"
     ).bind(month + '%').all()).results;
-    const users = (await env.DB.prepare('SELECT id,name,regno,role,rank,han,ka,manager_id FROM users ORDER BY regno').all()).results;
+    const users = (await env.DB.prepare('SELECT id,name,regno,role,rank,han,ka,manager_id,suspended FROM users ORDER BY regno').all()).results;
     const umap = {}; for (const u of users) umap[u.id] = u;
     const agg = {};
     for (const r of rows) {
@@ -2731,6 +2731,7 @@ async function api(req, env, url) {
         uid: u.id, name: u.name, regno: u.regno, role: u.role, rank: u.rank, han: u.han, ka: u.ka || '',
         manager_id: u.manager_id,
         manager_name: u.manager_id && umap[u.manager_id] ? umap[u.manager_id].name : chiefLabel(u),
+        suspended: u.suspended ? 1 : 0,
         workDays: new Set(a.dates).size,
         shifts: a.shifts,
         maxStreak: longestStreak(a.dates),
