@@ -2073,35 +2073,42 @@ async function pageSummary(app){
 
   const canPay = data.items.some(it => it.hours !== null);
   // 「気になる状況」の判定基準。閾値は運用しながら調整可能。
-  const isOver = it => canPay && it.overtime > 0;                                   // 残業が発生している
+  const isOver = it => canPay && it.overtime >= 50;                                  // 残業50時間以上
+  const isOverTotal = it => canPay && it.hours >= 100;                               // 月間稼働時間100時間超
   const isStreak = it => it.maxStreak >= 6;                                          // 6連勤以上
   const isFew = it => it.workDays > 0 && it.workDays <= 2;                           // 稼働2日以下
   const isSamesite = it => it.workDays >= 3 && it.topSiteCount / it.workDays >= 0.7; // 同じ現場に偏り
 
-  const overList = data.items.filter(isOver);
+  const overTotalList = data.items.filter(isOverTotal);
   const streakList = data.items.filter(isStreak);
   const fewList = data.items.filter(isFew);
   const samesiteList = data.items.filter(isSamesite);
+  const overList = data.items.filter(isOver);
 
   // 統計カード選択によるフィルタ
   let list = data.items;
-  if(st.stat === 'over') list = overList;
+  if(st.stat === 'overtotal') list = overTotalList;
   else if(st.stat === 'streak') list = streakList;
   else if(st.stat === 'few') list = fewList;
   else if(st.stat === 'samesite') list = samesiteList;
+  else if(st.stat === 'over') list = overList;
   // 手配担当選択によるフィルタ(統計フィルタと併用可)
   if(st.mgr) list = list.filter(it => (it.manager_id ? 'm'+it.manager_id : 'chief:'+(it.ka||'未設定')) === st.mgr);
 
-  const rowCls = it => isOver(it) ? 'r-over' : isStreak(it) ? 'r-streak' : isFew(it) ? 'r-few' : '';
+  const rowCls = it => isOverTotal(it) ? 'r-over' : isStreak(it) ? 'r-streak' : isFew(it) ? 'r-few' : '';
   const badges = it => {
     const b = [];
-    if(isOver(it)) b.push('<span class="sum-badge over">残業</span>');
+    if(isOverTotal(it)) b.push('<span class="sum-badge over">月100h超</span>');
     if(isStreak(it)) b.push(`<span class="sum-badge streak">${it.maxStreak}連勤</span>`);
     if(isFew(it)) b.push('<span class="sum-badge few">稼働少なめ</span>');
     if(isSamesite(it)) b.push('<span class="sum-badge samesite">同じ現場</span>');
+    if(isOver(it)) b.push('<span class="sum-badge over">残業50h+</span>');
     if(it.workDays === 0) b.push('<span class="sum-badge zero">稼働なし</span>');
     return b.join(' ');
   };
+  const mgrSortOptions = { shifts:'稼働数', workDays:'稼働日数', members:'人数' };
+  const mgrSort = st.mgrSort || 'shifts';
+  const sortedManagers = [...data.managers].sort((a,b)=>b[mgrSort]-a[mgrSort]);
   const [y,mo] = st.month.split('-').map(Number);
 
   app.innerHTML = `
@@ -2116,36 +2123,42 @@ async function pageSummary(app){
   <div class="muted" style="margin-top:4px">全${data.items.length}名(停止中を含む)。カード・手配担当をタップすると絞り込めます。</div>
 
   <div class="sum-stats">
-    <div class="sum-stat sum-stat-clickable ${st.stat==='over'?'st-sel':''} st-over" data-stat="over"><div class="sum-num">${overList.length}</div><div class="sum-lbl">残業あり</div></div>
+    <div class="sum-stat sum-stat-clickable ${st.stat==='overtotal'?'st-sel':''} st-over" data-stat="overtotal"><div class="sum-num">${overTotalList.length}</div><div class="sum-lbl">月100h超</div></div>
     <div class="sum-stat sum-stat-clickable ${st.stat==='streak'?'st-sel':''} st-streak" data-stat="streak"><div class="sum-num">${streakList.length}</div><div class="sum-lbl">6連勤以上</div></div>
     <div class="sum-stat sum-stat-clickable ${st.stat==='few'?'st-sel':''} st-few" data-stat="few"><div class="sum-num">${fewList.length}</div><div class="sum-lbl">稼働少なめ</div></div>
     <div class="sum-stat sum-stat-clickable ${st.stat==='samesite'?'st-sel':''} st-samesite" data-stat="samesite"><div class="sum-num">${samesiteList.length}</div><div class="sum-lbl">同じ現場ばかり</div></div>
+    <div class="sum-stat sum-stat-clickable ${st.stat==='over'?'st-sel':''} st-over" data-stat="over"><div class="sum-num">${overList.length}</div><div class="sum-lbl">残業50h+</div></div>
     <div class="sum-stat"><div class="sum-num">${data.items.length}</div><div class="sum-lbl">全体</div></div>
   </div>
 
   <div class="card" style="margin-top:14px">
-    <h3 style="margin-bottom:10px">手配担当ごとの人数</h3>
-    ${data.managers.map(m=>{
+    <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:10px">
+      <h3 style="margin-bottom:0">手配担当ごとの人数</h3>
+      <select id="mgr-sort" style="font-size:12.5px;padding:5px 6px">
+        ${Object.entries(mgrSortOptions).map(([k,l])=>`<option value="${k}" ${k===mgrSort?'selected':''}>${l}順</option>`).join('')}
+      </select>
+    </div>
+    ${sortedManagers.map(m=>{
       const ratio = data.items.length ? m.members/data.items.length : 0;
       const sel = st.mgr === m.key;
       return `<div class="mgr-row ${sel?'sel':''}" data-mgr="${h(m.key)}">
-        <div class="mgr-name">${h(m.name)} <span class="muted">${m.members}人 / シフト${m.shifts}件</span></div>
+        <div class="mgr-name">${h(m.name)} <span class="muted">${m.members}人 / 稼働数${m.shifts}件 / 稼働日数${m.workDays}日</span></div>
         <div class="mgr-bar-wrap"><div class="mgr-bar" style="width:${Math.max(ratio*100,1.5).toFixed(1)}%"></div><div class="mgr-val">${(ratio*100).toFixed(0)}%</div></div>
       </div>`;
     }).join('')}
   </div>
 
-  ${(st.stat||st.mgr) ? `<div class="sum-filter"><b>絞り込み中</b>${st.stat?` / ${({over:'残業あり',streak:'6連勤以上',few:'稼働少なめ',samesite:'同じ現場ばかり'})[st.stat]}`:''}${st.mgr?` / ${h((data.managers.find(m=>m.key===st.mgr)||{}).name||'')}`:''}<button class="sum-clear" id="sum-clear">✕ 解除</button></div>` : ''}
+  ${(st.stat||st.mgr) ? `<div class="sum-filter"><b>絞り込み中</b>${st.stat?` / ${({overtotal:'月100h超',streak:'6連勤以上',few:'稼働少なめ',samesite:'同じ現場ばかり',over:'残業50h+'})[st.stat]}`:''}${st.mgr?` / ${h((data.managers.find(m=>m.key===st.mgr)||{}).name||'')}`:''}<button class="sum-clear" id="sum-clear">✕ 解除</button></div>` : ''}
 
   <div class="card" style="margin-top:14px;padding:0">
     <div class="sum-table-wrap">
     <table class="sum-table">
-      <tr><th>氏名</th><th>ランク</th><th>手配担当</th><th class="c">稼働日数</th><th class="c">シフト数</th><th class="c">最長連勤</th>${canPay?'<th class="c">時間</th><th class="c">残業</th>':''}<th>よく入る現場</th><th>状況</th></tr>
+      <tr><th>氏名</th><th>ランク</th><th>手配担当</th><th class="c">稼働日数</th><th class="c">稼働数</th><th class="c">最長連勤</th>${canPay?'<th class="c">時間</th><th class="c">残業</th>':''}<th>よく入る現場</th><th>状況</th></tr>
       ${list.map(it=>`<tr class="${rowCls(it)}">
         <td class="s-name"><span class="name-link" data-goto-uid="${it.uid}">${h(it.name)}</span>${it.suspended?' <span class="susp-tag">停止</span>':''}</td>
         <td>${h(it.rank)||'—'}</td><td>${h(it.manager_name)}</td>
         <td class="c num">${it.workDays}</td><td class="c num">${it.shifts}</td><td class="c num ${isStreak(it)?'hot':''}">${it.maxStreak}</td>
-        ${canPay?`<td class="c num">${it.hours!=null?it.hours.toFixed(1):'—'}</td><td class="c num ${isOver(it)?'hot':''}">${it.overtime!=null?it.overtime.toFixed(1):'—'}</td>`:''}
+        ${canPay?`<td class="c num ${isOverTotal(it)?'hot':''}">${it.hours!=null?it.hours.toFixed(1):'—'}</td><td class="c num ${isOver(it)?'hot':''}">${it.overtime!=null?it.overtime.toFixed(1):'—'}</td>`:''}
         <td>${it.topSite?`${h(it.topSite)}(${it.topSiteCount}回)`:'—'}</td>
         <td>${badges(it)||'—'}</td>
       </tr>`).join('') || `<tr><td colspan="${canPay?9:7}" class="muted" style="text-align:center;padding:16px">該当する人はいません</td></tr>`}
@@ -2157,7 +2170,7 @@ async function pageSummary(app){
         <div class="sc-mgr">${h(it.manager_name)}${it.topSite?` ／ よく入る現場: ${h(it.topSite)}(${it.topSiteCount}回)`:''}</div>
         <div class="sc-stats">
           <div class="sc-stat"><b>${it.workDays}</b><span>稼働日</span></div>
-          <div class="sc-stat"><b>${it.shifts}</b><span>シフト</span></div>
+          <div class="sc-stat"><b>${it.shifts}</b><span>稼働数</span></div>
           <div class="sc-stat ${isStreak(it)?'hot':''}"><b>${it.maxStreak}</b><span>連勤</span></div>
           ${canPay?`<div class="sc-stat ${isOver(it)?'hot':''}"><b>${it.overtime!=null?it.overtime.toFixed(1):'—'}</b><span>残業h</span></div>`:''}
         </div>
@@ -2177,6 +2190,7 @@ async function pageSummary(app){
     pageSummary(app);
   });
   const cb = $('#sum-clear'); if(cb) cb.onclick = () => { st.stat=null; st.mgr=null; pageSummary(app); };
+  $('#mgr-sort').onchange = (e) => { st.mgrSort = e.target.value; pageSummary(app); };
 }
 /* ===== スケジュール一覧(準備中) ===== */
 async function pageDaySchedule(app){

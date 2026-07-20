@@ -167,6 +167,7 @@ td.site-multi{background:var(--cell-site);font-weight:600;max-width:230px;line-h
 .site-cell:hover{outline:2px solid var(--gold)}
 td.venue-multi{max-width:200px;line-height:1.5}
 .venue-cell{cursor:pointer;color:#1a4fb0}
+.loadshow-tag{margin-left:4px;font-size:11px;cursor:default}
 .venue-cell:hover{text-decoration:underline}
 .rookie-badge{display:inline-block;background:#2e7d32;color:#fff;font-size:10px;border-radius:3px;padding:1px 5px;margin-left:5px;vertical-align:middle}
 td.note-cell{max-width:180px;font-size:11.5px;color:#444}
@@ -440,7 +441,27 @@ table.sched tbody tr.editable-row:hover td:not(.site-multi):not(.plan-cell){ bac
 .mgr-name{font-size:13px;margin-bottom:3px}
 .mgr-bar-wrap{position:relative;background:#eee;border-radius:5px;height:20px;overflow:hidden}
 .mgr-bar{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,var(--ink2),var(--gold));border-radius:5px}
-.mgr-val{position:absolute;right:8px;top:0;line-height:20px;font-size:11px;color:#333;font-weight:700}
+.mgr-val{position:absolute;right:8px;top:0;bottom:0;display:flex;align-items:center;font-size:11px;color:#333;font-weight:700}
+
+/* メンバー分析(pageMemberStats)専用。.mgr-*系は稼働サマリー専用に後からheight:10px等で上書きされて
+   いるため流用せず、独立させる(数値がバーの高さに収まらず潰れて見える不具合の原因だった)。 */
+.stat-row{margin-bottom:10px}
+.stat-row:last-child{margin-bottom:0}
+.stat-name{font-size:13px;margin-bottom:4px;display:flex;justify-content:space-between;gap:8px}
+.stat-name .stat-count{color:#777;font-size:12px;white-space:nowrap}
+.stat-bar-wrap{position:relative;background:#eee;border-radius:5px;height:22px;overflow:hidden}
+.stat-bar{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,var(--ink2),var(--gold));border-radius:5px;min-width:2px}
+.stat-val{position:absolute;right:8px;top:0;bottom:0;display:flex;align-items:center;font-size:12px;color:#333;font-weight:700}
+.stat-row-clickable{cursor:pointer;padding:6px;margin:-6px -6px 4px;border-radius:8px;transition:background .12s}
+.stat-row-clickable:hover{background:#f3f5f9}
+.stat-row-clickable.stat-row-sel{background:#eef3fb}
+.stat-row-clickable.stat-row-sel .stat-bar{background:linear-gradient(90deg,var(--sat),var(--gold))}
+tr.stat-row-clickable{cursor:pointer;transition:background .12s}
+.day-group-card{cursor:pointer;transition:background .12s}
+.day-group-card:hover{background:#faf9f5}
+.day-group-card.stat-row-sel{background:#eef3fb}
+tr.stat-row-clickable:hover{background:#f3f5f9}
+tr.stat-row-clickable.stat-row-sel{background:#eef3fb}
 
 .sum-table{width:100%;border-collapse:collapse;font-size:13px}
 .sum-table th{background:var(--ink);color:#f3f1ea;font-size:11px;font-weight:600;padding:6px 8px;text-align:left;white-space:nowrap;position:sticky;top:0}
@@ -548,6 +569,24 @@ table.sched tbody tr.editable-row:hover td:not(.site-multi):not(.plan-cell){ bac
 tr.is-suspended{background:#fafafa;color:#999}
 tr.is-suspended .nowrap{opacity:.7}
 .dcard.is-suspended{opacity:.7;background:#fafafa}
+
+/* ===== 今日のスケジュール(日付×人のマトリックス表、チーフ予定表イメージ) ===== */
+.matrix-table{border-collapse:collapse;width:100%;font-size:12.5px;background:#fff;white-space:nowrap}
+.matrix-table th,.matrix-table td{border:1px solid var(--line);padding:6px 8px;text-align:center}
+.matrix-table th{background:#f5f3ec;font-weight:700;font-size:11.5px;line-height:1.5}
+.matrix-name-col{position:sticky;left:0;z-index:2;background:#fff;text-align:left!important;min-width:120px}
+th.matrix-name-col{background:#f5f3ec;z-index:3}
+.matrix-cell{min-width:90px;max-width:160px;overflow:hidden;text-overflow:ellipsis}
+.cell-work{background:#fff}
+.cell-site-link{cursor:pointer}
+.cell-site-link:hover{background:#f5f3ec}
+.cell-off,.cell-paid{background:#eef0f2;color:#666}
+.cell-x{background:#fdeaea;color:#a33;font-weight:700}
+.cell-ok{background:#eaf7ee;color:#2a7a45;font-weight:700}
+.cell-none{background:#fafafa;color:#ccc}
+.matrix-today{background:#fff8e5!important}
+th.matrix-today{background:#f6ecc4!important}
+tr.is-suspended .matrix-name-col{background:#fafafa}
 .tag.suspended{background:#999;color:#fff}
 
 /* ===== PC見栄え調整: 1つの値が2行に折り返さないように ===== */
