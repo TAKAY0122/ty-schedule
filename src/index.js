@@ -1580,6 +1580,25 @@ async function api(req, env, url) {
     }
     return J({ ok: 1, enabled: enable, loggedOut });
   }
+
+  // 機能ごとの「準備中」フラグ。summary(稼働サマリー)・day_schedule(スケジュール一覧)・
+  // member_stats(メンバー分析)など、開発中の機能を管理者が個別にON/OFFできるようにする。
+  // 未設定のキーはデフォルトで「準備中(1)」として扱う(開発中の機能を誤って一般公開しないため)。
+  const FEATURE_KEYS = ['summary', 'day_schedule', 'member_stats'];
+  if (method === 'GET' && path === '/settings/feature-status') {
+    const status = {};
+    for (const k of FEATURE_KEYS) status[k] = (await getSetting(env, 'feature_ready_' + k, '0')) === '1';
+    return J(status);
+  }
+  if (method === 'POST' && path === '/settings/feature-status') {
+    if (me.role !== 'admin') return ERR('管理者のみ操作できます', 403);
+    const key = String(body.key || '');
+    if (!FEATURE_KEYS.includes(key)) return ERR('不正な機能キーです');
+    const ready = !!body.ready;
+    await env.DB.prepare("REPLACE INTO settings(key,value) VALUES(?,?)").bind('feature_ready_' + key, ready ? '1' : '0').run();
+    return J({ ok: 1 });
+  }
+
   if (method === 'DELETE' && path === '/handler-mode') {
     await env.DB.prepare('UPDATE sessions SET handler=0 WHERE token=?').bind(me._tk).run();
     return J({ ok: 1 });

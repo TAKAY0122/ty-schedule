@@ -1992,16 +1992,26 @@ async function pageSites(app){
   $('#st-next').onclick = () => { stSites.month = shiftMonth(month, 1); pageSites(app); };
   app.querySelectorAll('.st-site').forEach(b => b.onclick = () => openSiteModal(b.dataset.date, b.dataset.site));
 }
+// 開発中の機能ページを「準備中」として表示する共通ヘルパー。
+// 管理者には、システム設定からON/OFFを切り替えられる旨のリンクも案内する。
+async function renderFeaturePending(app, icon, title){
+  app.innerHTML = `<h2>${icon} ${title}</h2><div class="card"><div class="muted" style="text-align:center;padding:30px 0">この機能は現在準備中です。<br>もうしばらくお待ちください。${has('account_manage')?'<br><br><a href="#/admin-settings">システム設定</a>から表示のON/OFFを切り替えられます。':''}</div></div>`;
+}
+/* ===== 稼働サマリー(準備中) ===== */
+async function pageSummary(app){
+  if(LV[ME.role] < 1){ notFound(app); return; }
+  await renderFeaturePending(app, '📊', '稼働サマリー');
+}
 /* ===== スケジュール一覧(準備中) ===== */
 async function pageDaySchedule(app){
   if(LV[ME.role] < 1){ notFound(app); return; }
-  app.innerHTML = `<h2>📅 スケジュール一覧</h2><div class="card"><div class="muted" style="text-align:center;padding:30px 0">この機能は現在準備中です。<br>もうしばらくお待ちください。</div></div>`;
+  await renderFeaturePending(app, '📅', 'スケジュール一覧');
 }
 
 /* ===== メンバー分析(準備中) ===== */
 async function pageMemberStats(app){
   if(LV[ME.role] < 1){ notFound(app); return; }
-  app.innerHTML = `<h2>📊 メンバー分析</h2><div class="card"><div class="muted" style="text-align:center;padding:30px 0">この機能は現在準備中です。<br>もうしばらくお待ちください。</div></div>`;
+  await renderFeaturePending(app, '📊', 'メンバー分析');
 }
 
 
@@ -4098,13 +4108,14 @@ async function pageAdminSettings(app){
   const lockData = await api('/lock-settings').catch(()=>null);
   const rtoList = await api('/report-type-options').catch(()=>[]);
   const maintenance = await api('/settings/maintenance').catch(()=>({enabled:false}));
+  const featureStatus = await api('/settings/feature-status').catch(()=>({}));
   const stAs = PAGE_STATE.adminSettings || (PAGE_STATE.adminSettings = { open:{ pin:true } });
   const openSet = stAs.open;
   const sec = (id,title,body)=>`<details class="adm-sec" id="asec-${id}" data-sec="${id}" ${openSet[id]?'open':''}><summary>${title}</summary><div class="adm-body">${body}</div></details>`;
   app.innerHTML = `
   <h2 style="margin-bottom:8px">🔧 システム設定</h2>
   <div class="adm-nav">
-    ${[['pin','🔑 PIN'],['link','🔗 連携'],['notify','🔔 通知'],['wage','💴 時給'],['report-type','📝 報告選択肢'],['maintenance','🚧 メンテナンス']].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
+    ${[['pin','🔑 PIN'],['link','🔗 連携'],['features','🧪 機能公開'],['notify','🔔 通知'],['wage','💴 時給'],['report-type','📝 報告選択肢'],['maintenance','🚧 メンテナンス']].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
   </div>
 
   ${sec('pin','🔑 手配者専用パスワード(PIN)', `
@@ -4187,6 +4198,19 @@ async function pageAdminSettings(app){
       <select id="rto-type"><option value="off">休暇</option><option value="ok">1日OK</option><option value="paid">有給</option><option value="x">×</option></select>
       <input id="rto-label" placeholder="表示ラベル(例:1日OKに変更)" style="width:200px">
       <button class="btn gold sm" id="rto-add">追加</button>
+    </div>`)}
+
+  ${sec('features','🧪 機能公開設定', `
+    <div class="muted" style="margin-bottom:10px">開発中の機能を、準備が整うまで一般には見せずに隠しておけます。メニュー自体は誰でも見えますが、開くと「準備中」と表示されます。</div>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      ${[['summary','📊 稼働サマリー'],['day_schedule','📅 スケジュール一覧'],['member_stats','📊 メンバー分析']].map(([key,label])=>`
+      <div class="row" style="gap:10px;align-items:center;justify-content:space-between;padding:8px 10px;background:#f7f5ef;border-radius:8px">
+        <span>${label}</span>
+        <div class="row" style="gap:8px;align-items:center">
+          <span class="tag ${featureStatus[key]?'checked':'pending'}" id="feat-status-${key}">${featureStatus[key]?'🟢 公開中':'🚧 準備中'}</span>
+          <button class="btn ghost sm feat-toggle" data-key="${key}" data-ready="${featureStatus[key]?1:0}">${featureStatus[key]?'準備中に戻す':'公開する'}</button>
+        </div>
+      </div>`).join('')}
     </div>`)}
 
   ${sec('maintenance','🚧 メンテナンスモード', `
@@ -4294,6 +4318,20 @@ async function pageAdminSettings(app){
       $('#imp-msg').innerHTML = '<span class="msg ok">再発行しました</span>';
     }catch(e){ $('#imp-msg').innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
   };
+  app.querySelectorAll('.feat-toggle').forEach(b => b.onclick = async () => {
+    const key = b.dataset.key;
+    const nextReady = b.dataset.ready !== '1';
+    try{
+      await api('/settings/feature-status', { method:'POST', body:{ key, ready:nextReady } });
+      featureStatus[key] = nextReady;
+      b.dataset.ready = nextReady ? '1' : '0';
+      b.textContent = nextReady ? '準備中に戻す' : '公開する';
+      const st = $(`#feat-status-${key}`);
+      st.className = `tag ${nextReady?'checked':'pending'}`;
+      st.textContent = nextReady ? '🟢 公開中' : '🚧 準備中';
+      popup(nextReady ? '公開しました' : '準備中に戻しました');
+    }catch(e){ popup(e.message,'error'); }
+  });
   $('#maint-toggle').onclick = async () => {
     const nextEnable = !maintenance.enabled;
     const msg = nextEnable
