@@ -566,7 +566,8 @@ async function openSiteAdd(date, site, venue, tin, tout){
       <div class="row" style="gap:6px;margin:6px 0">
         <select id="sa-mgr" class="nowrap" style="flex:1"><option value="">▼ 担当手配者</option>
           ${managers.map(m=>`<option value="${m.id}">${h(m.name)}手配(${m.count}名)</option>`).join('')}
-          <option value="__none">チーフ手配</option></select>
+          <option value="__none:1課">チーフ手配(1課)</option>
+          <option value="__none:2課">チーフ手配(2課)</option></select>
         <select id="sa-memsel" class="nowrap" style="flex:1"><option value="">担当を選択</option></select>
         <button class="btn ghost sm" id="sa-mem-add">＋追加</button>
       </div>
@@ -578,7 +579,7 @@ async function openSiteAdd(date, site, venue, tin, tout){
   const def1 = date;
   $('#sa-mgr').onchange = () => {
     const mid = $('#sa-mgr').value; let list=[];
-    if(mid==='__none') list=users.filter(u=>!u.manager_id);
+    if(mid.startsWith('__none:')) list=users.filter(u=>!u.manager_id && u.ka===mid.slice(7));
     else if(mid) list=users.filter(u=>String(u.manager_id)===String(mid));
     $('#sa-memsel').innerHTML = list.length ? '<option value="">メンバー選択</option>'+list.map(u=>`<option value="${u.id}">${h(u.name)}(${h(u.regno)})</option>`).join('') : '<option value="">該当なし</option>';
   };
@@ -1653,7 +1654,8 @@ async function pageSchedule(app, hash){
         <label>担当手配者</label>
         <select id="mp-mgr"><option value="">▼ 選択してください</option>
           ${managers.map(m=>`<option value="${m.id}">${h(m.name)}手配(${m.count}名)</option>`).join('')}
-          <option value="__none">チーフ手配</option>
+          <option value="__none:1課">チーフ手配(1課)</option>
+          <option value="__none:2課">チーフ手配(2課)</option>
           <option value="__all">全員から選ぶ</option>
         </select>
         <label>メンバー</label>
@@ -1665,7 +1667,7 @@ async function pageSchedule(app, hash){
       let list;
       if(mid==='') { $('#mp-mem').innerHTML='<option>担当手配者を選んでください</option>'; $('#mp-mem').disabled=true; $('#mp-go').disabled=true; return; }
       if(mid==='__all') list = users;
-      else if(mid==='__none') list = users.filter(u=>!u.manager_id);
+      else if(mid.startsWith('__none:')) list = users.filter(u=>!u.manager_id && u.ka===mid.slice(7));
       else list = users.filter(u=>String(u.manager_id)===String(mid));
       if(!list.length){ $('#mp-mem').innerHTML='<option value="">(該当メンバーなし)</option>'; $('#mp-mem').disabled=true; $('#mp-go').disabled=true; return; }
       $('#mp-mem').disabled=false; $('#mp-go').disabled=false;
@@ -2250,7 +2252,8 @@ async function pageEdit(app, initialUid){
           <select id="bk-mgr" class="nowrap" style="flex:1">
             <option value="">▼ 担当手配者を選択</option>
             ${managers.map(m=>`<option value="${m.id}">${h(m.name)}手配(${m.count}名)</option>`).join('')}
-            <option value="__none">チーフ手配</option>
+            <option value="__none:1課">チーフ手配(1課)</option>
+            <option value="__none:2課">チーフ手配(2課)</option>
           </select>
           <select id="bk-memsel" class="nowrap" style="flex:1"><option value="">担当手配者を選択</option></select>
           <button class="btn ghost sm" id="bk-mem-add">＋追加</button>
@@ -2272,7 +2275,8 @@ async function pageEdit(app, initialUid){
       <select id="e-mgr" class="nowrap">
         <option value="__all">全員</option>
         ${managers.map(m=>`<option value="${m.id}">${h(m.name)}手配(${m.count}名)</option>`).join('')}
-        <option value="__none">チーフ手配</option>
+        <option value="__none:1課">チーフ手配(1課)</option>
+        <option value="__none:2課">チーフ手配(2課)</option>
       </select>
       <label>メンバー</label>
       <select id="e-user" class="nowrap">${users.map(u=>`<option value="${u.id}" ${initialUid && String(u.id)===String(initialUid)?'selected':''}>${h(u.name)}(${h(u.regno)})</option>`).join('')}</select>
@@ -2300,7 +2304,7 @@ async function pageEdit(app, initialUid){
   $('#bk-mgr').onchange = () => {
     const mid = $('#bk-mgr').value;
     let list = [];
-    if(mid==='__none') list = users.filter(u=>!u.manager_id);
+    if(mid.startsWith('__none:')) list = users.filter(u=>!u.manager_id && u.ka===mid.slice(7));
     else if(mid) list = users.filter(u=>String(u.manager_id)===String(mid));
     $('#bk-memsel').innerHTML = list.length
       ? '<option value="">メンバーを選択</option>'+list.map(u=>`<option value="${u.id}">${h(u.name)}(${h(u.regno)})</option>`).join('')
@@ -2370,7 +2374,7 @@ async function pageEdit(app, initialUid){
     const mid = $('#e-mgr').value;
     let list;
     if(mid==='__all') list = users;
-    else if(mid==='__none') list = users.filter(u=>!u.manager_id);
+    else if(mid.startsWith('__none:')) list = users.filter(u=>!u.manager_id && u.ka===mid.slice(7));
     else list = users.filter(u=>String(u.manager_id)===String(mid));
     $('#e-user').innerHTML = (list.length?list:users).map(u=>`<option value="${u.id}">${h(u.name)}(${h(u.regno)})</option>`).join('');
   };
@@ -3871,7 +3875,7 @@ async function pageAdmin(app){
     const adq = st.q.trim(), admgr = st.mgr;
     const aList = users.filter(u=>{
       const mq = !adq || (u.name||'').includes(adq) || (u.regno||'').includes(adq);
-      const mm = !admgr || (admgr==='__chief' ? !u.manager_id : String(u.manager_id)===String(admgr));
+      const mm = !admgr || (admgr.startsWith('__chief:') ? (!u.manager_id && u.ka===admgr.slice(8)) : String(u.manager_id)===String(admgr));
       return mq && mm;
     });
     const area = $('#ad-list-area'); if(!area) return;
@@ -4030,7 +4034,8 @@ async function pageAdmin(app){
       <select id="ad-mgr" class="filter-select">
         <option value="">手配担当:すべて</option>
         ${mgrs.map(m=>`<option value="${m.id}" ${String(st.mgr)===String(m.id)?'selected':''}>${h(m.name)}手配</option>`).join('')}
-        <option value="__chief" ${st.mgr==='__chief'?'selected':''}>チーフ手配</option>
+        <option value="__chief:1課" ${st.mgr==='__chief:1課'?'selected':''}>チーフ手配(1課)</option>
+        <option value="__chief:2課" ${st.mgr==='__chief:2課'?'selected':''}>チーフ手配(2課)</option>
       </select>
       <button class="btn ghost sm" id="ad-clear" style="${(st.q||st.mgr)?'':'display:none'}">クリア</button>
     </div>

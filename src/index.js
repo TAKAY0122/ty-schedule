@@ -1130,15 +1130,21 @@ function parseFormatC(rows, cfg, fileDate) {
           const nx = String(line[c + 1] || '').trim();
           if (nx) venue = nx;
         }
-        // 搬入終了 / 終演時間 は "搬入終了/11:00" か、セル"搬入終了"+右隣 の両対応
+        // 搬入終了 / 終演時間 は "搬入終了/11:00"、セル"搬入終了"+右隣、セル"搬入終了"+直下 の3パターンに対応
         let mm;
         if (!loadEnd) {
           if ((mm = s.match(/搬入終了[\s\/:：]+(\d{1,2}:\d{2})/))) loadEnd = mm[1];
-          else if (/^搬入終了$/.test(s.trim())) { const t = normTime(line[c + 1]); if (t) loadEnd = t; }
+          else if (/^搬入終了$/.test(strim)) {
+            const t = normTime(line[c + 1]); if (t) loadEnd = t;
+            else { const t2 = normTime((rows[r + 1] || [])[c]); if (t2) loadEnd = t2; }
+          }
         }
         if (!showEnd) {
           if ((mm = s.match(/終演[時間]*[\s\/:：]+(\d{1,2}:\d{2})/))) showEnd = mm[1];
-          else if (/^終演時間$/.test(s.trim())) { const t = normTime(line[c + 1]); if (t) showEnd = t; }
+          else if (/^終演時間$/.test(strim)) {
+            const t = normTime(line[c + 1]); if (t) showEnd = t;
+            else { const t2 = normTime((rows[r + 1] || [])[c]); if (t2) showEnd = t2; }
+          }
         }
         if (!has2st && /(^|[^0-9a-zA-Z])2st([^0-9a-zA-Z]|$)/i.test(s) && c + 1 < line.length) {
           // 手当欄の "2st" ラベル右に氏名や値があれば手当ありとみなす(空ならスキップ)
