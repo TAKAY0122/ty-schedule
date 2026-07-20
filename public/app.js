@@ -37,6 +37,55 @@ const UPDATE_ITEMS = [
   { v:1, icon:'📊', title:'稼働サマリーを強化', desc:'「同じ現場ばかり任されている人」を自動で検知するようになりました。', show: () => LV[ME.role] >= 1 },
   { v:1, icon:'📅', title:'Googleカレンダー連携', desc:'自分のスケジュールを普段使いのカレンダーアプリに自動反映できます。', link:'#/calendar-guide', linkLabel:'やり方を見る', show: () => true },
 ];
+// 機能公開設定の対象画面。バックエンドのFEATURE_KEYSと必ず一致させる。
+// 新しい画面を追加したら、ここと src/index.js の FEATURE_KEYS の両方に追記する。
+const FEATURE_LABELS = {
+  'edit': '✏️ スケジュール入力',
+  'self-reports': '📝 現場変更報告の承認',
+  'availability': '🙋 休み希望・稼働時間の提出',
+  'availability-team': '📋 チームの希望一覧',
+  'nominate': '👤 メンバーを希望する',
+  'nominations': '✅ メンバー指名の承認',
+  'sites': '🏟️ 現場一覧',
+  'members': '👥 メンバー一覧',
+  'summary': '📊 稼働サマリー',
+  'member-stats': '📈 メンバー分析',
+  'day-schedule': '📅 スケジュール一覧',
+  'report': '📝 新人報告',
+  'reports': '📋 報告一覧',
+  'draft': '⭐ ドラフト',
+  'blacklist': '🚫 ブラックリスト',
+  'report-export': '📋 スプレッドシート貼り付け用コピー',
+  'admin': '👥 アカウント管理',
+  'admin-settings': '🔧 システム設定',
+  'role-permissions': '🛡️ 権限の一括設定',
+  'handler-status': '🟢 ログイン中・編集履歴',
+  'import': '📥 スプレッドシート取り込み',
+  'sched-sources': '📡 予定表ソース管理',
+  'daicho': '🗂️ 台帳保管',
+};
+const FEATURE_KEYS = Object.keys(FEATURE_LABELS);
+// 給与計算区分コード → 表示用の日本語ラベル(業務名対応表の表示に使う)
+const DUTY_SEG_LABELS = {
+  g5: '案内料金(最低5時間)',
+  l3: '搬入出料金(最低3時間)',
+  lg: '搬入→案内(時間帯で分割計算)',
+  gl: '案内→搬出(時間帯で分割計算)',
+  lgl: '搬入→案内→搬出(時間帯で分割計算)',
+  skip: '対象外(給与計算なし)',
+};
+let FEATURE_STATUS_CACHE = null;
+async function getFeatureStatus(force){
+  if(!FEATURE_STATUS_CACHE || force) FEATURE_STATUS_CACHE = await api('/settings/feature-status').catch(()=>({}));
+  return FEATURE_STATUS_CACHE;
+}
+// 準備中・メンテナンス中の画面に来た人に表示する共通メッセージ
+function renderFeatureBlocked(app, status, label){
+  const msg = status === 'maintenance'
+    ? 'この機能は現在メンテナンス中です。<br>しばらくしてから再度お試しください。'
+    : 'この機能は現在準備中です。<br>もうしばらくお待ちください。';
+  app.innerHTML = `<h2>${h(label)}</h2><div class="card"><div class="muted" style="text-align:center;padding:30px 0">${msg}</div></div>`;
+}
 let modalScrollY = 0; // モーダルを開いた時点のスクロール位置(閉じた時に復元する)
 let MONTH = new Date(Date.now()+9*3600e3).toISOString().slice(0,7);
 // ページ遷移をまたいで保持したいフィルタ・タブ・検索語などの状態。
@@ -661,6 +710,19 @@ async function render(){
   const hash = location.hash || '#/home';
   renderShell(hash);
   const app = $('#app');
+
+  // 機能公開設定のチェック。管理者は自分で解除できるよう常にスキップする。
+  if(ME.role !== 'admin'){
+    const featKey = hash.replace(/^#\//, '').split('/')[0];
+    if(FEATURE_KEYS.includes(featKey)){
+      const status = await getFeatureStatus();
+      if(status[featKey] === 'hidden' || status[featKey] === 'maintenance'){
+        renderFeatureBlocked(app, status[featKey], FEATURE_LABELS[featKey]);
+        return;
+      }
+    }
+  }
+
   try{
     if(hash === '#/home') await pageHome(app);
     else if(hash === '#/availability') await pageAvailability(app);
@@ -4109,6 +4171,7 @@ async function pageAdminSettings(app){
   const pin = (await api('/settings/handler-pin')).pin;
   const importTok = (await api('/settings/import-token')).token;
   const wageData = await api('/wage-rates').catch(()=>null);
+  const dutyMap = await api('/duty-map').catch(()=>({}));
   const notifyData = await api('/notify-settings').catch(()=>null);
   const lockData = await api('/lock-settings').catch(()=>null);
   const rtoList = await api('/report-type-options').catch(()=>[]);
@@ -4189,6 +4252,15 @@ async function pageAdminSettings(app){
       <span id="wage-msg" class="muted"></span>
     </div>
     <div class="muted" style="margin-top:8px">深夜手当・超過手当は案内料金×0.25、2st手当は+¥500。対象はA〜Eランクのみ（ケータリング・物品販売・その他ランクは対象外）。</div>
+    <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+      <div style="font-weight:700;margin-bottom:8px">📋 業務名 → 料金区分の対応表</div>
+      <div class="muted" style="margin-bottom:8px">台帳の「業務名」列に入っている値ごとに、どの料金で計算されるかの一覧です。</div>
+      <table class="wage-tbl" style="max-width:520px">
+        <tr><th>業務名</th><th>料金区分</th></tr>
+        ${Object.entries(dutyMap).map(([duty,seg])=>`<tr><td>${h(duty)}</td><td>${h(DUTY_SEG_LABELS[seg]||seg)}</td></tr>`).join('') || '<tr><td colspan="2" class="muted">取得できませんでした</td></tr>'}
+      </table>
+      <div class="muted" style="margin-top:8px">上記に無い業務名は「対象外」として扱われます。</div>
+    </div>
     <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
       <button class="btn ghost sm" id="recalc-btn">過去データの給与・残業を再計算</button>
       <span id="recalc-msg" class="muted"></span>
@@ -4206,16 +4278,26 @@ async function pageAdminSettings(app){
     </div>`)}
 
   ${sec('features','🧪 機能公開設定', `
-    <div class="muted" style="margin-bottom:10px">開発中の機能を、準備が整うまで一般には見せずに隠しておけます。メニュー自体は誰でも見えますが、開くと「準備中」と表示されます。</div>
-    <div style="display:flex;flex-direction:column;gap:10px">
-      ${[['summary','📊 稼働サマリー'],['day_schedule','📅 スケジュール一覧'],['member_stats','📊 メンバー分析']].map(([key,label])=>`
-      <div class="row" style="gap:10px;align-items:center;justify-content:space-between;padding:8px 10px;background:#f7f5ef;border-radius:8px">
+    <div class="muted" style="margin-bottom:10px">各画面を「公開中」「準備中(まだ誰にも見せない)」「メンテナンス中(一時的に使えなくする)」から選べます。メニュー自体は誰でも見えますが、開くとそれぞれの状態に応じたメッセージが表示されます。管理者本人には、この設定に関わらず常に通常通り表示されます。</div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      ${FEATURE_KEYS.map(key=>{
+        const st = featureStatus[key] || 'ready';
+        const label = FEATURE_LABELS[key];
+        const tagCls = st==='ready' ? 'checked' : st==='maintenance' ? 'pending' : 'suspended';
+        const tagText = st==='ready' ? '🟢 公開中' : st==='maintenance' ? '🚧 メンテナンス中' : '⏳ 準備中';
+        return `
+      <div class="row" style="gap:10px;align-items:center;justify-content:space-between;padding:8px 10px;background:#f7f5ef;border-radius:8px;flex-wrap:wrap">
         <span>${label}</span>
         <div class="row" style="gap:8px;align-items:center">
-          <span class="tag ${featureStatus[key]?'checked':'pending'}" id="feat-status-${key}">${featureStatus[key]?'🟢 公開中':'🚧 準備中'}</span>
-          <button class="btn ghost sm feat-toggle" data-key="${key}" data-ready="${featureStatus[key]?1:0}">${featureStatus[key]?'準備中に戻す':'公開する'}</button>
+          <span class="tag ${tagCls}" id="feat-status-${key}">${tagText}</span>
+          <select class="feat-select" data-key="${key}" style="font-size:12.5px;padding:5px 6px">
+            <option value="ready" ${st==='ready'?'selected':''}>公開中</option>
+            <option value="hidden" ${st==='hidden'?'selected':''}>準備中</option>
+            <option value="maintenance" ${st==='maintenance'?'selected':''}>メンテナンス中</option>
+          </select>
         </div>
-      </div>`).join('')}
+      </div>`;
+      }).join('')}
     </div>`)}
 
   ${sec('maintenance','🚧 メンテナンスモード', `
@@ -4323,18 +4405,18 @@ async function pageAdminSettings(app){
       $('#imp-msg').innerHTML = '<span class="msg ok">再発行しました</span>';
     }catch(e){ $('#imp-msg').innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
   };
-  app.querySelectorAll('.feat-toggle').forEach(b => b.onclick = async () => {
-    const key = b.dataset.key;
-    const nextReady = b.dataset.ready !== '1';
+  app.querySelectorAll('.feat-select').forEach(sel => sel.onchange = async () => {
+    const key = sel.dataset.key;
+    const status = sel.value;
     try{
-      await api('/settings/feature-status', { method:'POST', body:{ key, ready:nextReady } });
-      featureStatus[key] = nextReady;
-      b.dataset.ready = nextReady ? '1' : '0';
-      b.textContent = nextReady ? '準備中に戻す' : '公開する';
+      await api('/settings/feature-status', { method:'POST', body:{ key, status } });
+      featureStatus[key] = status;
+      const tagCls = status==='ready' ? 'checked' : status==='maintenance' ? 'pending' : 'suspended';
+      const tagText = status==='ready' ? '🟢 公開中' : status==='maintenance' ? '🚧 メンテナンス中' : '⏳ 準備中';
       const st = $(`#feat-status-${key}`);
-      st.className = `tag ${nextReady?'checked':'pending'}`;
-      st.textContent = nextReady ? '🟢 公開中' : '🚧 準備中';
-      popup(nextReady ? '公開しました' : '準備中に戻しました');
+      st.className = `tag ${tagCls}`;
+      st.textContent = tagText;
+      popup('変更しました');
     }catch(e){ popup(e.message,'error'); }
   });
   $('#maint-toggle').onclick = async () => {

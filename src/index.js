@@ -1587,21 +1587,30 @@ async function api(req, env, url) {
     return J({ ok: 1, enabled: enable, loggedOut });
   }
 
-  // 機能ごとの「準備中」フラグ。summary(稼働サマリー)・day_schedule(スケジュール一覧)・
-  // member_stats(メンバー分析)など、開発中の機能を管理者が個別にON/OFFできるようにする。
-  // 未設定のキーはデフォルトで「準備中(1)」として扱う(開発中の機能を誤って一般公開しないため)。
-  const FEATURE_KEYS = ['summary', 'day_schedule', 'member_stats'];
+  // 機能ごとの公開状態。左メニューの各画面を、管理者が個別に
+  // ready(通常通り公開) / hidden(準備中) / maintenance(メンテナンス中) に切り替えられる。
+  // キーはhashのパス部分(例: '#/summary' → 'summary')。新しい画面を追加したら、
+  // ここ(FEATURE_KEYS)とフロントエンドのFEATURE_LABELSの両方に追記する。
+  // 未設定のキーは既定で'ready'として扱う(既存画面が突然消えないように)。
+  const FEATURE_KEYS = [
+    'edit', 'self-reports', 'availability', 'availability-team', 'nominate', 'nominations',
+    'sites', 'members', 'summary', 'member-stats', 'day-schedule',
+    'report', 'reports', 'draft', 'blacklist', 'report-export',
+    'admin', 'admin-settings', 'role-permissions', 'handler-status',
+    'import', 'sched-sources', 'daicho',
+  ];
   if (method === 'GET' && path === '/settings/feature-status') {
     const status = {};
-    for (const k of FEATURE_KEYS) status[k] = (await getSetting(env, 'feature_ready_' + k, '0')) === '1';
+    for (const k of FEATURE_KEYS) status[k] = await getSetting(env, 'feature_status_' + k, 'ready');
     return J(status);
   }
   if (method === 'POST' && path === '/settings/feature-status') {
     if (me.role !== 'admin') return ERR('管理者のみ操作できます', 403);
     const key = String(body.key || '');
     if (!FEATURE_KEYS.includes(key)) return ERR('不正な機能キーです');
-    const ready = !!body.ready;
-    await env.DB.prepare("REPLACE INTO settings(key,value) VALUES(?,?)").bind('feature_ready_' + key, ready ? '1' : '0').run();
+    const status = String(body.status || 'ready');
+    if (!['ready', 'hidden', 'maintenance'].includes(status)) return ERR('不正な状態です');
+    await env.DB.prepare("REPLACE INTO settings(key,value) VALUES(?,?)").bind('feature_status_' + key, status).run();
     return J({ ok: 1 });
   }
 
@@ -1683,6 +1692,11 @@ async function api(req, env, url) {
     const periods = {};
     for (const r of rows) { (periods[r.effective_from] ||= { effective_from: r.effective_from, rates: {} }); (periods[r.effective_from].rates[r.rank] ||= {})[r.kind] = r.amount; }
     return J({ lockBefore: payLockDate(await getLockDays(env)), lockDays: await getLockDays(env), periods: Object.values(periods) });
+  }
+  // 業務名 → 料金区分の対応表(手配担当以上が確認用に閲覧できる)
+  if (method === 'GET' && path === '/duty-map') {
+    if (!has(me, 'wage_settings')) return ERR('ページが見つかりません', 404);
+    return J(DUTY_MAP);
   }
   // 時給テーブル更新(管理者)。body.rates=[{effective_from,rank,kind,amount}]。新規effective_fromの追加も可
   if (method === 'PUT' && path === '/wage-rates') {
