@@ -2718,7 +2718,7 @@ async function api(req, env, url) {
     const ph = dates.map(() => '?').join(',');
     // 3つのクエリは互いに依存しないため、直列実行(3回分のDB往復レイテンシが積み重なる)を避けて並列実行する
     const [membersRes, scheduleRes, managersRes] = await Promise.all([
-      env.DB.prepare("SELECT id, name, regno, rank, ka, han, manager_id, suspended FROM users WHERE role='member' ORDER BY regno").all(),
+      env.DB.prepare("SELECT id, name, regno, rank, ka, han, manager_id, suspended FROM users ORDER BY regno").all(),
       env.DB.prepare(`SELECT user_id, date, type, site, venue, note FROM schedule WHERE date IN (${ph}) ORDER BY user_id, date, slot`).bind(...dates).all(),
       env.DB.prepare("SELECT id, name FROM users WHERE role IN ('handler','admin')").all(),
     ]);
@@ -2747,7 +2747,7 @@ async function api(req, env, url) {
 
     const rows = members.map(m => ({
       id: m.id, name: m.name, regno: m.regno, rank: m.rank, ka: m.ka, han: m.han,
-      managerId: m.manager_id, managerName: m.manager_id ? (mgrName[m.manager_id] || 'チーフ手配') : chiefLabel(m),
+      managerId: m.manager_id, managerName: m.manager_id ? ((mgrName[m.manager_id] ? mgrName[m.manager_id]+'手配' : 'チーフ手配')) : chiefLabel(m),
       suspended: m.suspended ? 1 : 0,
       days: dates.map(date => cellFor(m.id, date)),
     }));
@@ -2793,7 +2793,7 @@ async function api(req, env, url) {
       const key = m.manager_id ? 'm' + m.manager_id : 'chief:' + (m.ka || '未設定');
       const g = byManagerMap[key] ||= {
         key, managerId: m.manager_id || null,
-        name: m.manager_id ? (mgrName[m.manager_id] || 'チーフ手配') : chiefLabel(m),
+        name: m.manager_id ? ((mgrName[m.manager_id] ? mgrName[m.manager_id]+'手配' : 'チーフ手配')) : chiefLabel(m),
         ka: m.manager_id ? (managers.find(x => x.id === m.manager_id) || {}).ka || '' : (m.ka || ''),
         list: [],
       };
@@ -2810,7 +2810,7 @@ async function api(req, env, url) {
     // カード選択によるフィルタ表示・個人編集への導線用に、個々のメンバー情報も併せて返す
     const memberList = members.map(m => ({
       id: m.id, name: m.name, regno: m.regno, rank: m.rank, ka: m.ka, han: m.han, base: m.base,
-      managerId: m.manager_id, managerName: m.manager_id ? (mgrName[m.manager_id] || 'チーフ手配') : chiefLabel(m),
+      managerId: m.manager_id, managerName: m.manager_id ? ((mgrName[m.manager_id] ? mgrName[m.manager_id]+'手配' : 'チーフ手配')) : chiefLabel(m),
       suspended: m.suspended ? 1 : 0,
     }));
 

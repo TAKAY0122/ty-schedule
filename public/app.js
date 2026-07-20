@@ -2292,7 +2292,7 @@ async function pageDaySchedule(app){
       <select id="ds-han"><option value="">班:すべて</option>${hanOptions.map(v=>opt(v,v,st.han)).join('')}</select>
       <select id="ds-mgr">
         <option value="">手配担当:すべて</option>
-        ${mgrOptions.map(([id,name])=>opt(id,name+'手配',st.mgr)).join('')}
+        ${mgrOptions.map(([id,name])=>opt(id,name,st.mgr)).join('')}
         <option value="__chief:1課" ${st.mgr==='__chief:1課'?'selected':''}>チーフ手配(1課)</option>
         <option value="__chief:2課" ${st.mgr==='__chief:2課'?'selected':''}>チーフ手配(2課)</option>
       </select>
@@ -2307,7 +2307,7 @@ async function pageDaySchedule(app){
           ${dateHead.map(dh=>`<th class="${dh.isToday?'matrix-today':''}">${dh.mo}/${dh.da}<br><span class="muted" style="font-weight:400">(${WD[dh.wd]})</span></th>`).join('')}
         </tr>
         ${list.map(r=>`<tr>
-          <td class="matrix-name-col"><a href="#/schedule/${r.id}">${h(r.name)}</a><br><span class="muted" style="font-size:11px">${h(r.regno)} ${h(r.rank)||''}</span><br><span class="muted" style="font-size:10.5px">${h(r.managerName)}</span></td>
+          <td class="matrix-name-col"><a href="#/schedule/${r.id}">${h(r.name)}</a><br><span class="muted" style="font-size:11px">${h(r.regno)} ${r.rank?h(r.rank)+'ランク':''}</span><br><span class="muted" style="font-size:10.5px">${h(r.managerName)}</span></td>
           ${r.days.map((cell,i)=>cellHtml(cell, dateHead[i].isToday, dateHead[i].d)).join('')}
         </tr>`).join('') || `<tr><td colspan="${st.days+1}" class="muted" style="text-align:center;padding:16px">該当するメンバーはいません</td></tr>`}
       </table>
@@ -2430,7 +2430,7 @@ async function pageMemberStats(app){
       <table class="list pc-only">
         <tr><th>氏名</th><th>登録番号</th><th>ランク</th><th>拠点</th><th>課</th><th>班</th><th>手配担当</th><th></th></tr>
         ${list.map(m=>`<tr>
-          <td>${h(m.name)}</td><td>${h(m.regno)}</td><td>${h(m.rank)||'—'}</td>
+          <td>${h(m.name)}</td><td>${h(m.regno)}</td><td>${m.rank?h(m.rank)+'ランク':'—'}</td>
           <td>${h(m.base)||'—'}</td><td>${h(m.ka)||'—'}</td><td>${h(m.han)||'—'}</td><td>${h(m.managerName)||'—'}</td>
           <td class="nowrap">
             <button class="btn ghost xs ms-sched" data-id="${m.id}">📅予定</button>
@@ -2441,7 +2441,7 @@ async function pageMemberStats(app){
       <div class="cards sp-only">
         ${list.map(m=>`<div class="dcard">
           <div class="dcard-head"><span class="dcard-title">${h(m.name)}</span><span class="dcard-sub">${h(m.regno)}</span></div>
-          <div class="drow"><span class="dk">ランク/拠点</span><span class="dv">${h(m.rank)||'—'} / ${h(m.base)||'—'}</span></div>
+          <div class="drow"><span class="dk">ランク/拠点</span><span class="dv">${m.rank?h(m.rank)+'ランク':'—'} / ${h(m.base)||'—'}</span></div>
           <div class="drow"><span class="dk">課/班</span><span class="dv">${h(m.ka)||'—'} / ${h(m.han)||'—'}</span></div>
           <div class="drow"><span class="dk">手配担当</span><span class="dv">${h(m.managerName)||'—'}</span></div>
           <div class="dcard-actions">
