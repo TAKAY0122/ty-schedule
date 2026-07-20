@@ -2065,7 +2065,7 @@ async function renderFeaturePending(app, icon, title){
    統計カード・手配担当バーをタップすると、その条件で一覧を絞り込める。 ===== */
 async function pageSummary(app){
   if(LV[ME.role] < 1){ notFound(app); return; }
-  const st = PAGE_STATE.summary || (PAGE_STATE.summary = { month: MONTH, stat: null, mgr: null });
+  const st = PAGE_STATE.summary || (PAGE_STATE.summary = { month: MONTH, stat: null, mgr: null, sort: 'regno' });
   app.innerHTML = `<div class="muted">読み込み中…</div>`;
   let data;
   try{ data = await api(`/summary?month=${st.month}`); }
@@ -2095,6 +2095,12 @@ async function pageSummary(app){
   // 手配担当選択によるフィルタ(統計フィルタと併用可)
   if(st.mgr) list = list.filter(it => (it.manager_id ? 'm'+it.manager_id : 'chief:'+(it.ka||'未設定')) === st.mgr);
 
+  // 一覧の並び替え(統計・手配担当のフィルタの有無に関わらず、常に適用できる)
+  const listSortOptions = { regno:'登録番号順', workDays:'稼働日数順', shifts:'稼働数順', maxStreak:'連勤数順', ...(canPay?{hours:'時間順', overtime:'残業順'}:{}) };
+  const listSort = listSortOptions[st.sort] ? st.sort : 'regno';
+  if(listSort === 'regno') list = [...list].sort((a,b) => String(a.regno||'').localeCompare(String(b.regno||''), undefined, {numeric:true}));
+  else list = [...list].sort((a,b) => (b[listSort]||0) - (a[listSort]||0));
+
   const rowCls = it => isOverTotal(it) ? 'r-over' : isStreak(it) ? 'r-streak' : isFew(it) ? 'r-few' : '';
   const badges = it => {
     const b = [];
@@ -2109,6 +2115,8 @@ async function pageSummary(app){
   const mgrSortOptions = { shifts:'稼働数', workDays:'稼働日数', members:'人数' };
   const mgrSort = st.mgrSort || 'shifts';
   const sortedManagers = [...data.managers].sort((a,b)=>b[mgrSort]-a[mgrSort]);
+  // グラフの割合は、選んでいる並び替え基準(人数/稼働数/稼働日数)に応じた合計を分母にする
+  const mgrTotal = mgrSort === 'members' ? data.items.length : data.managers.reduce((s,m)=>s+(m[mgrSort]||0),0);
   const [y,mo] = st.month.split('-').map(Number);
 
   app.innerHTML = `
@@ -2120,7 +2128,7 @@ async function pageSummary(app){
       <button class="btn ghost sm" id="sum-next">▶</button>
     </div>
   </div>
-  <div class="muted" style="margin-top:4px">全${data.items.length}名(停止中を含む)。カード・手配担当をタップすると絞り込めます。</div>
+  <div class="muted" style="margin-top:4px">全${data.items.length}名。カード・手配担当をタップすると絞り込めます。</div>
 
   <div class="sum-stats">
     <div class="sum-stat sum-stat-clickable ${st.stat==='overtotal'?'st-sel':''} st-over" data-stat="overtotal"><div class="sum-num">${overTotalList.length}</div><div class="sum-lbl">月100h超</div></div>
@@ -2133,13 +2141,13 @@ async function pageSummary(app){
 
   <div class="card" style="margin-top:14px">
     <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:10px">
-      <h3 style="margin-bottom:0">手配担当ごとの人数</h3>
+      <h3 style="margin-bottom:0">手配担当ごとの${mgrSortOptions[mgrSort]}</h3>
       <select id="mgr-sort" style="font-size:12.5px;padding:5px 6px">
         ${Object.entries(mgrSortOptions).map(([k,l])=>`<option value="${k}" ${k===mgrSort?'selected':''}>${l}順</option>`).join('')}
       </select>
     </div>
     ${sortedManagers.map(m=>{
-      const ratio = data.items.length ? m.members/data.items.length : 0;
+      const ratio = mgrTotal ? m[mgrSort]/mgrTotal : 0;
       const sel = st.mgr === m.key;
       return `<div class="mgr-row ${sel?'sel':''}" data-mgr="${h(m.key)}">
         <div class="mgr-name">${h(m.name)} <span class="muted">${m.members}人 / 稼働数${m.shifts}件 / 稼働日数${m.workDays}日</span></div>
@@ -2150,24 +2158,30 @@ async function pageSummary(app){
 
   ${(st.stat||st.mgr) ? `<div class="sum-filter"><b>絞り込み中</b>${st.stat?` / ${({overtotal:'月100h超',streak:'6連勤以上',few:'稼働少なめ',samesite:'同じ現場ばかり',over:'残業50h+'})[st.stat]}`:''}${st.mgr?` / ${h((data.managers.find(m=>m.key===st.mgr)||{}).name||'')}`:''}<button class="sum-clear" id="sum-clear">✕ 解除</button></div>` : ''}
 
+  <div class="row" style="justify-content:flex-end;align-items:center;gap:8px;margin-top:14px;margin-bottom:-6px">
+    <label class="muted" style="font-size:12.5px">並び替え</label>
+    <select id="list-sort" style="font-size:12.5px;padding:5px 6px">
+      ${Object.entries(listSortOptions).map(([k,l])=>`<option value="${k}" ${k===listSort?'selected':''}>${l}</option>`).join('')}
+    </select>
+  </div>
+
   <div class="card" style="margin-top:14px;padding:0">
     <div class="sum-table-wrap">
     <table class="sum-table">
-      <tr><th>氏名</th><th>ランク</th><th>手配担当</th><th class="c">稼働日数</th><th class="c">稼働数</th><th class="c">最長連勤</th>${canPay?'<th class="c">時間</th><th class="c">残業</th>':''}<th>よく入る現場</th><th>状況</th></tr>
+      <tr><th>氏名</th><th>ランク</th><th>手配担当</th><th class="c">稼働日数</th><th class="c">稼働数</th><th class="c">最長連勤</th>${canPay?'<th class="c">時間</th><th class="c">残業</th>':''}<th>状況</th></tr>
       ${list.map(it=>`<tr class="${rowCls(it)}">
-        <td class="s-name"><span class="name-link" data-goto-uid="${it.uid}">${h(it.name)}</span>${it.suspended?' <span class="susp-tag">停止</span>':''}</td>
+        <td class="s-name"><span class="name-link" data-goto-uid="${it.uid}">${h(it.name)}</span></td>
         <td>${h(it.rank)||'—'}</td><td>${h(it.manager_name)}</td>
         <td class="c num">${it.workDays}</td><td class="c num">${it.shifts}</td><td class="c num ${isStreak(it)?'hot':''}">${it.maxStreak}</td>
         ${canPay?`<td class="c num ${isOverTotal(it)?'hot':''}">${it.hours!=null?it.hours.toFixed(1):'—'}</td><td class="c num ${isOver(it)?'hot':''}">${it.overtime!=null?it.overtime.toFixed(1):'—'}</td>`:''}
-        <td>${it.topSite?`${h(it.topSite)}(${it.topSiteCount}回)`:'—'}</td>
         <td>${badges(it)||'—'}</td>
-      </tr>`).join('') || `<tr><td colspan="${canPay?9:7}" class="muted" style="text-align:center;padding:16px">該当する人はいません</td></tr>`}
+      </tr>`).join('') || `<tr><td colspan="${canPay?8:6}" class="muted" style="text-align:center;padding:16px">該当する人はいません</td></tr>`}
     </table>
     </div>
     <div class="sum-cards">
       ${list.map(it=>`<div class="sum-card ${rowCls(it)}">
-        <div class="sc-top"><span class="sc-name name-link" data-goto-uid="${it.uid}">${h(it.name)}</span>${it.suspended?' <span class="susp-tag">停止</span>':''}<span class="sc-rank">${h(it.rank)||''}</span></div>
-        <div class="sc-mgr">${h(it.manager_name)}${it.topSite?` ／ よく入る現場: ${h(it.topSite)}(${it.topSiteCount}回)`:''}</div>
+        <div class="sc-top"><span class="sc-name name-link" data-goto-uid="${it.uid}">${h(it.name)}</span><span class="sc-rank">${h(it.rank)||''}</span></div>
+        <div class="sc-mgr">${h(it.manager_name)}</div>
         <div class="sc-stats">
           <div class="sc-stat"><b>${it.workDays}</b><span>稼働日</span></div>
           <div class="sc-stat"><b>${it.shifts}</b><span>稼働数</span></div>
@@ -2191,11 +2205,124 @@ async function pageSummary(app){
   });
   const cb = $('#sum-clear'); if(cb) cb.onclick = () => { st.stat=null; st.mgr=null; pageSummary(app); };
   $('#mgr-sort').onchange = (e) => { st.mgrSort = e.target.value; pageSummary(app); };
+  $('#list-sort').onchange = (e) => { st.sort = e.target.value; pageSummary(app); };
 }
 /* ===== スケジュール一覧(準備中) ===== */
+/* ===== スケジュール一覧(チーフ以上)。日付×人のマトリックス表(チーフ予定表のイメージ)。
+   現場の人は現場名(タップで現場詳細)、休みの人は休暇/NG/1日OK/有給を表示。停止中も含む。 ===== */
 async function pageDaySchedule(app){
   if(LV[ME.role] < 1){ notFound(app); return; }
-  await renderFeaturePending(app, '📅', 'スケジュール一覧');
+  const savedSort = localStorage.getItem('ds-sort') || 'regno';
+  const st = PAGE_STATE.daySchedule || (PAGE_STATE.daySchedule = { from: jstToday(), days: 7, sort: savedSort, ka:'', han:'', mgr:'' });
+  app.innerHTML = `<div class="muted">読み込み中…</div>`;
+  let data;
+  try{ data = await api(`/day-schedule?from=${st.from}&days=${st.days}`); }
+  catch(e){ app.innerHTML = `<div class="msg err">${h(e.message)}</div>`; return; }
+
+  const statusInfo = {
+    off:  { label:'休', cls:'cell-off' },
+    x:    { label:'NG', cls:'cell-x' },
+    ok:   { label:'OK', cls:'cell-ok' },
+    paid: { label:'有', cls:'cell-paid' },
+    none: { label:'', cls:'cell-none' },
+  };
+  const today = jstToday();
+  const dateHead = data.dates.map(d => {
+    const [,mo,da] = d.split('-').map(Number);
+    const wd = new Date(d+'T00:00:00+09:00').getDay();
+    return { d, mo, da, wd, isToday: d===today };
+  });
+
+  // 現場に入っている人は、そのセルをタップすると現場の詳細(メンバー一覧)を開ける。
+  // 掛け持ちで複数現場ある場合は、最初の現場を開く。
+  const cellHtml = (cell, isToday, date) => {
+    const todayCls = isToday ? ' matrix-today' : '';
+    if(cell.status === 'work'){
+      const firstSite = (cell.sites && cell.sites[0]) || '';
+      return `<td class="matrix-cell cell-work${todayCls} cell-site-link" title="${h(cell.detail)}" data-date="${date}" data-site="${h(firstSite)}">${h(cell.detail)}</td>`;
+    }
+    const info = statusInfo[cell.status] || statusInfo.none;
+    return `<td class="matrix-cell ${info.cls}${todayCls}">${info.label}</td>`;
+  };
+
+  // フィルタの選択肢は、実際に取得したデータに存在する値だけを出す
+  const kaOptions = [...new Set(data.rows.map(r=>r.ka).filter(Boolean))].sort();
+  const hanOptions = [...new Set(data.rows.map(r=>r.han).filter(Boolean))].sort();
+  const mgrPairs = {};
+  for(const r of data.rows){ if(r.managerId) mgrPairs[r.managerId] = r.managerName; }
+  const mgrOptions = Object.entries(mgrPairs).sort((a,b)=>String(a[1]).localeCompare(String(b[1]),'ja'));
+
+  // フィルタ適用(st.mgrは managerId の文字列、または担当未設定(課ごとのチーフ手配)を表す '__chief:1課'/'__chief:2課')
+  let list = data.rows.filter(r =>
+    (!st.ka  || r.ka === st.ka) &&
+    (!st.han || r.han === st.han) &&
+    (!st.mgr || (st.mgr.startsWith('__chief:') ? (!r.managerId && r.ka === st.mgr.slice(8)) : String(r.managerId)===String(st.mgr)))
+  );
+  // ソート適用(登録番号は数値として、それ以外は日本語として比較する)
+  list = [...list].sort((a,b) => {
+    if(st.sort === 'regno') return String(a.regno||'').localeCompare(String(b.regno||''), undefined, {numeric:true});
+    const av = a[st.sort] || '', bv = b[st.sort] || '';
+    return String(av).localeCompare(String(bv), 'ja') || String(a.regno||'').localeCompare(String(b.regno||''), undefined, {numeric:true});
+  });
+
+  const opt = (val, label, cur) => `<option value="${h(val)}" ${cur===val?'selected':''}>${h(label)}</option>`;
+
+  app.innerHTML = `
+  <h2 style="margin-bottom:4px">📅 スケジュール一覧</h2>
+  <div class="muted" style="margin-bottom:14px">全メンバー(${data.rows.length}人)の予定を、チーフ予定表のような一覧で確認できます。現場の人は現場名(タップで詳細)、休みの人は休暇(休)・NG・1日OK(OK)・有給(有)を表示します。</div>
+  <div class="card" style="margin-bottom:14px">
+    <div class="row" style="align-items:center;gap:10px">
+      <button class="btn ghost sm" id="ds-prev">◀ 前の${st.days}日間</button>
+      <b style="min-width:120px;text-align:center">${dateHead[0].mo}/${dateHead[0].da} 〜 ${dateHead[dateHead.length-1].mo}/${dateHead[dateHead.length-1].da}</b>
+      <button class="btn ghost sm" id="ds-next">次の${st.days}日間 ▶</button>
+      ${st.from!==today?'<button class="btn ghost sm" id="ds-today">今日に戻る</button>':''}
+    </div>
+  </div>
+  <div class="card" style="margin-bottom:14px">
+    <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
+      <label class="muted" style="font-size:12px">並び替え</label>
+      <select id="ds-sort">
+        ${opt('regno','登録番号順',st.sort)}${opt('rank','ランク順',st.sort)}${opt('ka','課順',st.sort)}${opt('han','班順',st.sort)}${opt('managerName','手配担当順',st.sort)}
+      </select>
+      <label class="muted" style="font-size:12px;margin-left:8px">絞り込み</label>
+      <select id="ds-ka"><option value="">課:すべて</option>${kaOptions.map(v=>opt(v,v,st.ka)).join('')}</select>
+      <select id="ds-han"><option value="">班:すべて</option>${hanOptions.map(v=>opt(v,v,st.han)).join('')}</select>
+      <select id="ds-mgr">
+        <option value="">手配担当:すべて</option>
+        ${mgrOptions.map(([id,name])=>opt(id,name+'手配',st.mgr)).join('')}
+        <option value="__chief:1課" ${st.mgr==='__chief:1課'?'selected':''}>チーフ手配(1課)</option>
+        <option value="__chief:2課" ${st.mgr==='__chief:2課'?'selected':''}>チーフ手配(2課)</option>
+      </select>
+      ${(st.ka||st.han||st.mgr)?'<button class="btn ghost sm" id="ds-clear">✕ 絞り込み解除</button>':''}
+    </div>
+  </div>
+  <div class="card" style="padding:0">
+    <div class="sched-wrap">
+      <table class="matrix-table">
+        <tr>
+          <th class="matrix-name-col">氏名</th>
+          ${dateHead.map(dh=>`<th class="${dh.isToday?'matrix-today':''}">${dh.mo}/${dh.da}<br><span class="muted" style="font-weight:400">(${WD[dh.wd]})</span></th>`).join('')}
+        </tr>
+        ${list.map(r=>`<tr>
+          <td class="matrix-name-col"><a href="#/schedule/${r.id}">${h(r.name)}</a><br><span class="muted" style="font-size:11px">${h(r.regno)} ${h(r.rank)||''}</span></td>
+          ${r.days.map((cell,i)=>cellHtml(cell, dateHead[i].isToday, dateHead[i].d)).join('')}
+        </tr>`).join('') || `<tr><td colspan="${st.days+1}" class="muted" style="text-align:center;padding:16px">該当するメンバーはいません</td></tr>`}
+      </table>
+    </div>
+  </div>
+  <div class="muted" style="margin-top:8px;font-size:12px">${list.length}人 表示中(全${data.rows.length}人)。セルの色: 白=現場あり(タップで詳細)／グレー=休暇・有給／赤=NG／緑=1日OK。列見出しの「今日」は強調表示されます。</div>`;
+
+  $('#ds-prev').onclick = () => { st.from = shiftDate(st.from,-st.days); pageDaySchedule(app); };
+  $('#ds-next').onclick = () => { st.from = shiftDate(st.from, st.days); pageDaySchedule(app); };
+  const tb = $('#ds-today'); if(tb) tb.onclick = () => { st.from = jstToday(); pageDaySchedule(app); };
+  $('#ds-sort').onchange = (e) => { st.sort = e.target.value; localStorage.setItem('ds-sort', st.sort); pageDaySchedule(app); };
+  $('#ds-ka').onchange = (e) => { st.ka = e.target.value; pageDaySchedule(app); };
+  $('#ds-han').onchange = (e) => { st.han = e.target.value; pageDaySchedule(app); };
+  $('#ds-mgr').onchange = (e) => { st.mgr = e.target.value; pageDaySchedule(app); };
+  const cb = $('#ds-clear'); if(cb) cb.onclick = () => { st.ka=''; st.han=''; st.mgr=''; pageDaySchedule(app); };
+  app.querySelectorAll('.cell-site-link').forEach(td => td.onclick = () => {
+    if(td.dataset.site) openSiteModal(td.dataset.date, td.dataset.site);
+  });
 }
 
 /* ===== メンバー分析(準備中) ===== */
@@ -2421,6 +2548,13 @@ function baseFromRegno(regno){
   if(n >= 300000 && n <= 349999) return '大阪';
   if(n >= 350000 && n <= 399999) return '京都';
   return '';
+}
+// 日付文字列(YYYY-MM-DD)をn日ずらす。タイムゾーンに依存しないようUTCベースで計算する。
+function shiftDate(d, n){
+  const [y,m,day] = d.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m-1, day));
+  dt.setUTCDate(dt.getUTCDate()+n);
+  return dt.toISOString().slice(0,10);
 }
 
 /* ===== スケジュール入力(手配者モード)===== */

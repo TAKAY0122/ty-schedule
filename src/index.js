@@ -2692,10 +2692,55 @@ async function api(req, env, url) {
     return J(rows);
   }
 
-  // ---- スケジュール一覧(準備中) ----
+  // ---- スケジュール一覧(チーフ以上)。指定期間(既定7日分)の全メンバーの予定を、
+  //      日付×人のマトリックス形式で返す。現場に入っている人は現場名、休暇/NG/1日OK/有給の
+  //      人はその状態、未入力の人も含める。停止中アカウントも一覧性のため含める。 ----
   if (method === 'GET' && path === '/day-schedule') {
     if (lv(me) < 1) return ERR('ページが見つかりません', 404);
-    return J({ ready: false });
+    const fromDate = url.searchParams.get('from') || jstDate();
+    const days = Math.min(14, Math.max(1, parseInt(url.searchParams.get('days') || '7', 10)));
+    const [fy, fm, fd] = fromDate.split('-').map(Number);
+    const dates = [];
+    for (let i = 0; i < days; i++) {
+      const dt = new Date(Date.UTC(fy, fm - 1, fd + i));
+      dates.push(dt.toISOString().slice(0, 10));
+    }
+
+    const members = (await env.DB.prepare(
+      "SELECT id, name, regno, rank, ka, han, manager_id, suspended FROM users WHERE role='member' ORDER BY regno"
+    ).all()).results;
+    const ph = dates.map(() => '?').join(',');
+    const scheduleRows = (await env.DB.prepare(
+      `SELECT user_id, date, type, site, venue, note FROM schedule WHERE date IN (${ph}) ORDER BY user_id, date, slot`
+    ).bind(...dates).all()).results;
+    const byUserDate = {};
+    for (const r of scheduleRows) { const key = r.user_id + '|' + r.date; (byUserDate[key] ||= []).push(r); }
+    const managers = (await env.DB.prepare("SELECT id, name FROM users WHERE role IN ('handler','admin')").all()).results;
+    const mgrName = {}; for (const m of managers) mgrName[m.id] = m.name;
+    // 担当未設定は課ごとの「チーフ手配(1課/2課)」として扱う(特定の実在アカウントには紐付けない)
+    const chiefLabel = m => m.ka === '1課' ? 'チーフ手配(1課)' : m.ka === '2課' ? 'チーフ手配(2課)' : 'チーフ手配';
+
+    const cellFor = (uid, date) => {
+      const slots = byUserDate[uid + '|' + date] || [];
+      const workSlots = slots.filter(s => s.type === 'work' && s.site);
+      const nonWork = slots.find(s => s.type && s.type !== 'work');
+      if (workSlots.length) return {
+        status: 'work',
+        detail: workSlots.map(s => [s.site, s.venue].filter(Boolean).join('／')).join('、'),
+        sites: workSlots.map(s => s.site),
+        note: '',
+      };
+      if (nonWork) return { status: nonWork.type, detail: '', sites: [], note: nonWork.note || '' };
+      return { status: 'none', detail: '', sites: [], note: '' };
+    };
+
+    const rows = members.map(m => ({
+      id: m.id, name: m.name, regno: m.regno, rank: m.rank, ka: m.ka, han: m.han,
+      managerId: m.manager_id, managerName: m.manager_id ? (mgrName[m.manager_id] || 'チーフ手配') : chiefLabel(m),
+      suspended: m.suspended ? 1 : 0,
+      days: dates.map(date => cellFor(m.id, date)),
+    }));
+    return J({ dates, rows });
   }
 
   // ---- メンバー分析(準備中) ----
