@@ -26,6 +26,17 @@ function notFound(app){ app.innerHTML = '<div class="card" style="text-align:cen
 let TOKEN = localStorage.getItem('tk') || '';
 let ME = null;
 let UPDATE_NOTICE_SHOWN = false; // 1セッション中に一度だけ表示するためのフラグ
+// アップデートのお知らせに表示する項目。新機能を追加したら、ここに { v: 新しいバージョン番号, ... } で
+// 追記し、CURRENT_UPDATE_VERSION(この下)をインクリメントする。過去の項目はそのまま残しておいてよい
+// (各ユーザーは自分がまだ見ていないバージョン分の項目だけを見るため、勝手に重複表示されることはない)。
+const CURRENT_UPDATE_VERSION = 1;
+const UPDATE_ITEMS = [
+  { v:1, icon:'🏠', title:'ホーム画面を追加', desc:'ログイン後、今日・明日の現場や通知が一目で見られるようになりました。', show: () => true },
+  { v:1, icon:'🙋', title:'休み希望・稼働時間の提出', desc:'マイスケジュールから、休み希望や「この時間なら動ける」を手配担当者に伝えられます。', show: () => true },
+  { v:1, icon:'👤', title:'メンバーを希望する機能', desc:'チーフ以上が「この現場にこの人が欲しい」と指名し、手配担当者の承認で反映できます。', show: () => LV[ME.role] >= 1 },
+  { v:1, icon:'📊', title:'稼働サマリーを強化', desc:'「同じ現場ばかり任されている人」を自動で検知するようになりました。', show: () => LV[ME.role] >= 1 },
+  { v:1, icon:'📅', title:'Googleカレンダー連携', desc:'自分のスケジュールを普段使いのカレンダーアプリに自動反映できます。', link:'#/calendar-guide', linkLabel:'やり方を見る', show: () => true },
+];
 let modalScrollY = 0; // モーダルを開いた時点のスクロール位置(閉じた時に復元する)
 let MONTH = new Date(Date.now()+9*3600e3).toISOString().slice(0,7);
 // ページ遷移をまたいで保持したいフィルタ・タブ・検索語などの状態。
@@ -293,27 +304,29 @@ function conflictModal(conflicts){
 // PINが正しく手配モードに入れたら、通常は「スケジュール入力」ページへ移動する。
 // onSuccessを渡した場合はそちらを実行する(承認フローなど、元の操作をそのまま続行したい場合用)。
 // アップデートのお知らせモーダル。既にパスワードを変更済みの既存ユーザーが、新しいバージョンで
-// 初めてログインした際に一度だけ表示する。内容を追加したらここに追記し、CURRENT_UPDATE_VERSION
-// (src/index.js側)を増やす。
+// アップデートのお知らせ。まだ見ていないバージョン分(ME.seenUpdateVersionより新しい項目)だけを表示する。
+// これにより、前に見た内容が再度表示されることはなく、その時点で追加された機能だけが見える。
 function openUpdateNotice(){
+  const items = UPDATE_ITEMS.filter(it =>
+    it.v > (ME.seenUpdateVersion || 0) && it.v <= CURRENT_UPDATE_VERSION && (!it.show || it.show())
+  );
+  const markSeen = async () => {
+    ME.needsUpdateNotice = false;
+    ME.seenUpdateVersion = CURRENT_UPDATE_VERSION;
+    try{ await api('/update-notice/seen', { method:'POST' }); }catch(e){}
+  };
+  if(!items.length){ markSeen(); return; } // 表示すべき新項目が無ければ、既読化だけして何も出さない
   modal(`<h3>🎉 アップデートのお知らせ</h3>
     <div class="muted" style="margin-bottom:14px">新しい機能が追加されました。</div>
     <div class="upd-list">
-      <div class="upd-item"><span class="upd-icon">🏠</span><div><b>ホーム画面を追加</b><div class="muted">ログイン後、今日・明日の現場や通知が一目で見られるようになりました。</div></div></div>
-      <div class="upd-item"><span class="upd-icon">🙋</span><div><b>休み希望・稼働時間の提出</b><div class="muted">マイスケジュールから、休み希望や「この時間なら動ける」を手配担当者に伝えられます。</div></div></div>
-      <div class="upd-item"><span class="upd-icon">👤</span><div><b>メンバーを希望する機能</b><div class="muted">チーフ以上が「この現場にこの人が欲しい」と指名し、手配担当者の承認で反映できます。</div></div></div>
-      <div class="upd-item"><span class="upd-icon">📊</span><div><b>稼働サマリーを強化</b><div class="muted">「同じ現場ばかり任されている人」を自動で検知するようになりました。</div></div></div>
-      <div class="upd-item"><span class="upd-icon">📅</span><div><b>Googleカレンダー連携</b><div class="muted">自分のスケジュールを普段使いのカレンダーアプリに自動反映できます。<a href="#/calendar-guide" id="upd-cal-link">やり方を見る</a></div></div></div>
+      ${items.map((it,i) => `<div class="upd-item"><span class="upd-icon">${it.icon}</span><div><b>${h(it.title)}</b><div class="muted">${h(it.desc)}${it.link?` <a href="${h(it.link)}" class="upd-link" data-idx="${i}">${h(it.linkLabel||'見る')}</a>`:''}</div></div></div>`).join('')}
     </div>
     <div class="row" style="margin-top:16px"><button class="btn gold" id="upd-close" style="flex:1">確認しました</button></div>`);
-  const close = async () => {
-    ME.needsUpdateNotice = false;
-    try{ await api('/update-notice/seen', { method:'POST' }); }catch(e){}
-    closeModal();
-  };
+  const close = async () => { await markSeen(); closeModal(); };
   $('#upd-close').onclick = close;
-  const calLink = $('#upd-cal-link');
-  if(calLink) calLink.onclick = (e) => { e.preventDefault(); close().then(()=>{ goTo('#/calendar-guide'); }); };
+  $('#modal-layer').querySelectorAll('.upd-link').forEach(a => {
+    a.onclick = (e) => { e.preventDefault(); const link = items[Number(a.dataset.idx)].link; close().then(()=>{ goTo(link); }); };
+  });
 }
 
 function openHandlerPin(onSuccess){
@@ -347,6 +360,8 @@ async function openSiteModal(date, site){
   const breaksArr = canViewSched ? await api(`/site-record-breaks?date=${date}&site=${encodeURIComponent(site)}`).catch(()=>[]) : [];
   const breakByUid = {}; breaksArr.forEach(b => breakByUid[b.uid] = b);
   const venue = (list.find(p => p.venue) || {}).venue || '';
+  const loadEnd = (list.find(p => p.load_end) || {}).load_end || '';
+  const showEnd = (list.find(p => p.show_end) || {}).show_end || '';
   const chiefs = list.filter(p => p.role !== 'member');
   const members = list.filter(p => p.role === 'member');
   const kaTag = p => p.ka ? `<span class="ka-pill ka-${p.ka==='1課'?'1':'2'}">${p.ka}</span>` : '';
@@ -375,6 +390,8 @@ async function openSiteModal(date, site){
     <dl class="kv">
       <dt>現場名</dt><dd><b>${h(site)}</b></dd>
       <dt>会場</dt><dd>${venue ? `<a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(venue)}" target="_blank">${h(venue)}</a>` : '<span class="muted">未登録</span>'}</dd>
+      ${loadEnd?`<dt>搬入終了</dt><dd>${h(loadEnd)}</dd>`:''}
+      ${showEnd?`<dt>終演</dt><dd>${h(showEnd)}</dd>`:''}
       <dt>日付</dt><dd>${h(date)}</dd>
       <dt>人数</dt><dd>チーフ・手配 ${chiefs.length}名 / メンツ ${members.length}名(計${list.length}名)</dd>
     </dl>
@@ -652,7 +669,9 @@ async function render(){
     else if(hash.startsWith('#/schedule')) await pageSchedule(app, hash);
     else if(hash === '#/members') await pageMembers(app);
     else if(hash === '#/sites') await pageSites(app);
+    else if(hash === '#/day-schedule') await pageDaySchedule(app);
     else if(hash === '#/summary') await pageSummary(app);
+    else if(hash === '#/member-stats') await pageMemberStats(app);
     else if(hash === '#/edit') await pageEdit(app);
     else if(hash.startsWith('#/edit/')) await pageEdit(app, hash.slice('#/edit/'.length));
     else if(hash === '#/members/mine'){ const st0 = PAGE_STATE.members || (PAGE_STATE.members = { tab:'2課', q:'', mgr:'' }); st0.mgr = String(ME.id); await pageMembers(app); }
@@ -767,6 +786,7 @@ function renderShell(hash){
   const canDaicho = has('daicho_manage');
   const showSystemGroup = canAccountAdmin || canSystemSettings || canRolePerm || canHandlerStatus;
   const showSpreadGroup = canImport || canSchedSrc || canDaicho;
+  const showMemberGroup = isChief;
 
   // ナビゲーション構造。children を持つ項目はグループ(タップでサブメニューに切り替わる)、
   // 持たない項目は単独ページへのリンク。権限がない機能は、グループ内の子としても一切出現しない
@@ -785,10 +805,12 @@ function renderShell(hash){
       ...(isHandlerRole ? [['#/nominations','✅ メンバー指名の承認']] : []),
     ]},
     { path:'#/sites', label:'🏟️ 現場一覧', show:isChief },
-    { label:'👥 メンバー', show:isChief, children:[
+    { label:'👥 メンバー', show:showMemberGroup, children:[
       ...(isHandlerRole ? [['#/members/mine',`📋 ${ME.name}手配`]] : []),
-      ['#/members','👥 メンバー一覧'],
-      ['#/summary','📊 稼働サマリー'],
+      ...(isChief ? [['#/members','👥 メンバー一覧']] : []),
+      ...(isChief ? [['#/summary','📊 稼働サマリー']] : []),
+      ...(isChief ? [['#/member-stats','📈 メンバー分析']] : []),
+      ...(isChief ? [['#/day-schedule','📅 スケジュール一覧']] : []),
     ]},
     { label:'🆕 新人報告', show:true, children:[
       ['#/report','📝 新人報告'],
@@ -1451,6 +1473,8 @@ async function pageHome(app){
     ['#/members/mine','📋',`${h(ME.name)}手配`, isHandlerRole],
     ['#/members','👥','メンバー一覧', isChief],
     ['#/summary','📊','稼働サマリー', isChief],
+    ['#/member-stats','📈','メンバー分析', isChief],
+    ['#/day-schedule','📅','スケジュール一覧', isChief],
     ['#/self-reports','📝','変更報告承認', isHandlerRole],
     ['#/report','🆕','新人報告', true],
     ['#/reports','📋','報告一覧', true],
@@ -1527,7 +1551,7 @@ async function pageSchedule(app, hash){
         sumH+=e.hours; sumOT+=e.overtime; sumPay+=e.pay;
         const rk = (LV[ME.role]>=1 ? (rookieMap[date+'|'+e.site]||[]) : []).map(n=>`<span class="rookie-badge">🔰${h(n)}</span>`).join('');
         sites.push(`<span class="site-cell${longCls(e.site,10)}" data-date="${date}" data-site="${h(e.site)}" title="タップで同じ現場のメンバーを表示">${h(e.site)}${rk}</span>${canRecord?` <span class="rec-btn" data-date="${date}" data-site="${h(e.site)}" title="現場記録を記入${e.breakShort?'(休憩時間が目安に届いていません)':''}">📝${e.breakShort?'⚠️':''}</span>`:''}`);
-        venues.push(`<span class="venue-cell${longCls(e.venue,12)}" data-venue="${h(e.venue)}" title="タップでGoogleマップ">${h(e.venue)}</span>`);
+        venues.push(`<span class="venue-cell${longCls(e.venue,12)}" data-venue="${h(e.venue)}" title="タップでGoogleマップ${(e.load_end||e.show_end)?` ／ 搬入終了${h(e.load_end)||'—'} ／ 終演${h(e.show_end)||'—'}`:''}">${h(e.venue)}</span>${(e.load_end||e.show_end)?`<span class="loadshow-tag" title="搬入終了${h(e.load_end)||'—'} ／ 終演${h(e.show_end)||'—'}">🕐</span>`:''}`);
         dutys.push(e.duty?h(e.duty):'<span class="muted">—</span>');
         tins.push(h(e.tin)); touts.push(h(e.tout));
         hrs.push(e.hours?e.hours.toFixed(2):''); ots.push(e.overtime?e.overtime.toFixed(2):'');
@@ -1535,11 +1559,13 @@ async function pageSchedule(app, hash){
         // スマホ用:1現場ぶんのブロック
         const dutyPart = canPay && e.duty ? `<div class="m-line"><span class="m-k">業務</span><span class="m-v">${h(e.duty)}</span></div>` : '';
         const timePart = canPay && (e.tin||e.tout) ? `<div class="m-line"><span class="m-k">時間</span><span class="m-v">${h(e.tin)}〜${h(e.tout)}${e.hours?`(${e.hours.toFixed(1)}h)`:''}</span></div>` : '';
+        const loadShowPart = (e.load_end||e.show_end) ? `<div class="m-line"><span class="m-k">搬入終了/終演</span><span class="m-v">${h(e.load_end)||'—'} / ${h(e.show_end)||'—'}</span></div>` : '';
         const payPart = canPay && e.pay ? `<div class="m-line"><span class="m-k">給与</span><span class="m-v">${yen(e.pay)}${e.overtime?` / 残業${e.overtime.toFixed(2)}h`:''}</span></div>` : '';
         const notePart = e.note ? `<div class="m-line"><span class="m-k">備考</span><span class="m-v">${h(e.note)}</span></div>` : '';
         mSites.push(`<div class="m-site">
           <div class="m-sitename${longCls(e.site,14)}"><span class="site-cell" data-date="${date}" data-site="${h(e.site)}">${h(e.site)}</span>${rk}${canRecord?` <span class="rec-btn" data-date="${date}" data-site="${h(e.site)}">📝記録${e.breakShort?' ⚠️':''}</span>`:''}</div>
           ${e.venue?`<div class="m-line"><span class="m-k">会場</span><span class="m-v${longCls(e.venue,16)}"><span class="venue-cell" data-venue="${h(e.venue)}">${h(e.venue)}</span></span></div>`:''}
+          ${loadShowPart}
           ${dutyPart}${timePart}${payPart}${notePart}
         </div>`);
       }
@@ -1966,164 +1992,18 @@ async function pageSites(app){
   $('#st-next').onclick = () => { stSites.month = shiftMonth(month, 1); pageSites(app); };
   app.querySelectorAll('.st-site').forEach(b => b.onclick = () => openSiteModal(b.dataset.date, b.dataset.site));
 }
-function shiftMonth(m, d){
-  let [y,mo] = m.split('-').map(Number); mo += d;
-  if(mo<1){ mo=12; y--; } if(mo>12){ mo=1; y++; }
-  return `${y}-${String(mo).padStart(2,'0')}`;
-}
-
-/* ===== 稼働サマリー(チーフ以上)。月間の出勤数・現場数・最長連勤と手配偏りを可視化 ===== */
-// しきい値(運用に合わせて調整可)
-const SUM_TH = { over: 18, streak: 6, few: 3, sameSiteCount: 3, sameSiteRatio: 0.6 }; // 出勤18日以上=働きすぎ / 連勤6日以上=注意 / 出勤3日以下=機会少 / 同じ現場が3回以上かつ全体の60%以上=偏り
-let SUMMARY_SORT = 'workDays';
-let SUMMARY_MEMBERS_ONLY = false;
-let SUMMARY_MGR = null; // 選択中の手配担当(絞り込み)。null=全体
-let SUMMARY_FILTER = null; // 統計カード(働きすぎ等)をタップした際の絞り込み。null=絞り込みなし
-async function pageSummary(app){
+/* ===== スケジュール一覧(準備中) ===== */
+async function pageDaySchedule(app){
   if(LV[ME.role] < 1){ notFound(app); return; }
-  const stSummary = PAGE_STATE.summary || (PAGE_STATE.summary = { month: jstToday().slice(0,7) });
-  const month = stSummary.month;
-  app.innerHTML = `<div class="muted">集計中…</div>`;
-  let data;
-  try{ data = await api(`/summary?month=${month}`); }
-  catch(e){ app.innerHTML = `<div class="msg err">${h(e.message)}</div>`; return; }
-
-  const isSameSite = it => it.shifts>0 && it.topSiteCount>=SUM_TH.sameSiteCount && (it.topSiteCount/it.shifts)>=SUM_TH.sameSiteRatio;
-  const badge = it => {
-    const b=[];
-    if(it.maxStreak>=SUM_TH.streak) b.push(`<span class="sum-badge streak">連勤${it.maxStreak}</span>`);
-    if(it.workDays>=SUM_TH.over) b.push(`<span class="sum-badge over">働きすぎ</span>`);
-    if(it.workDays<=SUM_TH.few && it.workDays>0) b.push(`<span class="sum-badge few">機会少</span>`);
-    if(it.workDays===0) b.push(`<span class="sum-badge zero">稼働なし</span>`);
-    if(isSameSite(it)) b.push(`<span class="sum-badge samesite" title="「${h(it.topSite)}」に${it.topSiteCount}回(全${it.shifts}回中)">同じ現場ばかり</span>`);
-    return b.join(' ');
-  };
-  const rowcls = it => it.workDays>=SUM_TH.over?'r-over':it.maxStreak>=SUM_TH.streak?'r-streak':it.workDays<=SUM_TH.few?'r-few':'';
-
-  let items = data.items.slice();
-  if(SUMMARY_MEMBERS_ONLY) items = items.filter(it=>it.role==='member');
-  // 選択中の手配担当が現データに無ければ解除
-  if(SUMMARY_MGR && !data.managers.some(m=>m.name===SUMMARY_MGR)) SUMMARY_MGR = null;
-  const view = SUMMARY_MGR ? items.filter(it=>it.manager_name===SUMMARY_MGR) : items;
-
-  const sorters = {
-    workDays:(a,b)=>b.workDays-a.workDays || b.shifts-a.shifts,
-    shifts:(a,b)=>b.shifts-a.shifts,
-    streak:(a,b)=>b.maxStreak-a.maxStreak,
-    name:(a,b)=>String(a.regno).localeCompare(String(b.regno)),
-  };
-
-  // 統計(絞り込み中はその手配担当のチーム。統計カード自体の絞り込みは反映しない全体数を出す)
-  const active = view.filter(it=>it.workDays>0);
-  const avg = active.length ? (active.reduce((s,it)=>s+it.workDays,0)/active.length) : 0;
-  const overN = view.filter(it=>it.workDays>=SUM_TH.over).length;
-  const streakN = view.filter(it=>it.maxStreak>=SUM_TH.streak).length;
-  const fewN = view.filter(it=>it.workDays<=SUM_TH.few && it.workDays>0).length;
-  const sameSiteN = view.filter(isSameSite).length;
-
-  // 統計カード(働きすぎ等)をタップした場合の絞り込みを、実際に表の対象へ適用する
-  const statFilters = {
-    over: it => it.workDays>=SUM_TH.over,
-    streak: it => it.maxStreak>=SUM_TH.streak,
-    few: it => it.workDays<=SUM_TH.few && it.workDays>0,
-    samesite: isSameSite,
-  };
-  const filtered = (SUMMARY_FILTER && statFilters[SUMMARY_FILTER]) ? view.filter(statFilters[SUMMARY_FILTER]) : view;
-  filtered.sort(sorters[SUMMARY_SORT]||sorters.workDays);
-
-  // 手配の偏り(タップで絞り込み)。ランキング順=現場数降順は維持
-  const maxShifts = Math.max(1, ...data.managers.map(m=>m.shifts));
-  const mgrBars = data.managers.map(m=>`
-    <div class="mgr-row ${SUMMARY_MGR===m.name?'sel':''}" data-mgr="${h(m.name)}" role="button" tabindex="0">
-      <div class="mgr-name">${h(m.name)} <span class="muted">${m.activeMembers}/${m.members}名稼働 ・ ${m.shifts}現場</span></div>
-      <div class="mgr-bar-wrap"><div class="mgr-bar" style="width:${Math.round(m.shifts/maxShifts*100)}%"></div></div>
-    </div>`).join('');
-
-  const canPay = data.items.some(it=>it.hours!==null);
-  // PC表
-  const trows = filtered.map(it=>`
-    <tr class="${rowcls(it)} sum-link" data-uid="${it.uid}" title="個人スケジュールを開く">
-      <td class="s-name">${h(it.name)} ${it.rank?`<span class="muted">${h(it.rank)}</span>`:''} <span class="sum-go">📅</span></td>
-      <td class="c">${h(it.manager_name||'—')}</td>
-      <td class="c num">${it.workDays}</td>
-      <td class="c num">${it.shifts}</td>
-      <td class="c num ${it.maxStreak>=SUM_TH.streak?'hot':''}">${it.maxStreak}</td>
-      ${canPay?`<td class="c num">${it.hours!=null?it.hours:'—'}</td>`:''}
-      <td>${badge(it)}</td>
-    </tr>`).join('');
-  // スマホカード
-  const cards = filtered.map(it=>`
-    <div class="sum-card ${rowcls(it)} sum-link" data-uid="${it.uid}">
-      <div class="sc-top"><span class="sc-name">${h(it.name)}</span>${it.rank?`<span class="sc-rank">${h(it.rank)}</span>`:''}<span class="sc-go">📅 スケジュール</span></div>
-      <div class="sc-mgr">${h(it.manager_name||'—')}</div>
-      <div class="sc-stats">
-        <div class="sc-stat"><b>${it.workDays}</b><span>出勤日</span></div>
-        <div class="sc-stat"><b>${it.shifts}</b><span>現場</span></div>
-        <div class="sc-stat ${it.maxStreak>=SUM_TH.streak?'hot':''}"><b>${it.maxStreak}</b><span>連勤</span></div>
-        ${canPay?`<div class="sc-stat"><b>${it.hours!=null?it.hours:'—'}</b><span>時間</span></div>`:''}
-      </div>
-      ${badge(it)?`<div class="sc-badges">${badge(it)}</div>`:''}
-    </div>`).join('');
-
-  app.innerHTML = `
-  <div class="sum-head">
-    <div class="row" style="gap:6px;align-items:center">
-      <button class="btn ghost sm" id="sm-prev">◀</button>
-      <b style="font-size:16px">${month.replace('-','年')}月</b>
-      <button class="btn ghost sm" id="sm-next">▶</button>
-    </div>
-    <label class="row" style="gap:6px;align-items:center;font-size:13px;cursor:pointer">
-      <input type="checkbox" id="sm-mem" ${SUMMARY_MEMBERS_ONLY?'checked':''}> メンツのみ
-    </label>
-  </div>
-  ${SUMMARY_MGR?`<div class="sum-filter">絞り込み中：<b>${h(SUMMARY_MGR)}</b><button class="sum-clear" id="sm-clear">✕ 全体に戻す</button></div>`:''}
-  ${SUMMARY_FILTER?`<div class="sum-filter">条件で絞り込み中：<b>${{over:'働きすぎ',streak:'連勤注意',few:'機会少',samesite:'同じ現場ばかり'}[SUMMARY_FILTER]||SUMMARY_FILTER}</b><button class="sum-clear" id="sm-filter-clear">✕ 解除</button></div>`:''}
-
-  <div class="sum-stats">
-    <div class="sum-stat"><div class="sum-num">${active.length}</div><div class="sum-lbl">稼働人数</div></div>
-    <div class="sum-stat"><div class="sum-num">${avg.toFixed(1)}</div><div class="sum-lbl">平均出勤日</div></div>
-    <div class="sum-stat sum-stat-clickable ${overN?'st-over':''} ${SUMMARY_FILTER==='over'?'st-sel':''}" data-filter="over"><div class="sum-num">${overN}</div><div class="sum-lbl">働きすぎ</div></div>
-    <div class="sum-stat sum-stat-clickable ${streakN?'st-streak':''} ${SUMMARY_FILTER==='streak'?'st-sel':''}" data-filter="streak"><div class="sum-num">${streakN}</div><div class="sum-lbl">連勤注意</div></div>
-    <div class="sum-stat sum-stat-clickable ${fewN?'st-few':''} ${SUMMARY_FILTER==='few'?'st-sel':''}" data-filter="few"><div class="sum-num">${fewN}</div><div class="sum-lbl">機会少</div></div>
-    <div class="sum-stat sum-stat-clickable ${sameSiteN?'st-samesite':''} ${SUMMARY_FILTER==='samesite'?'st-sel':''}" data-filter="samesite"><div class="sum-num">${sameSiteN}</div><div class="sum-lbl">同じ現場ばかり</div></div>
-  </div>
-
-  <div class="card" style="margin-top:12px">
-    <h3 style="margin-bottom:4px">手配の偏り（タップで絞り込み）</h3>
-    <div class="muted" style="font-size:11px;margin-bottom:8px">現場数の多い順。担当をタップすると、その手配のメンバーだけ表示します。</div>
-    ${mgrBars || '<div class="muted">データなし</div>'}
-  </div>
-
-  <div class="card" style="margin-top:12px">
-    <div class="row" style="gap:6px;margin-bottom:8px;flex-wrap:wrap;align-items:center">
-      <span class="muted" style="font-size:12px">並び替え:</span>
-      ${[['workDays','出勤日'],['shifts','現場数'],['streak','連勤'],['name','番号']].map(s=>`<button class="btn ghost xs sm-sort ${SUMMARY_SORT===s[0]?'on':''}" data-s="${s[0]}">${s[1]}</button>`).join('')}
-      <span class="muted" style="font-size:11px;margin-left:auto">${filtered.length}名</span>
-    </div>
-    <div class="sum-table-wrap">
-      <table class="sum-table">
-        <thead><tr><th>氏名</th><th>担当</th><th>出勤日</th><th>現場数</th><th>最長連勤</th>${canPay?'<th>時間</th>':''}<th>状態</th></tr></thead>
-        <tbody>${trows || `<tr><td colspan="${canPay?7:6}" class="muted c">該当者なし</td></tr>`}</tbody>
-      </table>
-    </div>
-    <div class="sum-cards">${cards || '<div class="muted c">該当者なし</div>'}</div>
-    <div class="muted" style="font-size:11px;margin-top:8px">※ 出勤日=現場のあった日数 / 現場数=のべ割当数(同日2現場は2) / 最長連勤=連続して現場が入った最大日数(当月内)</div>
-  </div>`;
-
-  $('#sm-prev').onclick = () => { stSummary.month = shiftMonth(month,-1); pageSummary(app); };
-  $('#sm-next').onclick = () => { stSummary.month = shiftMonth(month, 1); pageSummary(app); };
-  $('#sm-mem').onchange = e => { SUMMARY_MEMBERS_ONLY = e.target.checked; pageSummary(app); };
-  const clr = $('#sm-clear'); if(clr) clr.onclick = () => { SUMMARY_MGR = null; pageSummary(app); };
-  const fclr = $('#sm-filter-clear'); if(fclr) fclr.onclick = () => { SUMMARY_FILTER = null; pageSummary(app); };
-  app.querySelectorAll('.sum-stat-clickable').forEach(b => b.onclick = () => {
-    SUMMARY_FILTER = (SUMMARY_FILTER===b.dataset.filter) ? null : b.dataset.filter; pageSummary(app);
-  });
-  app.querySelectorAll('.sm-sort').forEach(b => b.onclick = () => { SUMMARY_SORT = b.dataset.s; pageSummary(app); });
-  app.querySelectorAll('.mgr-row').forEach(b => b.onclick = () => {
-    SUMMARY_MGR = (SUMMARY_MGR===b.dataset.mgr) ? null : b.dataset.mgr; pageSummary(app);
-  });
-  app.querySelectorAll('.sum-link').forEach(b => b.onclick = () => { location.hash = '#/schedule/'+b.dataset.uid; });
+  app.innerHTML = `<h2>📅 スケジュール一覧</h2><div class="card"><div class="muted" style="text-align:center;padding:30px 0">この機能は現在準備中です。<br>もうしばらくお待ちください。</div></div>`;
 }
+
+/* ===== メンバー分析(準備中) ===== */
+async function pageMemberStats(app){
+  if(LV[ME.role] < 1){ notFound(app); return; }
+  app.innerHTML = `<h2>📊 メンバー分析</h2><div class="card"><div class="muted" style="text-align:center;padding:30px 0">この機能は現在準備中です。<br>もうしばらくお待ちください。</div></div>`;
+}
+
 
 /* ===== メンバー一覧(チーフ以上)。1課/2課タブ。2課優先表示 ===== */
 async function pageMembers(app){
@@ -2159,21 +2039,26 @@ async function pageMembers(app){
     const area = $('#m-list-area'); if(!area) return;
     area.innerHTML = `
       <div class="muted" style="margin:2px 0 10px">${list.length}名 表示中</div>
+      ${isHandler?`<div class="row" id="m-bulk-bar" style="margin:2px 0 10px;gap:8px;align-items:center">
+        <span class="muted">選択中: <span id="m-sel-count">0</span>件</span>
+        <button class="btn ghost sm" id="m-bulk-mgr" disabled>選択した人の手配担当を変更</button>
+      </div>`:''}
       <div class="list-scroll pc-only">
       <table class="list ka-table ka-${tab==='1課'?'1':'2'}">
-      <tr><th>登録番号</th><th>氏名</th><th>役割</th><th>ランク</th><th>班</th><th>手配担当</th><th>最寄駅</th><th>できること</th><th></th></tr>
+      <tr>${isHandler?'<th><input type="checkbox" id="m-check-all"></th>':''}<th>登録番号</th><th>氏名</th><th>役割</th><th>ランク</th><th>班</th><th>手配担当</th><th>最寄駅</th><th>できること</th><th></th></tr>
       ${list.map(u=>`<tr>
+        ${isHandler?(u.id===ME.id?'<td></td>':`<td><input type="checkbox" class="m-check" data-id="${u.id}"></td>`):''}
         <td>${h(u.regno)}</td><td><b class="name-link" data-goto-uid="${u.id}">${h(u.name)}</b></td>
         <td><span class="tag ${u.role}">${roleLabel(u)}</span></td>
         <td>${h(u.rank)}</td><td>${h(u.han)}</td><td>${h(managerName(u,users))}</td><td>${h(u.station)}</td>
         <td class="wrapcell">${h(u.skills)}</td>
         <td>${editBtn(u)} ${schedBtn(u,'ghost')} ${goEditBtn(u)}</td>
-      </tr>`).join('') || '<tr><td colspan="9" class="muted" style="text-align:center;padding:16px">該当するメンバーはいません</td></tr>'}
+      </tr>`).join('') || `<tr><td colspan="${isHandler?9:8}" class="muted" style="text-align:center;padding:16px">該当するメンバーはいません</td></tr>`}
       </table>
       </div>
       <div class="cards sp-only">
       ${list.map(u=>`<div class="dcard ka-${kaOf(u)==='1課'?'1':'2'}">
-        <div class="dcard-head"><span class="dcard-title name-link" data-goto-uid="${u.id}">${h(u.name)}</span><span class="tag ${u.role}">${roleLabel(u)}</span></div>
+        <div class="dcard-head">${isHandler&&u.id!==ME.id?`<input type="checkbox" class="m-check" data-id="${u.id}" style="margin-right:8px">`:''}<span class="dcard-title name-link" data-goto-uid="${u.id}">${h(u.name)}</span><span class="tag ${u.role}">${roleLabel(u)}</span></div>
         <div class="drow"><span class="dk">登録番号</span><span class="dv">${h(u.regno)}</span></div>
         <div class="drow"><span class="dk">ランク / 班</span><span class="dv">${h(u.rank)||'—'} / ${h(u.han)||'—'}</span></div>
         <div class="drow"><span class="dk">手配担当</span><span class="dv">${h(managerName(u,users))}</span></div>
@@ -2205,6 +2090,41 @@ async function pageMembers(app){
     area.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => {
       openMemberEdit(users.find(x=>x.id==b.dataset.edit), users, managers);
     });
+
+    // 複数選択・手配担当の一括変更
+    if(isHandler){
+      const updateBulkBar = () => {
+        const checked = area.querySelectorAll('.m-check:checked');
+        const cnt = $('#m-sel-count'); if(cnt) cnt.textContent = checked.length;
+        const btn = $('#m-bulk-mgr'); if(btn) btn.disabled = checked.length === 0;
+      };
+      const checkAll = $('#m-check-all');
+      if(checkAll) checkAll.onchange = () => {
+        area.querySelectorAll('.m-check').forEach(cb => cb.checked = checkAll.checked);
+        updateBulkBar();
+      };
+      area.querySelectorAll('.m-check').forEach(cb => cb.onchange = updateBulkBar);
+      updateBulkBar();
+      const bulkBtn = $('#m-bulk-mgr');
+      if(bulkBtn) bulkBtn.onclick = () => {
+        const ids = [...area.querySelectorAll('.m-check:checked')].map(cb => Number(cb.dataset.id));
+        if(!ids.length) return;
+        modal(`<h3>手配担当をまとめて変更</h3>
+          <div class="muted" style="margin-bottom:10px">選択した${ids.length}名の担当手配者を、まとめて変更します。</div>
+          <select id="bm-mgr" style="width:100%">
+            <option value="">チーフ手配(担当なし)</option>
+            ${managers.map(m=>`<option value="${m.id}">${h(m.name)}手配</option>`).join('')}
+          </select>
+          <button class="btn gold" id="bm-save" style="width:100%;margin-top:14px">変更する</button>`);
+        $('#bm-save').onclick = async () => {
+          const mgrId = $('#bm-mgr').value;
+          try{
+            const r = await api('/users/bulk-manager', { method:'POST', body:{ ids, manager_id: mgrId ? Number(mgrId) : null } });
+            USERS_CACHE = null; closeModal(); popup(`${r.count}件の手配担当を変更しました`); render();
+          }catch(e){ popup(e.message,'error'); }
+        };
+      };
+    }
   };
 
   app.innerHTML = `

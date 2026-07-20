@@ -114,9 +114,9 @@ async function pbkdf2(pw, salt) {
 // アプリの機能アップデートのお知らせに使うバージョン番号。新しいお知らせを追加したら値を増やし、
 // updateNoticeContent()にも内容を追記する。既にパスワードを変更済み(must_change=0)の既存ユーザーが
 // ログインした際、seen_update_version がこれより小さければ「アップデートのお知らせ」を表示する。
-const CURRENT_UPDATE_VERSION = 1;
+const CURRENT_UPDATE_VERSION = 3;
 
-const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0, must_change: u.must_change ? 1 : 0, extra_perms: getPerms(u), notify_rookie: u.notify_rookie === null || u.notify_rookie === undefined ? null : (u.notify_rookie ? 1 : 0), needsUpdateNotice: !u.must_change && (u.seen_update_version || 0) < CURRENT_UPDATE_VERSION });
+const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0, must_change: u.must_change ? 1 : 0, extra_perms: getPerms(u), notify_rookie: u.notify_rookie === null || u.notify_rookie === undefined ? null : (u.notify_rookie ? 1 : 0), needsUpdateNotice: !u.must_change && (u.seen_update_version || 0) < CURRENT_UPDATE_VERSION, seenUpdateVersion: u.seen_update_version || 0 });
 
 // ===== 給与計算 (RB事業2課ルール) =====
 // 業務名 → 計算区分。 g5=案内料金(最低5h) / l3=搬入出料金(最低3h) / lg,gl,lgl=時間帯分割 / skip=対象外
@@ -1927,6 +1927,21 @@ async function api(req, env, url) {
     return J({ ok: 1, count: ids.length });
   }
 
+  // 複数メンバーの担当手配者を一括変更する(manager_idがnullの場合はチーフ手配に戻す)
+  if (method === 'POST' && path === '/users/bulk-manager') {
+    if (!has(me, 'site_manage') && !has(me, 'account_manage')) return ERR('権限がありません', 403);
+    const ids = Array.isArray(body.ids) ? [...new Set(body.ids.map(Number).filter(n => n > 0))] : [];
+    if (!ids.length) return ERR('対象を選択してください');
+    const mid = body.manager_id || null;
+    if (mid) {
+      const mgr = await env.DB.prepare('SELECT role FROM users WHERE id=?').bind(mid).first();
+      if (!mgr || LV[mgr.role] < 2) return ERR('担当手配者は手配担当以上を指定してください');
+    }
+    const ph = ids.map(() => '?').join(',');
+    await env.DB.prepare(`UPDATE users SET manager_id=? WHERE id IN (${ph})`).bind(mid, ...ids).run();
+    return J({ ok: 1, count: ids.length });
+  }
+
   if (method === 'POST' && path === '/users') {
     if (!has(me, 'account_manage') && !has(me, 'site_manage')) return ERR('ページが見つかりません', 404);
     const { regno, name, rank = '', han = '', ka = '', station = '', role = 'member', manager_id = null } = body;
@@ -2029,7 +2044,7 @@ async function api(req, env, url) {
         const taken = breakByKey[r.date + '|' + r.site] || 0;
         r.breakShort = required > 0 && taken < required;
       }
-      if (!canSeePay) { r.hours = 0; r.overtime = 0; r.pay = 0; r.tin = ''; r.tout = ''; r.duty = ''; r.load_end = ''; r.show_end = ''; r.multi = 0; }
+      if (!canSeePay) { r.hours = 0; r.overtime = 0; r.pay = 0; r.tin = ''; r.tout = ''; r.duty = ''; r.multi = 0; }
       if (r.type === 'paid' && !canSeePaidLeave) { r.type = 'off'; r.hours = 0; r.overtime = 0; r.pay = 0; }
       (entries[r.date] ||= []).push(r);
     }
@@ -2583,10 +2598,22 @@ async function api(req, env, url) {
   if (method === 'GET' && path === '/site-members') {
     const date = url.searchParams.get('date'), site = url.searchParams.get('site');
     const rows = (await env.DB.prepare(
-      "SELECT u.id as uid,u.name,u.role,u.rank,u.ka,u.han,u.station,s.venue,s.tin,s.tout,s.note FROM schedule s JOIN users u ON u.id=s.user_id WHERE s.date=? AND s.site=? AND s.type='work' ORDER BY CASE u.role WHEN 'admin' THEN 0 WHEN 'handler' THEN 1 WHEN 'chief' THEN 2 ELSE 3 END, u.regno"
+      "SELECT u.id as uid,u.name,u.role,u.rank,u.ka,u.han,u.station,s.venue,s.tin,s.tout,s.note,s.load_end,s.show_end FROM schedule s JOIN users u ON u.id=s.user_id WHERE s.date=? AND s.site=? AND s.type='work' ORDER BY CASE u.role WHEN 'admin' THEN 0 WHEN 'handler' THEN 1 WHEN 'chief' THEN 2 ELSE 3 END, u.regno"
     ).bind(date, site).all()).results;
     if (!has(me, 'site_pay')) for (const r of rows) { r.tin = ''; r.tout = ''; } // IN/OUTを表示できるか
     return J(rows);
+  }
+
+  // ---- スケジュール一覧(準備中) ----
+  if (method === 'GET' && path === '/day-schedule') {
+    if (lv(me) < 1) return ERR('ページが見つかりません', 404);
+    return J({ ready: false });
+  }
+
+  // ---- メンバー分析(準備中) ----
+  if (method === 'GET' && path === '/member-stats') {
+    if (lv(me) < 1) return ERR('ページが見つかりません', 404);
+    return J({ ready: false });
   }
 
   // ---- 稼働サマリー(チーフ以上)。月間の出勤日数・現場数・最長連勤・手配偏りを集計 ----
@@ -3043,58 +3070,86 @@ async function cronDaichoReload(env) {
   const allRowsCombined = []; // 今夜取り込む全URL(全ファイル)を横断して集める。不在者判定はこれを使って最後にまとめて行う。
   const keywordMap = await loadNonSiteKeywords(env);
 
+  // 処理中に残っているURL一覧。1件処理し終えるたびに、ここから取り除いて都度保存する。
+  // (Cloudflare Workersの実行時間制限で処理が途中終了しても、既に処理済みのURLが
+  //  再度残ってしまう=「URLが消えない」不具合と、それに伴う「通知が来ない」不具合を防ぐため)
+  let remainingUrls = [...urls];
+
   for (const rawUrl of urls) {
     const meta = parseSheetUrl(rawUrl);
-    if (!meta) { results.push({ url: rawUrl, ok: false, error: 'URL不正' }); continue; }
-    try {
-      // 日付制限なし(fromDate=null)で再取り込み → 当日含む全日付を確定版として上書き
-      const got = await fetchXlsxSheets(meta.id);
-      let allRows = [], sheetReport = [], fileDate = '';
-      if (got.fileTitle) { const fd = normSheetDate(got.fileTitle, jstDate().slice(0, 7)); if (fd) fileDate = fd; }
-      for (const sh of got.sheets) {
-        const grid = sh.grid;
-        if (!grid || !grid.length) continue;
-        try {
-          const fmt = detectFormat(grid);
-          let parsed;
-          if (fmt === 'C') parsed = parseFormatC(grid, null, fileDate).rows;
-          else parsed = parseFormatAB(grid, jstDate().slice(0, 7), null, keywordMap).rows;
-          if (parsed && parsed.length) { allRows = allRows.concat(parsed); sheetReport.push({ name: sh.name, count: parsed.length }); }
-        } catch (e) {
-          sheetReport.push({ name: sh.name, count: 0, note: `解析エラー: ${e.message}` });
+    if (!meta) { results.push({ url: rawUrl, ok: false, error: 'URL不正' }); }
+    else {
+      try {
+        // 日付制限なし(fromDate=null)で再取り込み → 当日含む全日付を確定版として上書き
+        const got = await fetchXlsxSheets(meta.id);
+        let allRows = [], sheetReport = [], fileDate = '';
+        if (got.fileTitle) { const fd = normSheetDate(got.fileTitle, jstDate().slice(0, 7)); if (fd) fileDate = fd; }
+        for (const sh of got.sheets) {
+          const grid = sh.grid;
+          if (!grid || !grid.length) continue;
+          try {
+            const fmt = detectFormat(grid);
+            let parsed;
+            if (fmt === 'C') parsed = parseFormatC(grid, null, fileDate).rows;
+            else parsed = parseFormatAB(grid, jstDate().slice(0, 7), null, keywordMap).rows;
+            if (parsed && parsed.length) { allRows = allRows.concat(parsed); sheetReport.push({ name: sh.name, count: parsed.length }); }
+          } catch (e) {
+            sheetReport.push({ name: sh.name, count: 0, note: `解析エラー: ${e.message}` });
+          }
         }
-      }
-      if (!allRows.length) { results.push({ url: rawUrl, ok: false, error: 'データなし' }); continue; }
-      const r = await applyImportRows(env, allRows, editorId, 'replace-person-day', '台帳自動再取り込み');
-      allRowsCombined.push(...allRows); // 不在者判定用に集約(この時点ではまだ休暇化しない)
+        if (!allRows.length) { results.push({ url: rawUrl, ok: false, error: 'データなし' }); }
+        else {
+          const r = await applyImportRows(env, allRows, editorId, 'replace-person-day', '台帳自動再取り込み');
+          allRowsCombined.push(...allRows); // 不在者判定用に集約(この時点ではまだ休暇化しない)
 
-      // R2台帳を保管(同じfile_idの古いバージョンを削除して最新版だけ残す)
-      if (got.raw && env.DAICHO) {
-        const ts = jstTs();
-        const r2key = `daicho/${ts.replace(/[: ]/g, '-')}_${meta.id}.xlsx`;
-        await env.DAICHO.put(r2key, got.raw, {
-          httpMetadata: { contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
-        });
-        const safeTitle = got.fileTitle ? got.fileTitle.replace(/[\\/:*?"<>|]/g, '_').trim() : '';
-        const fname = safeTitle ? `${safeTitle}.xlsx` : `台帳_${ts.slice(0, 10)}_${meta.id.slice(0, 8)}.xlsx`;
-        await env.DB.prepare(
-          'INSERT INTO daicho_archive(ts,importer_id,importer_name,source_url,file_id,r2_key,file_name,size,applied,sheets) VALUES(?,?,?,?,?,?,?,?,?,?)'
-        ).bind(ts, editorId, editorName + '(自動)', rawUrl, meta.id, r2key, fname, got.raw.length, r.applied, sheetReport.length).run();
+          // R2台帳を保管(同じfile_idの古いバージョンを削除して最新版だけ残す)
+          if (got.raw && env.DAICHO) {
+            const ts = jstTs();
+            const r2key = `daicho/${ts.replace(/[: ]/g, '-')}_${meta.id}.xlsx`;
+            await env.DAICHO.put(r2key, got.raw, {
+              httpMetadata: { contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
+            });
+            const safeTitle = got.fileTitle ? got.fileTitle.replace(/[\\/:*?"<>|]/g, '_').trim() : '';
+            const fname = safeTitle ? `${safeTitle}.xlsx` : `台帳_${ts.slice(0, 10)}_${meta.id.slice(0, 8)}.xlsx`;
+            await env.DB.prepare(
+              'INSERT INTO daicho_archive(ts,importer_id,importer_name,source_url,file_id,r2_key,file_name,size,applied,sheets) VALUES(?,?,?,?,?,?,?,?,?,?)'
+            ).bind(ts, editorId, editorName + '(自動)', rawUrl, meta.id, r2key, fname, got.raw.length, r.applied, sheetReport.length).run();
 
-        // 同じfile_idの古いバージョンを削除(最新版=今追加した1件だけ残す)
-        const oldRecs = (await env.DB.prepare(
-          'SELECT id, r2_key FROM daicho_archive WHERE file_id=? AND r2_key!=? ORDER BY id DESC'
-        ).bind(meta.id, r2key).all()).results;
-        for (const old of oldRecs) {
-          try { await env.DAICHO.delete(old.r2_key); } catch (e) {}
-          await env.DB.prepare('DELETE FROM daicho_archive WHERE id=?').bind(old.id).run();
+            // 同じfile_idの古いバージョンを削除(最新版=今追加した1件だけ残す)
+            const oldRecs = (await env.DB.prepare(
+              'SELECT id, r2_key FROM daicho_archive WHERE file_id=? AND r2_key!=? ORDER BY id DESC'
+            ).bind(meta.id, r2key).all()).results;
+            for (const old of oldRecs) {
+              try { await env.DAICHO.delete(old.r2_key); } catch (e) {}
+              await env.DB.prepare('DELETE FROM daicho_archive WHERE id=?').bind(old.id).run();
+            }
+          }
+          results.push({ url: rawUrl, ok: true, applied: r.applied });
         }
+      } catch (e) {
+        results.push({ url: rawUrl, ok: false, error: e.message });
       }
-      results.push({ url: rawUrl, ok: true, applied: r.applied });
-    } catch (e) {
-      results.push({ url: rawUrl, ok: false, error: e.message });
     }
+    // このURLの処理を終えたら、都度リストから取り除いて保存する(途中終了への耐性)
+    remainingUrls = remainingUrls.filter(u => u !== rawUrl);
+    try { await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('import_urls',?)").bind(JSON.stringify(remainingUrls)).run(); } catch (e) {}
   }
+
+  // 取り込み結果を先に確定・通知しておく(この後の不在者判定・照合処理でタイムアウトしても、
+  // 取り込み自体の成否は必ず管理者に届くようにするため)
+  const totalApplied = results.reduce((s, r) => s + (r.ok ? (r.applied || 0) : 0), 0);
+  const okCount = results.filter(r => r.ok).length;
+  const ngCount = results.length - okCount;
+  await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_result',?)").bind(
+    JSON.stringify({ ts: jstTs(), count: urls.length, results, clearedAbsent: 0 })
+  ).run();
+  try {
+    const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
+    if (admins.length) {
+      await notify(env, admins.map(a => a.id), 'sched_import',
+        `🌙 台帳の深夜自動再取り込みが完了しました(${jstTs()})。${okCount}件成功(反映${totalApplied}件)${ngCount ? ` / ${ngCount}件失敗` : ''}`);
+    }
+  } catch (e) {}
 
   // 不在者の休暇化: 今夜取り込んだ「全URL(全ファイル)」を横断して判定する。
   // (1ファイルごとに判定すると、Aファイルには載っているがBファイルには載っていない人まで
@@ -3107,31 +3162,29 @@ async function cronDaichoReload(env) {
     catch (e) { console.error('matchRookieAndBlacklist failed:', e); }
   }
 
-  // 取り込んだURLを保存済みリストから削除
-  await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('import_urls','[]')").run();
-
-  // 実行結果を記録(管理者ページで確認できるように)
-  await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_result',?)").bind(
-    JSON.stringify({ ts: jstTs(), count: urls.length, results, clearedAbsent: absentResult.clearedPeople })
-  ).run();
-
-  // 管理者へ結果を通知
-  const totalApplied = results.reduce((s, r) => s + (r.ok ? (r.applied || 0) : 0), 0);
-  const okCount = results.filter(r => r.ok).length;
-  const ngCount = results.length - okCount;
-  try {
-    const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
-    if (admins.length) {
-      await notify(env, admins.map(a => a.id), 'sched_import',
-        `🌙 台帳の深夜自動再取り込みが完了しました(${jstTs()})。${okCount}件成功(反映${totalApplied}件)${ngCount ? ` / ${ngCount}件失敗` : ''}${absentResult.clearedPeople ? ` / 不在者の休暇化${absentResult.clearedPeople}件` : ''}`);
-    }
-  } catch (e) {}
+  // 不在者の休暇化件数が確定したら、結果記録を更新する(通知は既に送信済みなので再送しない)
+  if (absentResult.clearedPeople) {
+    try {
+      await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_result',?)").bind(
+        JSON.stringify({ ts: jstTs(), count: urls.length, results, clearedAbsent: absentResult.clearedPeople })
+      ).run();
+      const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
+      if (admins.length) {
+        await notify(env, admins.map(a => a.id), 'sched_import', `🌙 台帳自動再取り込みに伴い、不在者の休暇化を${absentResult.clearedPeople}件行いました。`);
+      }
+    } catch (e) {}
+  }
 }
 
 // 新人報告リマインド通知。
 // 対象者 = 「その日、現場(work)の予定がある」かつ「役割が基本ルールを満たす(既定:チーフ以上)」人。
 // 役割に関わらず、個人ごとに users.notify_rookie で「常に対象(1)」「常に対象外(0)」に上書き設定できる(NULL=基本ルールに従う)。
 // さらに、対象者本人がその日まだ新人報告を提出していない場合のみ送信する(既に提出済みの人には送らない)。
+//
+// 注意: チーフ予定表の自動取込(cronScheduleSources)は「読み込み日の2日後以降」しか反映しない設計
+// (当日・翌日は台帳の実績取り込みを優先するため)なので、チーフ自身の「当日」のscheduleレコードは
+// 存在しないことが多い。その場合、上記の条件では対象者が0人になってしまうため、その日どこかの現場
+// (work)が1件でも稼働していれば、対象ロール全員(新人報告未提出者)に通知するフォールバックを設ける。
 async function cronNotify(env) {
   const enabled = await getSetting(env, 'notify_enabled', '1');
   if (enabled === '0') return;
@@ -3144,9 +3197,14 @@ async function cronNotify(env) {
   let baseRoles = ['chief', 'handler', 'admin'];
   if (scope === 'handlers') baseRoles = ['handler', 'admin'];
   else if (scope === 'all') baseRoles = ['member', 'chief', 'handler', 'admin'];
-
   const phRole = baseRoles.map(() => '?').join(',');
-  const recipients = (await env.DB.prepare(
+
+  // その日、稼働している現場が1件も無ければ、そもそも通知の必要が無い
+  const hasAnySite = await env.DB.prepare("SELECT 1 FROM schedule WHERE date=? AND type='work' AND site<>'' LIMIT 1").bind(today).first();
+  if (!hasAnySite) return;
+
+  // まず「その日、自分自身もwork予定があるチーフ」を対象にする(最も正確な絞り込み)
+  let recipients = (await env.DB.prepare(
     `SELECT DISTINCT u.id FROM users u
      JOIN schedule s ON s.user_id = u.id AND s.date = ? AND s.type = 'work'
      WHERE COALESCE(u.suspended,0) = 0
@@ -3159,8 +3217,23 @@ async function cronNotify(env) {
        )`
   ).bind(today, ...baseRoles, today + '%').all()).results;
 
+  // 該当者が0人の場合(チーフ自身の当日予定データが無い環境)は、対象ロール全員へフォールバックする
+  if (!recipients.length) {
+    recipients = (await env.DB.prepare(
+      `SELECT id FROM users u
+       WHERE COALESCE(u.suspended,0) = 0
+         AND (
+           (u.role IN (${phRole}) AND COALESCE(u.notify_rookie, 1) != 0)
+           OR u.notify_rookie = 1
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM reports r WHERE r.reporter_id = u.id AND r.ts LIKE ?
+         )`
+    ).bind(...baseRoles, today + '%').all()).results;
+  }
+
   const ids = recipients.map(r => r.id);
-  if (ids.length) await notify(env, ids, 'remind', `⏰【リマインド】(${today}) 本日現場に入られています。新人の報告があれば忘れずに提出してください。`);
+  if (ids.length) await notify(env, ids, 'remind', `⏰【リマインド】(${today}) 本日現場が稼働しています。新人の報告があれば忘れずに提出してください。`);
 }
 
 // 予定表(チーフ/1課など、sched_sourcesテーブルに登録された全ソース)を自動取り込みする。
