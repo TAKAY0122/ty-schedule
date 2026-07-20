@@ -2065,7 +2065,7 @@ async function renderFeaturePending(app, icon, title){
    統計カード・手配担当バーをタップすると、その条件で一覧を絞り込める。 ===== */
 async function pageSummary(app){
   if(LV[ME.role] < 1){ notFound(app); return; }
-  const st = PAGE_STATE.summary || (PAGE_STATE.summary = { month: MONTH, stat: null, mgr: null, sort: 'regno' });
+  const st = PAGE_STATE.summary || (PAGE_STATE.summary = { month: MONTH, stat: null, mgr: null, sort: 'regno', mgrOpen: true });
   app.innerHTML = `<div class="muted">読み込み中…</div>`;
   let data;
   try{ data = await api(`/summary?month=${st.month}`); }
@@ -2139,10 +2139,12 @@ async function pageSummary(app){
     <div class="sum-stat"><div class="sum-num">${data.items.length}</div><div class="sum-lbl">全体</div></div>
   </div>
 
-  <div class="card" style="margin-top:14px">
-    <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:10px">
-      <h3 style="margin-bottom:0">手配担当ごとの${mgrSortOptions[mgrSort]}</h3>
-      <select id="mgr-sort" style="font-size:12.5px;padding:5px 6px">
+  <details class="card" style="margin-top:14px" id="mgr-details" ${st.mgrOpen?'open':''}>
+    <summary style="cursor:pointer;font-weight:700;font-size:15px;color:var(--ink)">
+      手配担当ごとの${mgrSortOptions[mgrSort]} <span class="muted" style="font-weight:400;font-size:12px">(${sortedManagers.length}件)</span>
+    </summary>
+    <div class="row" style="justify-content:flex-end;align-items:center;margin:10px 0">
+      <select id="mgr-sort" style="font-size:12.5px;padding:5px 6px" onclick="event.stopPropagation()">
         ${Object.entries(mgrSortOptions).map(([k,l])=>`<option value="${k}" ${k===mgrSort?'selected':''}>${l}順</option>`).join('')}
       </select>
     </div>
@@ -2154,7 +2156,7 @@ async function pageSummary(app){
         <div class="mgr-bar-wrap"><div class="mgr-bar" style="width:${Math.max(ratio*100,1.5).toFixed(1)}%"></div><div class="mgr-val">${(ratio*100).toFixed(0)}%</div></div>
       </div>`;
     }).join('')}
-  </div>
+  </details>
 
   ${(st.stat||st.mgr) ? `<div class="sum-filter"><b>絞り込み中</b>${st.stat?` / ${({overtotal:'月100h超',streak:'6連勤以上',few:'稼働少なめ',samesite:'同じ現場ばかり',over:'残業50h+'})[st.stat]}`:''}${st.mgr?` / ${h((data.managers.find(m=>m.key===st.mgr)||{}).name||'')}`:''}<button class="sum-clear" id="sum-clear">✕ 解除</button></div>` : ''}
 
@@ -2205,6 +2207,7 @@ async function pageSummary(app){
   });
   const cb = $('#sum-clear'); if(cb) cb.onclick = () => { st.stat=null; st.mgr=null; pageSummary(app); };
   $('#mgr-sort').onchange = (e) => { st.mgrSort = e.target.value; pageSummary(app); };
+  $('#mgr-details').ontoggle = (e) => { st.mgrOpen = e.target.open; };
   $('#list-sort').onchange = (e) => { st.sort = e.target.value; pageSummary(app); };
 }
 /* ===== スケジュール一覧(準備中) ===== */
@@ -2304,7 +2307,7 @@ async function pageDaySchedule(app){
           ${dateHead.map(dh=>`<th class="${dh.isToday?'matrix-today':''}">${dh.mo}/${dh.da}<br><span class="muted" style="font-weight:400">(${WD[dh.wd]})</span></th>`).join('')}
         </tr>
         ${list.map(r=>`<tr>
-          <td class="matrix-name-col"><a href="#/schedule/${r.id}">${h(r.name)}</a><br><span class="muted" style="font-size:11px">${h(r.regno)} ${h(r.rank)||''}</span></td>
+          <td class="matrix-name-col"><a href="#/schedule/${r.id}">${h(r.name)}</a><br><span class="muted" style="font-size:11px">${h(r.regno)} ${h(r.rank)||''}</span><br><span class="muted" style="font-size:10.5px">${h(r.managerName)}</span></td>
           ${r.days.map((cell,i)=>cellHtml(cell, dateHead[i].isToday, dateHead[i].d)).join('')}
         </tr>`).join('') || `<tr><td colspan="${st.days+1}" class="muted" style="text-align:center;padding:16px">該当するメンバーはいません</td></tr>`}
       </table>
@@ -2326,9 +2329,162 @@ async function pageDaySchedule(app){
 }
 
 /* ===== メンバー分析(準備中) ===== */
+/* ===== メンバー分析(チーフ以上)。拠点・課・班・ランクの構成を、全体・課ごとの両方で確認できる。
+   手配担当ごとの内訳(拠点・班・ランク)も見られる。カードをタップするとメンバー一覧に絞り込める。 ===== */
 async function pageMemberStats(app){
   if(LV[ME.role] < 1){ notFound(app); return; }
-  await renderFeaturePending(app, '📊', 'メンバー分析');
+  const st = PAGE_STATE.memberStats || (PAGE_STATE.memberStats = { tab:'全体', filter:null, mgrOpen:null });
+  app.innerHTML = `<div class="muted">集計中…</div>`;
+  let data;
+  try{ data = await api('/member-stats'); }
+  catch(e){ app.innerHTML = `<div class="msg err">${h(e.message)}</div>`; return; }
+
+  const canEdit = has('site_manage') || has('account_manage');
+
+  // 割合バー付きの内訳リスト。各行をタップすると、その条件でメンバー一覧をフィルタする。
+  const breakdown = (title, category, list, opt={}) => {
+    const sorted = [...list];
+    const sumCount = sorted.reduce((s,x)=>s+x.count,0);
+    return `<div class="card" style="margin-bottom:14px">
+      <h3 style="margin-bottom:12px">${title} <span class="muted" style="font-weight:400;font-size:12px">(計${sumCount}人)</span></h3>
+      ${sorted.map(x=>{
+        const sel = st.filter && st.filter.category===category && st.filter.value===x.key && st.filter.ka===(opt.ka||null);
+        return `<div class="stat-row stat-row-clickable ${sel?'stat-row-sel':''}" data-category="${category}" data-value="${h(x.key)}" data-ka="${h(opt.ka||'')}">
+          <div class="stat-name"><span>${h(x.key)}${opt.suffix||''}</span><span class="stat-count">${x.count}人 / ${(x.ratio*100).toFixed(1)}%</span></div>
+          <div class="stat-bar-wrap"><div class="stat-bar" style="width:${Math.max(x.ratio*100,1.5).toFixed(1)}%"></div></div>
+        </div>`;
+      }).join('') || '<div class="muted">データがありません</div>'}
+    </div>`;
+  };
+
+  // フィルタ条件に一致するメンバーを抽出する
+  const filteredMembers = () => {
+    if(!st.filter) return [];
+    const { category, value, ka } = st.filter;
+    if(category === 'manager'){
+      if(value === null) return data.members.filter(m => !m.managerId && m.ka === st.filter.mgrKa);
+      return data.members.filter(m => m.managerId === value);
+    }
+    return data.members.filter(m => {
+      if(ka && m.ka !== ka) return false;
+      return (m[category] || '未設定') === value;
+    });
+  };
+
+  const tabHan = st.tab==='全体' ? data.byHan : (data.byHanKa[st.tab]||[]);
+  const tabRank = st.tab==='全体' ? data.byRank : (data.byRankKa[st.tab]||[]);
+
+  app.innerHTML = `
+  <h2 style="margin-bottom:4px">📊 メンバー分析</h2>
+  <div class="muted" style="margin-bottom:14px">在籍メンバー(${data.total}人)の構成をリアルタイムに集計しています。項目をタップすると対象のメンバーを一覧できます。</div>
+
+  <div class="ka-tabs">
+    ${['全体','1課','2課'].map(t=>`<button class="ka-tab ${t==='1課'?'ka1':t==='2課'?'ka2':''} ${st.tab===t?'on':''}" data-tab="${t}">${t}</button>`).join('')}
+  </div>
+
+  <div class="row" style="gap:14px;flex-wrap:wrap;align-items:flex-start">
+    <div style="flex:1;min-width:280px">
+      ${st.tab==='全体' ? breakdown('拠点別', 'base', data.byBase) : ''}
+      ${st.tab==='全体' ? breakdown('課別', 'ka', data.byKa) : ''}
+      ${breakdown(`所属班別(${st.tab})`, 'han', tabHan, {ka: st.tab==='全体'?null:st.tab})}
+    </div>
+    <div style="flex:1;min-width:280px">
+      ${breakdown(`ランク別(${st.tab})`, 'rank', tabRank, {suffix:'ランク', ka: st.tab==='全体'?null:st.tab})}
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:14px">
+    <h3 style="margin-bottom:10px">手配担当ごとの内訳 <span class="muted" style="font-weight:400;font-size:12px">(計${data.byManager.reduce((s,m)=>s+m.count,0)}人)</span></h3>
+    ${data.byManager.map(m=>{
+      const open = st.mgrOpen === m.key;
+      return `<div class="mgr-row ${open?'sel':''}" data-mgropen="${h(m.key)}">
+        <div class="mgr-name">${h(m.name)} <span class="muted">${m.count}人 / ${(m.ratio*100).toFixed(1)}%</span></div>
+        <div class="mgr-bar-wrap"><div class="mgr-bar" style="width:${Math.max(m.ratio*100,1.5).toFixed(1)}%"></div><div class="mgr-val">${(m.ratio*100).toFixed(0)}%</div></div>
+        ${open?`<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--line);display:flex;gap:16px;flex-wrap:wrap;font-size:12.5px">
+          <div><b>拠点:</b> ${m.base.map(x=>`${h(x.key)}${x.count}`).join('、')||'—'}</div>
+          <div><b>班:</b> ${m.han.map(x=>`${h(x.key)}${x.count}`).join('、')||'—'}</div>
+          <div><b>ランク:</b> ${m.rank.map(x=>`${h(x.key)}${x.count}`).join('、')||'—'}</div>
+          <button class="btn ghost xs mgr-detail-btn" data-mgrid="${m.managerId===null?'':m.managerId}" data-mgrka="${h(m.ka||'')}">この担当のメンバーを見る</button>
+        </div>`:''}
+      </div>`;
+    }).join('')}
+  </div>
+
+  <div class="card" id="ms-filter-result" style="${st.filter?'':'display:none'}">
+    <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:10px">
+      <h3 id="ms-filter-title">対象メンバー</h3>
+      <button class="btn ghost sm" id="ms-filter-clear">✕ フィルタ解除</button>
+    </div>
+    <div id="ms-filter-body"></div>
+  </div>`;
+
+  const renderFilterResult = () => {
+    const box = $('#ms-filter-result');
+    if(!st.filter){ box.style.display='none'; return; }
+    box.style.display = '';
+    const list = filteredMembers();
+    const catLabels = { base:'拠点', ka:'課', han:'班', rank:'ランク', manager:'手配担当' };
+    const displayValue = st.filter.category === 'manager' ? st.filter.label : st.filter.value;
+    $('#ms-filter-title').textContent = `${catLabels[st.filter.category]}: ${displayValue} (${list.length}人)`;
+    $('#ms-filter-body').innerHTML = `
+      <table class="list pc-only">
+        <tr><th>氏名</th><th>登録番号</th><th>ランク</th><th>拠点</th><th>課</th><th>班</th><th>手配担当</th><th></th></tr>
+        ${list.map(m=>`<tr>
+          <td>${h(m.name)}</td><td>${h(m.regno)}</td><td>${h(m.rank)||'—'}</td>
+          <td>${h(m.base)||'—'}</td><td>${h(m.ka)||'—'}</td><td>${h(m.han)||'—'}</td><td>${h(m.managerName)||'—'}</td>
+          <td class="nowrap">
+            <button class="btn ghost xs ms-sched" data-id="${m.id}">📅予定</button>
+            ${canEdit?`<button class="btn ghost xs ms-edit" data-id="${m.id}">✏️編集</button>`:''}
+          </td>
+        </tr>`).join('') || '<tr><td colspan="8" class="muted">該当なし</td></tr>'}
+      </table>
+      <div class="cards sp-only">
+        ${list.map(m=>`<div class="dcard">
+          <div class="dcard-head"><span class="dcard-title">${h(m.name)}</span><span class="dcard-sub">${h(m.regno)}</span></div>
+          <div class="drow"><span class="dk">ランク/拠点</span><span class="dv">${h(m.rank)||'—'} / ${h(m.base)||'—'}</span></div>
+          <div class="drow"><span class="dk">課/班</span><span class="dv">${h(m.ka)||'—'} / ${h(m.han)||'—'}</span></div>
+          <div class="drow"><span class="dk">手配担当</span><span class="dv">${h(m.managerName)||'—'}</span></div>
+          <div class="dcard-actions">
+            <button class="btn ghost sm ms-sched" data-id="${m.id}">📅 予定を見る</button>
+            ${canEdit?`<button class="btn ghost sm ms-edit" data-id="${m.id}">✏️ 編集</button>`:''}
+          </div>
+        </div>`).join('') || '<div class="muted">該当なし</div>'}
+      </div>`;
+    $('#ms-filter-body').querySelectorAll('.ms-sched').forEach(b => b.onclick = () => { location.hash = '#/schedule/'+b.dataset.id; });
+    $('#ms-filter-body').querySelectorAll('.ms-edit').forEach(b => b.onclick = async () => {
+      const users = await getUsers();
+      const u = users.find(x => String(x.id)===String(b.dataset.id));
+      if(!u){ popup('ユーザー情報の取得に失敗しました','error'); return; }
+      const managers = await api('/managers').catch(()=>[]);
+      openMemberEdit(u, users, managers);
+    });
+  };
+
+  app.querySelectorAll('[data-tab]').forEach(el => el.onclick = () => {
+    st.tab = el.dataset.tab; st.filter = null; pageMemberStats(app);
+  });
+  app.querySelectorAll('[data-category]').forEach(el => el.onclick = () => {
+    const category = el.dataset.category, value = el.dataset.value, ka = el.dataset.ka || null;
+    if(st.filter && st.filter.category===category && st.filter.value===value && st.filter.ka===ka){ st.filter = null; }
+    else { st.filter = { category, value, ka }; }
+    pageMemberStats(app);
+  });
+  app.querySelectorAll('[data-mgropen]').forEach(el => el.onclick = (e) => {
+    if(e.target.closest('.mgr-detail-btn')) return;
+    st.mgrOpen = st.mgrOpen === el.dataset.mgropen ? null : el.dataset.mgropen;
+    pageMemberStats(app);
+  });
+  app.querySelectorAll('.mgr-detail-btn').forEach(b => b.onclick = (e) => {
+    e.stopPropagation();
+    const mgrId = b.dataset.mgrid ? Number(b.dataset.mgrid) : null;
+    const mgrKa = b.dataset.mgrka;
+    const mgrEntry = data.byManager.find(m => mgrId===null ? (m.managerId===null && m.ka===mgrKa) : m.managerId===mgrId);
+    st.filter = { category:'manager', value: mgrId, ka: null, mgrKa, label: mgrEntry ? mgrEntry.name : '' };
+    pageMemberStats(app);
+  });
+  const cb = $('#ms-filter-clear'); if(cb) cb.onclick = () => { st.filter = null; pageMemberStats(app); };
+  renderFilterResult();
+  if(st.filter){ $('#ms-filter-result').scrollIntoView({ behavior:'smooth', block:'nearest' }); }
 }
 
 

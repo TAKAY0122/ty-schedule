@@ -130,6 +130,15 @@ const DUTY_MAP = {
 const DUTY_SEG_LABELS_BACKEND = { g5:1, l3:1, lg:1, gl:1, lgl:1, skip:1 };
 const PAY_RANKS = ['A','B','C','D','E'];
 function rankLetter(r){ const m = String(r || '').match(/[A-Ea-e]/); return m ? m[0].toUpperCase() : ''; }
+// 登録番号の帯から拠点(大阪/京都)を判定する。300000〜349999=大阪、350000〜399999=京都。
+// DBには保存せず、集計のたびに都度計算するだけ(既存データを変更しない、軽量な集計専用の判定)。
+function baseFromRegno(regno){
+  const n = parseInt(String(regno||'').replace(/\D/g,''), 10);
+  if(!n) return '';
+  if(n >= 300000 && n <= 349999) return '大阪';
+  if(n >= 350000 && n <= 399999) return '京都';
+  return '';
+}
 
 // 全時給を読み込み、(rank,kind,date)で有効な額を返すリゾルバを作る
 async function loadWageResolver(env){
@@ -2706,16 +2715,18 @@ async function api(req, env, url) {
       dates.push(dt.toISOString().slice(0, 10));
     }
 
-    const members = (await env.DB.prepare(
-      "SELECT id, name, regno, rank, ka, han, manager_id, suspended FROM users WHERE role='member' ORDER BY regno"
-    ).all()).results;
     const ph = dates.map(() => '?').join(',');
-    const scheduleRows = (await env.DB.prepare(
-      `SELECT user_id, date, type, site, venue, note FROM schedule WHERE date IN (${ph}) ORDER BY user_id, date, slot`
-    ).bind(...dates).all()).results;
+    // 3つのクエリは互いに依存しないため、直列実行(3回分のDB往復レイテンシが積み重なる)を避けて並列実行する
+    const [membersRes, scheduleRes, managersRes] = await Promise.all([
+      env.DB.prepare("SELECT id, name, regno, rank, ka, han, manager_id, suspended FROM users WHERE role='member' ORDER BY regno").all(),
+      env.DB.prepare(`SELECT user_id, date, type, site, venue, note FROM schedule WHERE date IN (${ph}) ORDER BY user_id, date, slot`).bind(...dates).all(),
+      env.DB.prepare("SELECT id, name FROM users WHERE role IN ('handler','admin')").all(),
+    ]);
+    const members = membersRes.results;
+    const scheduleRows = scheduleRes.results;
     const byUserDate = {};
     for (const r of scheduleRows) { const key = r.user_id + '|' + r.date; (byUserDate[key] ||= []).push(r); }
-    const managers = (await env.DB.prepare("SELECT id, name FROM users WHERE role IN ('handler','admin')").all()).results;
+    const managers = managersRes.results;
     const mgrName = {}; for (const m of managers) mgrName[m.id] = m.name;
     // 担当未設定は課ごとの「チーフ手配(1課/2課)」として扱う(特定の実在アカウントには紐付けない)
     const chiefLabel = m => m.ka === '1課' ? 'チーフ手配(1課)' : m.ka === '2課' ? 'チーフ手配(2課)' : 'チーフ手配';
@@ -2743,20 +2754,79 @@ async function api(req, env, url) {
     return J({ dates, rows });
   }
 
-  // ---- メンバー分析(準備中) ----
+  // ---- メンバー分析(チーフ以上)。拠点・課・班・ランクの構成を、全体・課ごとの両方で集計する。
+  //      手配担当ごとの内訳(拠点・班・ランク)も併せて返す。停止中アカウントも含める。 ----
   if (method === 'GET' && path === '/member-stats') {
     if (lv(me) < 1) return ERR('ページが見つかりません', 404);
-    return J({ ready: false });
+    const [membersRes, managersRes] = await Promise.all([
+      env.DB.prepare("SELECT id, name, regno, rank, ka, han, manager_id, suspended FROM users WHERE role='member'").all(),
+      env.DB.prepare("SELECT id, name, ka FROM users WHERE role IN ('handler','admin')").all(),
+    ]);
+    const members = membersRes.results;
+    for (const m of members) m.base = baseFromRegno(m.regno); // 都度計算(DB保存はしない)
+
+    const managers = managersRes.results;
+    const mgrName = {}; for (const m of managers) mgrName[m.id] = m.name;
+    const chiefLabel = m => m.ka === '1課' ? 'チーフ手配(1課)' : m.ka === '2課' ? 'チーフ手配(2課)' : 'チーフ手配';
+
+    const groupBy = (rows, keyFn) => {
+      const map = {};
+      for (const r of rows) { const k = keyFn(r) || '未設定'; (map[k] ||= []).push(r); }
+      return Object.entries(map).map(([key, list]) => ({ key, count: list.length, ratio: rows.length ? list.length / rows.length : 0 }))
+        .sort((a, b) => b.count - a.count);
+    };
+
+    const byBase = groupBy(members, m => m.base);
+    const byKa = groupBy(members, m => m.ka);
+    const byHan = groupBy(members, m => m.han);
+    const byRank = groupBy(members, m => m.rank);
+    const byHanKa = {}, byRankKa = {};
+    for (const ka of ['1課', '2課']) {
+      const sub = members.filter(m => m.ka === ka);
+      byHanKa[ka] = groupBy(sub, m => m.han);
+      byRankKa[ka] = groupBy(sub, m => m.rank);
+    }
+
+    // 手配担当者ごとの内訳(担当未設定は課ごとの「チーフ手配」としてまとめる)
+    const byManagerMap = {};
+    for (const m of members) {
+      const key = m.manager_id ? 'm' + m.manager_id : 'chief:' + (m.ka || '未設定');
+      const g = byManagerMap[key] ||= {
+        key, managerId: m.manager_id || null,
+        name: m.manager_id ? (mgrName[m.manager_id] || 'チーフ手配') : chiefLabel(m),
+        ka: m.manager_id ? (managers.find(x => x.id === m.manager_id) || {}).ka || '' : (m.ka || ''),
+        list: [],
+      };
+      g.list.push(m);
+    }
+    const byManager = Object.values(byManagerMap).map(g => ({
+      key: g.key, managerId: g.managerId, name: g.name, ka: g.ka,
+      count: g.list.length, ratio: members.length ? g.list.length / members.length : 0,
+      base: groupBy(g.list, m => m.base),
+      han: groupBy(g.list, m => m.han),
+      rank: groupBy(g.list, m => m.rank),
+    })).sort((a, b) => b.count - a.count);
+
+    // カード選択によるフィルタ表示・個人編集への導線用に、個々のメンバー情報も併せて返す
+    const memberList = members.map(m => ({
+      id: m.id, name: m.name, regno: m.regno, rank: m.rank, ka: m.ka, han: m.han, base: m.base,
+      managerId: m.manager_id, managerName: m.manager_id ? (mgrName[m.manager_id] || 'チーフ手配') : chiefLabel(m),
+      suspended: m.suspended ? 1 : 0,
+    }));
+
+    return J({ total: members.length, byBase, byKa, byHan, byRank, byHanKa, byRankKa, byManager, members: memberList });
   }
 
   // ---- 稼働サマリー(チーフ以上)。月間の出勤日数・現場数・最長連勤・手配偏りを集計 ----
   if (method === 'GET' && path === '/summary') {
     if (lv(me) < 1) return ERR('ページが見つかりません', 404);
     const month = url.searchParams.get('month') || jstDate().slice(0, 7);
-    const rows = (await env.DB.prepare(
-      "SELECT user_id, date, site, hours, overtime FROM schedule WHERE type='work' AND site<>'' AND date LIKE ? ORDER BY user_id, date"
-    ).bind(month + '%').all()).results;
-    const users = (await env.DB.prepare('SELECT id,name,regno,role,rank,han,ka,manager_id,suspended FROM users ORDER BY regno').all()).results;
+    const [rowsRes, usersRes] = await Promise.all([
+      env.DB.prepare("SELECT user_id, date, site, hours, overtime FROM schedule WHERE type='work' AND site<>'' AND date LIKE ? ORDER BY user_id, date").bind(month + '%').all(),
+      env.DB.prepare('SELECT id,name,regno,role,rank,han,ka,manager_id,suspended FROM users ORDER BY regno').all(),
+    ]);
+    const rows = rowsRes.results;
+    const users = usersRes.results;
     const umap = {}; for (const u of users) umap[u.id] = u;
     const agg = {};
     for (const r of rows) {
