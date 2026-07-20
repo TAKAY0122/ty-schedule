@@ -177,6 +177,18 @@ INSERT OR IGNORE INTO wage_rates(effective_from,rank,kind,amount) VALUES
  ('2025-10-01','D','guide',1190),('2025-10-01','D','load',1290),
  ('2025-10-01','E','guide',1180),('2025-10-01','E','load',1280);
 
+-- 業務名 → 料金区分の対応表(編集可)。seg: g5=案内料金(最低5h) / l3=搬入出料金(最低3h) /
+-- lg,gl,lgl=時間帯分割 / skip=給与計算対象外
+CREATE TABLE IF NOT EXISTS duty_map(
+  duty TEXT PRIMARY KEY,
+  seg TEXT NOT NULL
+);
+INSERT OR IGNORE INTO duty_map(duty,seg) VALUES
+ ('案内','g5'),('受付・案内','g5'),('準備','g5'),('本部付','g5'),('制作補助','g5'),('運営補助','g5'),('雑務','g5'),
+ ('準備・設営','l3'),('搬入','l3'),('搬出','l3'),('機材搬入','l3'),('機材搬出','l3'),('ステージハンド','l3'),
+ ('搬入・案内','lg'),('案内・搬出','gl'),('パッケージ','lgl'),
+ ('ケータリング','skip'),('物品販売','skip');
+
 -- 取り込んだ台帳(元Excel)の保管インデックス。実ファイルはR2に保存し、ここはメタ情報のみ。
 CREATE TABLE IF NOT EXISTS daicho_archive(
   id INTEGER PRIMARY KEY AUTOINCREMENT,

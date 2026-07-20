@@ -126,6 +126,8 @@ const DUTY_MAP = {
   '搬入・案内':'lg','案内・搬出':'gl','パッケージ':'lgl',
   'ケータリング':'skip','物品販売':'skip',
 };
+// duty-map編集APIでの入力チェック用。有効な料金区分コードの一覧。
+const DUTY_SEG_LABELS_BACKEND = { g5:1, l3:1, lg:1, gl:1, lgl:1, skip:1 };
 const PAY_RANKS = ['A','B','C','D','E'];
 function rankLetter(r){ const m = String(r || '').match(/[A-Ea-e]/); return m ? m[0].toUpperCase() : ''; }
 
@@ -139,10 +141,21 @@ async function loadWageResolver(env){
   };
 }
 
-// 1日分の給与計算。resolve(rank,kind,date)で時給取得。tin/toutは"HH:MM"
-function calcPay({ rank, date, tin, tout, duty, loadEnd, showEnd, multi }, resolve){
+// 業務名→料金区分のマップをDBから読み込む(管理者が編集可能)。
+// テーブルが空、またはDB未初期化の場合は、コード内蔵のDUTY_MAPにフォールバックする。
+async function loadDutyMap(env){
+  const rows = (await env.DB.prepare('SELECT duty, seg FROM duty_map').all().catch(() => ({ results: [] }))).results || [];
+  if (!rows.length) return DUTY_MAP;
+  const map = {};
+  for (const r of rows) map[r.duty] = r.seg;
+  return map;
+}
+
+// 1日分の給与計算。resolve(rank,kind,date)で時給取得。tin/toutは"HH:MM"。
+// dutyMapは業務名→料金区分のマップ(loadDutyMapで取得したもの)。省略時はコード内蔵のDUTY_MAPを使う。
+function calcPay({ rank, date, tin, tout, duty, loadEnd, showEnd, multi }, resolve, dutyMap){
   const R = rankLetter(rank);
-  const seg = DUTY_MAP[duty] || (duty ? 'skip' : 'g5'); // 未知の業務名は対象外、業務名空は案内扱い
+  const seg = (dutyMap || DUTY_MAP)[duty] || (duty ? 'skip' : 'g5'); // 未知の業務名は対象外、業務名空は案内扱い
   const m = t => { const x = String(t == null ? '' : t).match(/^(\d{1,2}):(\d{2})$/); return x ? Number(x[1]) * 60 + Number(x[2]) : null; };
   let IN = m(tin), OUT = m(tout);
   if (IN == null || OUT == null) return { hours: 0, overtime: 0, night: 0, pay: 0 };
@@ -344,6 +357,7 @@ async function undoHistoryEntry(env, id, me) {
   const target = await env.DB.prepare('SELECT rank FROM users WHERE id=?').bind(uid).first();
   const rank = target ? target.rank : '';
   const resolve = await loadWageResolver(env);
+  const dutyMap = await loadDutyMap(env);
   const currentRows = (await env.DB.prepare('SELECT * FROM schedule WHERE user_id=? AND date=? ORDER BY slot').bind(uid, date).all()).results;
   const currentJson = JSON.stringify(currentRows.map(stripRow));
 
@@ -352,7 +366,7 @@ async function undoHistoryEntry(env, id, me) {
   for (const r of restoreRows) {
     let hours = 0, overtime = 0, pay = r.pay || 0;
     if (r.type === 'work' || r.type === 'paid') {
-      const c = calcPay({ rank, date, tin: r.tin, tout: r.tout, duty: r.duty, loadEnd: r.load_end, showEnd: r.show_end, multi: r.multi ? 1 : 0 }, resolve);
+      const c = calcPay({ rank, date, tin: r.tin, tout: r.tout, duty: r.duty, loadEnd: r.load_end, showEnd: r.show_end, multi: r.multi ? 1 : 0 }, resolve, dutyMap);
       if (c) ({ hours, overtime, pay } = c);
     }
     await env.DB.prepare('INSERT INTO schedule(user_id,date,slot,type,site,venue,tin,tout,hours,overtime,pay,note,duty,load_end,show_end,multi) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
@@ -379,7 +393,8 @@ async function applySelfReportToSchedule(env, uid, date, toldBy, detail) {
     if (detail.tin && detail.tout) {
       const u = await env.DB.prepare('SELECT rank FROM users WHERE id=?').bind(uid).first();
       const resolve = await loadWageResolver(env);
-      const c = calcPay({ rank: u ? u.rank : '', date, tin: detail.tin, tout: detail.tout, duty: detail.duty, loadEnd: detail.load_end, showEnd: detail.show_end, multi: detail.multi ? 1 : 0 }, resolve);
+    const dutyMap = await loadDutyMap(env);
+      const c = calcPay({ rank: u ? u.rank : '', date, tin: detail.tin, tout: detail.tout, duty: detail.duty, loadEnd: detail.load_end, showEnd: detail.show_end, multi: detail.multi ? 1 : 0 }, resolve, dutyMap);
       if (c) ({ hours, overtime, pay } = c);
     }
     afterRow = {
@@ -594,6 +609,7 @@ async function clearAbsentFromDaicho(env, rows, editorId) {
 async function applyImportRows(env, rows, editorId, mode = 'replace-person-day', srcLabel = 'spreadsheet') {
   const ts = jstTs();
   const resolve = await loadWageResolver(env);
+  const dutyMap = await loadDutyMap(env);
   let applied = 0, skipped = 0, skippedUnregistered = 0, skippedUnchanged = 0, skippedInvalid = 0, skippedOtherOrg = 0; const errors = [];
   // 登録番号→ユーザーの対応を1回のクエリで取得しておく(行ごとにSELECTするとAPIリクエスト数上限に達するため)
   const allUsers = (await env.DB.prepare('SELECT id, regno, rank, name FROM users').all()).results;
@@ -682,7 +698,7 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
       const type = ['work', 'off', 'paid', 'x', 'ok'].includes(r.type) ? r.type : 'work';
       let hours = 0, overtime = 0, pay = 0;
       if (type === 'work' || type === 'paid') {
-        const c = calcPay({ rank, date, tin: r.tin, tout: r.tout, duty: r.duty, loadEnd: r.load_end, showEnd: r.show_end, multi: r.multi ? 1 : 0 }, resolve);
+        const c = calcPay({ rank, date, tin: r.tin, tout: r.tout, duty: r.duty, loadEnd: r.load_end, showEnd: r.show_end, multi: r.multi ? 1 : 0 }, resolve, dutyMap);
         if (c) ({ hours, overtime, pay } = c);
       }
       if (r.pay !== '' && r.pay != null && !isNaN(Number(r.pay))) pay = Math.round(Number(r.pay));
@@ -1696,7 +1712,36 @@ async function api(req, env, url) {
   // 業務名 → 料金区分の対応表(手配担当以上が確認用に閲覧できる)
   if (method === 'GET' && path === '/duty-map') {
     if (!has(me, 'wage_settings')) return ERR('ページが見つかりません', 404);
-    return J(DUTY_MAP);
+    return J(await loadDutyMap(env));
+  }
+  // 業務名の新規追加(管理者のみ)
+  if (method === 'POST' && path === '/duty-map') {
+    if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
+    const duty = String(body.duty || '').trim();
+    const seg = String(body.seg || '');
+    if (!duty) return ERR('業務名を入力してください');
+    if (!Object.keys(DUTY_SEG_LABELS_BACKEND).includes(seg)) return ERR('不正な料金区分です');
+    try {
+      await env.DB.prepare('INSERT INTO duty_map(duty,seg) VALUES(?,?)').bind(duty, seg).run();
+    } catch { return ERR('その業務名は既に登録されています'); }
+    return J({ ok: 1 });
+  }
+  // 業務名の料金区分を変更(管理者のみ)
+  if (method === 'PATCH' && path.startsWith('/duty-map/')) {
+    if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
+    const duty = decodeURIComponent(path.slice('/duty-map/'.length));
+    const seg = String(body.seg || '');
+    if (!Object.keys(DUTY_SEG_LABELS_BACKEND).includes(seg)) return ERR('不正な料金区分です');
+    const r = await env.DB.prepare('UPDATE duty_map SET seg=? WHERE duty=?').bind(seg, duty).run();
+    if (!r.meta || !r.meta.changes) return ERR('見つかりません', 404);
+    return J({ ok: 1 });
+  }
+  // 業務名の削除(管理者のみ)
+  if (method === 'DELETE' && path.startsWith('/duty-map/')) {
+    if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
+    const duty = decodeURIComponent(path.slice('/duty-map/'.length));
+    await env.DB.prepare('DELETE FROM duty_map WHERE duty=?').bind(duty).run();
+    return J({ ok: 1 });
   }
   // 時給テーブル更新(管理者)。body.rates=[{effective_from,rank,kind,amount}]。新規effective_fromの追加も可
   if (method === 'PUT' && path === '/wage-rates') {
@@ -1724,12 +1769,13 @@ async function api(req, env, url) {
   if (method === 'POST' && path === '/recalc') {
     if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
     const resolve = await loadWageResolver(env);
+    const dutyMap = await loadDutyMap(env);
     const users = (await env.DB.prepare('SELECT id,rank FROM users').all()).results;
     const rankMap = {}; for (const u of users) rankMap[u.id] = u.rank;
     const rows = (await env.DB.prepare("SELECT id,user_id,date,tin,tout,duty,load_end,show_end,multi FROM schedule WHERE type='work'").all()).results;
     let n = 0;
     for (const r of rows) {
-      const c = calcPay({ rank: rankMap[r.user_id], date: r.date, tin: r.tin, tout: r.tout, duty: r.duty, loadEnd: r.load_end, showEnd: r.show_end, multi: r.multi }, resolve);
+      const c = calcPay({ rank: rankMap[r.user_id], date: r.date, tin: r.tin, tout: r.tout, duty: r.duty, loadEnd: r.load_end, showEnd: r.show_end, multi: r.multi }, resolve, dutyMap);
       if (!c) continue;
       await env.DB.prepare('UPDATE schedule SET hours=?, overtime=?, pay=? WHERE id=?').bind(c.hours, c.overtime, c.pay, r.id).run();
       n++;
@@ -2103,6 +2149,7 @@ async function api(req, env, url) {
     const tin = body.tin || '', tout = body.tout || '', venue = body.venue || '';
     const duty = body.duty || '', load_end = body.load_end || '', show_end = body.show_end || '', multi = body.multi ? 1 : 0;
     const resolve = await loadWageResolver(env);
+    const dutyMap = await loadDutyMap(env);
     const payOverride = (body.pay !== '' && body.pay != null && !isNaN(Number(body.pay))) ? Math.round(Number(body.pay)) : null;
 
     // assignments: [{uid, dates:[...], note}] 形式。なければ従来の uids×dates 形式から組み立てる
@@ -2140,7 +2187,7 @@ async function api(req, env, url) {
           const others = before.filter(b => b.type === 'work' && b.site).map(b => b.site);
           if (others.length) conflicts.push({ name: uname, date, level: 'warn', kind: 'multi', count: others.length + 1, sites: [...others, site] });
         }
-        const c = calcPay({ rank: nameCache[a.uid].rank, date, tin, tout, duty, loadEnd: load_end, showEnd: show_end, multi }, resolve);
+        const c = calcPay({ rank: nameCache[a.uid].rank, date, tin, tout, duty, loadEnd: load_end, showEnd: show_end, multi }, resolve, dutyMap);
         const pay = payOverride != null ? payOverride : c.pay;
         const slot = before.length;
         await env.DB.prepare('INSERT INTO schedule(user_id,date,slot,type,site,venue,tin,tout,hours,overtime,pay,note,duty,load_end,show_end,multi) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
@@ -2183,6 +2230,7 @@ async function api(req, env, url) {
     let updated = 0, removed = 0;
     if (isLocked(date, me, await getLockDays(env))) return ERR('給与確定済みのため編集できません（確定期間を過ぎています）', 409);
     const resolve = await loadWageResolver(env);
+    const dutyMap = await loadDutyMap(env);
     // 削除対象
     for (const uid of removeUids) {
       const before = (await env.DB.prepare('SELECT * FROM schedule WHERE user_id=? AND date=? ORDER BY slot').bind(uid, date).all()).results;
@@ -2206,7 +2254,7 @@ async function api(req, env, url) {
         const nVenue = venue || r.venue;
         const nTin = tin || r.tin, nTout = tout || r.tout;
         let hours = r.hours, overtime = r.overtime, pay = r.pay;
-        if (nTin && nTout) { const c = calcPay({ rank: rankCache[uid], date, tin: nTin, tout: nTout, duty: r.duty, loadEnd: r.load_end, showEnd: r.show_end, multi: r.multi }, resolve); if (c) ({ hours, overtime, pay } = c); }
+        if (nTin && nTout) { const c = calcPay({ rank: rankCache[uid], date, tin: nTin, tout: nTout, duty: r.duty, loadEnd: r.load_end, showEnd: r.show_end, multi: r.multi }, resolve, dutyMap); if (c) ({ hours, overtime, pay } = c); }
         await env.DB.prepare("UPDATE schedule SET site=?, venue=?, tin=?, tout=?, hours=?, overtime=?, pay=? WHERE id=?")
           .bind(nSite, nVenue, nTin, nTout, hours, overtime, pay, r.id).run();
         updated++;
@@ -2250,6 +2298,7 @@ async function api(req, env, url) {
     const tname = tgt ? tgt.name : '';
     const trank = tgt ? tgt.rank : '';
     const resolve = await loadWageResolver(env);
+    const dutyMap = await loadDutyMap(env);
     // 給与確定(現場日から2週間)済みの日付は編集不可
     const lockDays = await getLockDays(env);
     const lockedDates = Object.keys(byDate).filter(d => isLocked(d, me, lockDays));
@@ -2276,7 +2325,7 @@ async function api(req, env, url) {
       for (const e of slots) {
         let hours = 0, overtime = 0, pay = 0;
         if (e.type === 'work' || e.type === 'paid') {
-          const c = calcPay({ rank: trank, date, tin: e.tin, tout: e.tout, duty: e.duty, loadEnd: e.load_end, showEnd: e.show_end, multi: e.multi ? 1 : 0 }, resolve);
+          const c = calcPay({ rank: trank, date, tin: e.tin, tout: e.tout, duty: e.duty, loadEnd: e.load_end, showEnd: e.show_end, multi: e.multi ? 1 : 0 }, resolve, dutyMap);
           if (c) ({ hours, overtime, pay } = c);
         }
         if (e.pay !== '' && e.pay != null && !isNaN(Number(e.pay))) pay = Math.round(Number(e.pay));

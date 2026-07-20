@@ -74,10 +74,10 @@ const DUTY_SEG_LABELS = {
   lgl: '搬入→案内→搬出(時間帯で分割計算)',
   skip: '対象外(給与計算なし)',
 };
-let FEATURE_STATUS_CACHE = null;
-async function getFeatureStatus(force){
-  if(!FEATURE_STATUS_CACHE || force) FEATURE_STATUS_CACHE = await api('/settings/feature-status').catch(()=>({}));
-  return FEATURE_STATUS_CACHE;
+// 機能公開設定は画面遷移のたびに最新状態を取得する(キャッシュすると、管理者が変更した直後の
+// ユーザーに反映されない不具合が起きるため、あえてキャッシュしない)。
+async function getFeatureStatus(){
+  return await api('/settings/feature-status').catch(()=>({}));
 }
 // 準備中・メンテナンス中の画面に来た人に表示する共通メッセージ
 function renderFeatureBlocked(app, status, label){
@@ -2122,7 +2122,7 @@ async function pageMembers(app){
       <tr>${isHandler?'<th><input type="checkbox" id="m-check-all"></th>':''}<th>登録番号</th><th>氏名</th><th>役割</th><th>ランク</th><th>班</th><th>手配担当</th><th>最寄駅</th><th>できること</th><th></th></tr>
       ${list.map(u=>`<tr>
         ${isHandler?(u.id===ME.id?'<td></td>':`<td><input type="checkbox" class="m-check" data-id="${u.id}"></td>`):''}
-        <td>${h(u.regno)}</td><td><b class="name-link" data-goto-uid="${u.id}">${h(u.name)}</b></td>
+        <td>${h(u.regno)}${baseFromRegno(u.regno)?` <span class="muted" style="font-size:11px">(${baseFromRegno(u.regno)})</span>`:''}</td><td><b class="name-link" data-goto-uid="${u.id}">${h(u.name)}</b></td>
         <td><span class="tag ${u.role}">${roleLabel(u)}</span></td>
         <td>${h(u.rank)}</td><td>${h(u.han)}</td><td>${h(managerName(u,users))}</td><td>${h(u.station)}</td>
         <td class="wrapcell">${h(u.skills)}</td>
@@ -2133,7 +2133,7 @@ async function pageMembers(app){
       <div class="cards sp-only">
       ${list.map(u=>`<div class="dcard ka-${kaOf(u)==='1課'?'1':'2'}">
         <div class="dcard-head">${isHandler&&u.id!==ME.id?`<input type="checkbox" class="m-check" data-id="${u.id}" style="margin-right:8px">`:''}<span class="dcard-title name-link" data-goto-uid="${u.id}">${h(u.name)}</span><span class="tag ${u.role}">${roleLabel(u)}</span></div>
-        <div class="drow"><span class="dk">登録番号</span><span class="dv">${h(u.regno)}</span></div>
+        <div class="drow"><span class="dk">登録番号</span><span class="dv">${h(u.regno)}${baseFromRegno(u.regno)?` (${baseFromRegno(u.regno)})`:''}</span></div>
         <div class="drow"><span class="dk">ランク / 班</span><span class="dv">${h(u.rank)||'—'} / ${h(u.han)||'—'}</span></div>
         <div class="drow"><span class="dk">手配担当</span><span class="dv">${h(managerName(u,users))}</span></div>
         <div class="drow"><span class="dk">最寄駅</span><span class="dv">${h(u.station)||'—'}</span></div>
@@ -2286,6 +2286,15 @@ function managerName(u, users){
   }
   const mgr = users.find(x=>String(x.id)===String(u.manager_id));
   return mgr ? mgr.name+'手配' : 'チーフ手配';
+}
+// 登録番号の帯から拠点(大阪/京都)を判定する。300000〜349999=大阪、350000〜399999=京都。
+// DBには保存せず、表示のたびに都度計算するだけ(既存データを変更しない、軽量な表示専用の判定)。
+function baseFromRegno(regno){
+  const n = parseInt(String(regno||'').replace(/\D/g,''), 10);
+  if(!n) return '';
+  if(n >= 300000 && n <= 349999) return '大阪';
+  if(n >= 350000 && n <= 399999) return '京都';
+  return '';
 }
 
 /* ===== スケジュール入力(手配者モード)===== */
@@ -3953,7 +3962,7 @@ async function pageAdmin(app){
       <tr><th><input type="checkbox" id="ad-check-all"></th><th>登録番号</th><th>氏名</th><th>役割(管理者のみ変更可)</th><th>担当手配者</th><th>ランク</th><th>班</th><th>駅</th><th>操作</th></tr>
       ${aList.map(u=>`<tr class="${u.suspended?'is-suspended':''}">
         <td>${u.id===ME.id?'':`<input type="checkbox" class="ad-check" data-id="${u.id}">`}</td>
-        <td class="nowrap">${h(u.regno)}${ME.role==='admin'?` <button class="btn ghost xs regno-edit" data-id="${u.id}" data-cur="${h(u.regno)}" data-name="${h(u.name)}" title="登録番号を変更">✏️</button>`:''}</td><td class="nowrap">${h(u.name)}${u.suspended?' <span class="susp-tag">停止</span>':''}</td>
+        <td class="nowrap">${h(u.regno)}${baseFromRegno(u.regno)?` <span class="muted" style="font-size:11px">(${baseFromRegno(u.regno)})</span>`:''}${ME.role==='admin'?` <button class="btn ghost xs regno-edit" data-id="${u.id}" data-cur="${h(u.regno)}" data-name="${h(u.name)}" title="登録番号を変更">✏️</button>`:''}</td><td class="nowrap">${h(u.name)}${u.suspended?' <span class="susp-tag">停止</span>':''}</td>
         <td><select data-role="${u.id}">${['member','chief','handler','admin'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${ROLE_JP[r]}</option>`).join('')}</select></td>
         <td><select data-mgr="${u.id}"><option value="">(なし)</option>${mgrs.map(m=>`<option value="${m.id}" ${String(u.manager_id)===String(m.id)?'selected':''}>${h(m.name)}手配</option>`).join('')}</select></td>
         <td class="nowrap">${h(u.rank)}</td><td class="nowrap">${h(u.han)}</td><td class="nowrap">${h(u.station)}</td>
@@ -3970,7 +3979,7 @@ async function pageAdmin(app){
             ${u.id===ME.id?'<span style="width:16px;display:inline-block"></span>':`<input type="checkbox" class="ad-check" data-id="${u.id}">`}
             <span class="dcard-title">${h(u.name)}${u.suspended?' <span class="susp-tag">停止</span>':''}</span>
           </label>
-          <span class="dcard-sub">${h(u.regno)}${ME.role==='admin'?` <button class="btn ghost xs regno-edit" data-id="${u.id}" data-cur="${h(u.regno)}" data-name="${h(u.name)}" title="登録番号を変更">✏️</button>`:''}</span>
+          <span class="dcard-sub">${h(u.regno)}${baseFromRegno(u.regno)?` (${baseFromRegno(u.regno)})`:''}${ME.role==='admin'?` <button class="btn ghost xs regno-edit" data-id="${u.id}" data-cur="${h(u.regno)}" data-name="${h(u.name)}" title="登録番号を変更">✏️</button>`:''}</span>
         </div>
         <div class="drow"><span class="dk">役割</span><span class="dv"><select data-role="${u.id}">${['member','chief','handler','admin'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${ROLE_JP[r]}</option>`).join('')}</select></span></div>
         <div class="drow"><span class="dk">担当手配</span><span class="dv"><select data-mgr="${u.id}"><option value="">(なし)</option>${mgrs.map(m=>`<option value="${m.id}" ${String(u.manager_id)===String(m.id)?'selected':''}>${h(m.name)}手配</option>`).join('')}</select></span></div>
@@ -4254,12 +4263,21 @@ async function pageAdminSettings(app){
     <div class="muted" style="margin-top:8px">深夜手当・超過手当は案内料金×0.25、2st手当は+¥500。対象はA〜Eランクのみ（ケータリング・物品販売・その他ランクは対象外）。</div>
     <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
       <div style="font-weight:700;margin-bottom:8px">📋 業務名 → 料金区分の対応表</div>
-      <div class="muted" style="margin-bottom:8px">台帳の「業務名」列に入っている値ごとに、どの料金で計算されるかの一覧です。</div>
-      <table class="wage-tbl" style="max-width:520px">
-        <tr><th>業務名</th><th>料金区分</th></tr>
-        ${Object.entries(dutyMap).map(([duty,seg])=>`<tr><td>${h(duty)}</td><td>${h(DUTY_SEG_LABELS[seg]||seg)}</td></tr>`).join('') || '<tr><td colspan="2" class="muted">取得できませんでした</td></tr>'}
+      <div class="muted" style="margin-bottom:8px">台帳の「業務名」列に入っている値ごとに、どの料金で計算されるかを設定します。ここに無い業務名は「対象外(給与計算なし)」として扱われます。</div>
+      <table class="wage-tbl" style="max-width:640px">
+        <tr><th>業務名</th><th>料金区分</th><th></th></tr>
+        ${Object.entries(dutyMap).map(([duty,seg])=>`<tr>
+          <td>${h(duty)}</td>
+          <td><select class="duty-seg-select" data-duty="${h(duty)}">${Object.entries(DUTY_SEG_LABELS).map(([k,l])=>`<option value="${k}" ${k===seg?'selected':''}>${h(l)}</option>`).join('')}</select></td>
+          <td><button class="btn ghost xs duty-del" data-duty="${h(duty)}">削除</button></td>
+        </tr>`).join('') || '<tr><td colspan="3" class="muted">登録されていません</td></tr>'}
       </table>
-      <div class="muted" style="margin-top:8px">上記に無い業務名は「対象外」として扱われます。</div>
+      <div class="row" style="margin-top:10px;gap:6px;align-items:center;flex-wrap:wrap">
+        <input id="duty-new-name" placeholder="新しい業務名(例:誘導)" style="flex:1;min-width:140px">
+        <select id="duty-new-seg">${Object.entries(DUTY_SEG_LABELS).map(([k,l])=>`<option value="${k}">${h(l)}</option>`).join('')}</select>
+        <button class="btn gold sm" id="duty-add">追加</button>
+      </div>
+      <div class="muted" id="duty-msg" style="margin-top:6px"></div>
     </div>
     <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
       <button class="btn ghost sm" id="recalc-btn">過去データの給与・残業を再計算</button>
@@ -4364,6 +4382,30 @@ async function pageAdminSettings(app){
       try{ const r=await api('/recalc',{method:'POST'}); $('#recalc-msg').textContent=`${r.updated}件 再計算しました`; popup(`${r.updated}件を再計算しました`); }
       catch(e){ $('#recalc-msg').textContent=e.message; }
       finally{ rb.disabled=false; }
+  }; }
+  app.querySelectorAll('.duty-seg-select').forEach(sel => sel.onchange = async () => {
+    const duty = sel.dataset.duty;
+    try{
+      await api('/duty-map/'+encodeURIComponent(duty), { method:'PATCH', body:{ seg: sel.value } });
+      $('#duty-msg').textContent = `「${duty}」を更新しました`;
+    }catch(e){ $('#duty-msg').textContent = e.message; }
+  });
+  app.querySelectorAll('.duty-del').forEach(b => b.onclick = async () => {
+    const duty = b.dataset.duty;
+    if(!confirm(`「${duty}」を対応表から削除します。以後この業務名は「対象外」として扱われます。よろしいですか？`)) return;
+    try{
+      await api('/duty-map/'+encodeURIComponent(duty), { method:'DELETE' });
+      popup('削除しました'); pageAdminSettings(app);
+    }catch(e){ popup(e.message,'error'); }
+  });
+  { const da = $('#duty-add'); if(da) da.onclick = async () => {
+      const duty = $('#duty-new-name').value.trim();
+      const seg = $('#duty-new-seg').value;
+      if(!duty){ $('#duty-msg').textContent = '業務名を入力してください'; return; }
+      try{
+        await api('/duty-map', { method:'POST', body:{ duty, seg } });
+        popup('追加しました'); pageAdminSettings(app);
+      }catch(e){ $('#duty-msg').textContent = e.message; }
   }; }
   { const ns = $('#nt-save'); if(ns) ns.onclick = async () => {
       const enabled = $('#nt-enabled').checked;
