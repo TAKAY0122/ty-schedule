@@ -114,7 +114,7 @@ async function pbkdf2(pw, salt) {
 // アプリの機能アップデートのお知らせに使うバージョン番号。新しいお知らせを追加したら値を増やし、
 // updateNoticeContent()にも内容を追記する。既にパスワードを変更済み(must_change=0)の既存ユーザーが
 // ログインした際、seen_update_version がこれより小さければ「アップデートのお知らせ」を表示する。
-const CURRENT_UPDATE_VERSION = 3;
+const CURRENT_UPDATE_VERSION = 2;
 
 const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0, must_change: u.must_change ? 1 : 0, extra_perms: getPerms(u), notify_rookie: u.notify_rookie === null || u.notify_rookie === undefined ? null : (u.notify_rookie ? 1 : 0), needsUpdateNotice: !u.must_change && (u.seen_update_version || 0) < CURRENT_UPDATE_VERSION, seenUpdateVersion: u.seen_update_version || 0 });
 
@@ -2759,7 +2759,7 @@ async function api(req, env, url) {
   if (method === 'GET' && path === '/member-stats') {
     if (lv(me) < 1) return ERR('ページが見つかりません', 404);
     const [membersRes, managersRes] = await Promise.all([
-      env.DB.prepare("SELECT id, name, regno, rank, ka, han, manager_id, suspended FROM users WHERE role='member'").all(),
+      env.DB.prepare("SELECT id, name, regno, rank, ka, han, manager_id, suspended FROM users").all(),
       env.DB.prepare("SELECT id, name, ka FROM users WHERE role IN ('handler','admin')").all(),
     ]);
     const members = membersRes.results;
