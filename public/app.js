@@ -24,6 +24,7 @@ const ICONS = {
   settings:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
   key:'<path d="M21 2l-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/>',
   logOut:'<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/>',
+  undo:'<path d="M9 14l-4-4 4-4"/><path d="M5 10h11a4 4 0 0 1 4 4v0a4 4 0 0 1-4 4h-1"/>',
   mapPin:'<path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/>',
   shieldCheck:'<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/>',
   shield:'<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
@@ -1166,7 +1167,7 @@ function renderShell(hash){
     <button type="button" class="drawer-link" data-go="#/password">${icon('key')} パスワード変更</button>
     <button type="button" class="drawer-link" data-go="#/version-history">${icon('scroll')} バージョン履歴</button>
     <button type="button" class="drawer-link" id="dd-refresh">${icon('refresh')} 最新版に更新</button>
-    <button type="button" class="drawer-link danger" id="dd-logout">↩️ ログアウト</button>`;
+    <button type="button" class="drawer-link danger" id="dd-logout">${icon('logOut')} ログアウト</button>`;
 
   const wireFooter = (dr, close) => {
     dr.querySelectorAll('.drawer-link[data-go]').forEach(btn => btn.onclick = () => {
@@ -1194,12 +1195,12 @@ function renderShell(hash){
         <div class="drawer-head">メニュー</div>
         ${nav.map((item,i) => {
           if(!item.children){
-            return `<button type="button" class="drawer-link ${hashIs(hash, item.path)?'active':''}" data-go="${item.path}">${icon(item.icon)} ${h(item.label)}</button>`;
+            return `<button type="button" class="drawer-link ${hashIs(hash, item.path)?'active':''}" data-go="${item.path}"><span class="drawer-label">${icon(item.icon)} ${h(item.label)}</span></button>`;
           }
           const isOpen = !!stMenu.open[i];
-          return `<button type="button" class="drawer-link drawer-group" data-toggle="${i}">${icon(item.icon)} ${h(item.label)}<span class="drawer-arrow ${isOpen?'open':''}">›</span></button>
+          return `<button type="button" class="drawer-link drawer-group" data-toggle="${i}"><span class="drawer-label">${icon(item.icon)} ${h(item.label)}</span><span class="drawer-arrow ${isOpen?'open':''}">›</span></button>
             <div class="drawer-sub ${isOpen?'':'collapsed'}">
-              ${item.children.map(c => `<button type="button" class="drawer-link drawer-sublink ${hashIs(hash,c.path)?'active':''}" data-go="${c.path}">${icon(c.icon)} ${h(c.label)}</button>`).join('')}
+              ${item.children.map(c => `<button type="button" class="drawer-link drawer-sublink ${hashIs(hash,c.path)?'active':''}" data-go="${c.path}"><span class="drawer-label">${icon(c.icon)} ${h(c.label)}</span></button>`).join('')}
             </div>`;
         }).join('')}
         ${footerLinks}
@@ -1281,7 +1282,7 @@ async function openScheduleHistory(uid, name){
         </div>
         <div class="drow"><span class="dk">変更</span><span class="dv">${h(summarizeHistory(x.before_json, x.after_json))}</span></div>
         <div class="drow"><span class="dk">日時</span><span class="dv dcard-sub">${h(x.ts)}</span></div>
-        <div class="row" style="margin-top:6px"><button class="btn ghost xs sh-undo" data-id="${x.id}" data-date="${h(x.date)}">↩️ この変更を取り消す</button></div>
+        <div class="row" style="margin-top:6px"><button class="btn ghost xs sh-undo" data-id="${x.id}" data-date="${h(x.date)}">${icon('undo',{size:'12px'})} この変更を取り消す</button></div>
       </div>`).join('') : '<div class="muted" style="text-align:center;padding:16px 0">変更履歴はありません</div>';
 
       const updateBulkBar = () => {
@@ -3645,7 +3646,7 @@ async function pageReportExport(app){
   <h2 style="margin-bottom:4px">${icon('paperclip')} スプレッドシート貼り付け用にコピー</h2>
 
   <div class="card" style="margin-bottom:14px">
-    <h3 style="margin-bottom:8px">🆕 新人報告</h3>
+    <h3 style="margin-bottom:8px">${icon('sparkles')} 新人報告</h3>
     <div class="row" style="gap:10px;flex-wrap:wrap;align-items:center">
       <label>開始日 <input type="date" id="rex-from" value="${h(st.rFrom)}"></label>
       <label>終了日 <input type="date" id="rex-to" value="${h(st.rTo)}"></label>
@@ -4095,7 +4096,7 @@ async function pageHandlerStatus(app){
     </div>
     <div class="sched-wrap pc-only"><table class="list">
       <tr><th></th><th>日時</th><th>編集者</th><th>対象メンバー</th><th>対象日</th><th>変更内容</th><th></th></tr>
-      ${hist.map(x=>`<tr><td><input type="checkbox" class="hd-check" data-id="${x.id}" data-date="${h(x.date)}"></td><td>${h(x.ts)}</td><td>${h(x.editor_name)}</td><td>${x.target_id?`<span class="name-link" data-goto-uid="${x.target_id}">${h(x.target_name)}</span>`:h(x.target_name)}</td><td>${h(x.date)}</td><td>${h(summarize(x.before_json, x.after_json))}</td><td><button class="btn ghost xs hd-undo" data-id="${x.id}" data-date="${h(x.date)}">↩️ 取り消す</button></td></tr>`).join('')}
+      ${hist.map(x=>`<tr><td><input type="checkbox" class="hd-check" data-id="${x.id}" data-date="${h(x.date)}"></td><td>${h(x.ts)}</td><td>${h(x.editor_name)}</td><td>${x.target_id?`<span class="name-link" data-goto-uid="${x.target_id}">${h(x.target_name)}</span>`:h(x.target_name)}</td><td>${h(x.date)}</td><td>${h(summarize(x.before_json, x.after_json))}</td><td><button class="btn ghost xs hd-undo" data-id="${x.id}" data-date="${h(x.date)}">${icon('undo',{size:'12px'})} 取り消す</button></td></tr>`).join('')}
     </table></div>
     <div class="cards sp-only">${hist.map(x=>`<div class="dcard">
       <div class="dcard-head">
@@ -4107,7 +4108,7 @@ async function pageHandlerStatus(app){
       </div>
       <div class="drow"><span class="dk">変更</span><span class="dv">${h(summarize(x.before_json, x.after_json))}</span></div>
       <div class="drow"><span class="dk">日時</span><span class="dv dcard-sub">${h(x.ts)}</span></div>
-      <div class="row" style="margin-top:6px"><button class="btn ghost xs hd-undo" data-id="${x.id}" data-date="${h(x.date)}">↩️ この変更を取り消す</button></div>
+      <div class="row" style="margin-top:6px"><button class="btn ghost xs hd-undo" data-id="${x.id}" data-date="${h(x.date)}">${icon('undo',{size:'12px'})} この変更を取り消す</button></div>
     </div>`).join('')}</div>` : '<div class="muted">編集履歴はありません</div>';
     wireNameLinks($('#hd-history'));
 
