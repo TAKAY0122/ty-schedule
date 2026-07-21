@@ -4052,7 +4052,7 @@ async function pageHandlerStatus(app){
   if(!has('handler_tools')){ notFound(app); return; }
   const stHs = PAGE_STATE.handlerStatus || (PAGE_STATE.handlerStatus = { open:{ online:true } });
   const openSet = stHs.open;
-  const sec = (id,title,body)=>`<details class="adm-sec" id="hssec-${id}" data-sec="${id}" ${openSet[id]?'open':''}><summary>${title}</summary><div class="adm-body">${body}</div></details>`;
+  const sec = (id,title,body)=>`<details class="adm-sec" id="hssec-${id}" data-sec="${id}" ${openSet[id]?'open':''}><summary><span class="adm-sec-title">${title}</span></summary><div class="adm-body">${body}</div></details>`;
   app.innerHTML = `
   <h2 style="margin-bottom:8px">ログイン中メンバー・編集履歴</h2>
   <div class="adm-nav">
@@ -4706,7 +4706,7 @@ async function pageAdmin(app){
   const optLists = await api('/option-lists').catch(()=>({ka:[],han:[]}));
   const st = PAGE_STATE.admin || (PAGE_STATE.admin = { q:'', mgr:'', open:{ list:true } });
   const openSet = st.open;
-  const sec = (id,title,body)=>`<details class="adm-sec" id="sec-${id}" data-sec="${id}" ${openSet[id]?'open':''}><summary>${title}</summary><div class="adm-body">${body}</div></details>`;
+  const sec = (id,title,body)=>`<details class="adm-sec" id="sec-${id}" data-sec="${id}" ${openSet[id]?'open':''}><summary><span class="adm-sec-title">${title}</span></summary><div class="adm-body">${body}</div></details>`;
 
   // アカウント一覧のリスト部分だけを再構築する。検索欄など入力要素はここでは触らない
   // (input要素をDOMから作り直すと、スマホでソフトウェアキーボードが閉じてしまうため)
@@ -4956,7 +4956,7 @@ async function pageAdminSettings(app){
   const featureStatus = await api('/settings/feature-status').catch(()=>({}));
   const stAs = PAGE_STATE.adminSettings || (PAGE_STATE.adminSettings = { open:{ pin:true } });
   const openSet = stAs.open;
-  const sec = (id,title,body)=>`<details class="adm-sec" id="asec-${id}" data-sec="${id}" ${openSet[id]?'open':''}><summary>${title}</summary><div class="adm-body">${body}</div></details>`;
+  const sec = (id,title,body)=>`<details class="adm-sec" id="asec-${id}" data-sec="${id}" ${openSet[id]?'open':''}><summary><span class="adm-sec-title">${title}</span></summary><div class="adm-body">${body}</div></details>`;
   app.innerHTML = `
   <h2 style="margin-bottom:8px">${icon('wrench')} システム設定</h2>
   <div class="adm-nav">
