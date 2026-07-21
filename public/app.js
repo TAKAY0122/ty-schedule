@@ -2,6 +2,78 @@
 'use strict';
 const $ = s => document.querySelector(s);
 const h = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// 絵文字の代わりに使う、線画(Lucideスタイル)のSVGアイコン。24x24のviewBoxを前提にパスのみ記述する。
+const ICONS = {
+  home:'<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/>',
+  calendar:'<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>',
+  calendarDays:'<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/>',
+  edit:'<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/>',
+  handRaise:'<path d="M11 13V6a2 2 0 1 1 4 0v6"/><path d="M15 5a2 2 0 1 1 4 0v9"/><path d="M7 15V9a2 2 0 1 1 4 0v6"/><path d="M7 13a2 2 0 1 0-4 0v3a8 8 0 0 0 8 8h1a8 8 0 0 0 8-8v-1a2 2 0 1 0-4 0"/>',
+  user:'<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a8 8 0 0 1 16 0v1"/>',
+  users:'<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  checkCircle:'<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4L12 14.01l-3-3"/>',
+  stadium:'<ellipse cx="12" cy="12" rx="9" ry="6"/><ellipse cx="12" cy="12" rx="4" ry="2.5"/>',
+  briefcase:'<rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>',
+  barChart:'<path d="M3 3v18h18"/><path d="M18 17V9M13 17V5M8 17v-4"/>',
+  trendingUp:'<path d="M22 7l-8.5 8.5-5-5L2 17"/><path d="M16 7h6v6"/>',
+  layoutGrid:'<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
+  mail:'<rect x="2" y="4" width="20" height="16" rx="2"/><path d="M22 6l-10 7L2 6"/>',
+  fileText:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 15h6M9 11h1"/>',
+  clipboardList:'<rect x="8" y="2" width="8" height="4" rx="1"/><path d="M9 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-3"/><path d="M9 12h6M9 16h6M9 9h1"/>',
+  paperclip:'<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
+  settings:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+  key:'<path d="M21 2l-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/>',
+  logOut:'<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/>',
+  mapPin:'<path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/>',
+  shieldCheck:'<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/>',
+  shield:'<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
+  arrowUpDown:'<path d="M8 3v18M3 7l5-4 5 4M16 21l5-4-5-4M21 17V3"/>',
+  search:'<circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>',
+  download:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>',
+  upload:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/>',
+  star:'<path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z"/>',
+  ban:'<circle cx="12" cy="12" r="10"/><path d="M4.93 4.93l14.14 14.14"/>',
+  rss:'<path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1"/>',
+  scroll:'<path d="M8 21h12a2 2 0 0 0 2-2v-2H10v2a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v3h4"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/>',
+  refresh:'<path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M8 16H3v5"/>',
+  x:'<path d="M18 6L6 18M6 6l12 12"/>',
+  xCircle:'<circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/>',
+  circle:'<circle cx="12" cy="12" r="10"/>',
+  circleFilled:'<circle cx="12" cy="12" r="8" fill="currentColor" stroke="none"/>',
+  badge:'<path d="M12 2l2.4 5.5L20 8l-4 4.2L17.5 18 12 15l-5.5 3L8 12.2 4 8l5.6-.5z"/>',
+  arrowLeft:'<path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/>',
+  arrowRight:'<path d="M5 12h14"/><path d="M12 5l7 7-7 7"/>',
+  plus:'<path d="M12 5v14M5 12h14"/>',
+  link:'<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+  flask:'<path d="M9 2v6L4.5 18a2 2 0 0 0 1.8 3h11.4a2 2 0 0 0 1.8-3L15 8V2"/><path d="M9 2h6"/><path d="M8.5 13h7"/>',
+  yen:'<path d="M6 3l6 8 6-8"/><path d="M12 11v10M7 12h10M7 16h10"/>',
+  sparkles:'<path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5z"/><path d="M19 15l.75 2.25L22 18l-2.25.75L19 21l-.75-2.25L16 18l2.25-.75z"/>',
+  wrench:'<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L2 19l3 3 7.3-7.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2-2z"/>',
+  menu:'<path d="M4 6h16M4 12h16M4 18h16"/>',
+  unlock:'<rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>',
+  lock:'<rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  bookOpen:'<path d="M2 5a2 2 0 0 1 2-2h5a2 2 0 0 1 2 2v16a2 2 0 0 0-2-2H2z"/><path d="M22 5a2 2 0 0 0-2-2h-5a2 2 0 0 0-2 2v16a2 2 0 0 1 2-2h7z"/>',
+  clock:'<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+  messageCircle:'<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>',
+  megaphone:'<path d="M3 11l18-5v12L3 13v-2z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/>',
+  tag:'<path d="M20.59 13.41L13.42 20.6a2 2 0 0 1-2.83 0L2 12.01V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><path d="M7 7h.01"/>',
+  moon:'<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>',
+  sun:'<circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>',
+  clockWarn:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  repeat:'<path d="M17 2l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>',
+  activity:'<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+  package:'<path d="M16.5 9.4L7.5 4.21"/><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M3.27 6.96L12 12.01l8.73-5.05"/><path d="M12 22.08V12"/>',
+  bell:'<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
+  construction:'<rect x="2" y="6" width="20" height="8" rx="1"/><path d="M17 14v7M7 14v7M17 3v3M7 3v3M4 14v-6M20 14v-6"/>',
+  eye:'<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>',
+};
+// icon('home')のように呼び、絵文字の代わりに使える線画SVGを返す。sizeとcolorは省略可(currentColorを継承)
+function icon(name, opt={}){
+  const size = opt.size || '1em';
+  const path = ICONS[name];
+  if(!path) return '';
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${opt.strokeWidth||2}" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-.15em;flex:none" aria-hidden="true">${path}</svg>`;
+}
 // <input type="time">はHH:MM(2桁ゼロ埋め)でないと値を認識しないため、DBの値をこの形式に正規化する
 const timeInputVal = t => { const m = String(t||'').match(/^(\d{1,2}):(\d{2})$/); return m ? `${m[1].padStart(2,'0')}:${m[2]}` : ''; };
 const pad = n => String(n).padStart(2, '0');
@@ -10,7 +82,7 @@ const ROLE_JP = { admin:'チーフ(管理者)', handler:'チーフ(手配者)', 
 function roleLabel(u){ if(u && u.suspended) return (u.role==='member'?'メンツ':'チーフ')+'(アカウント停止)'; return ROLE_JP[u.role]||u.role; }
 const LV = { member:0, chief:1, handler:2, admin:3 };
 // 個別追加権限の基準レベル(バックエンドのPERMSと対応)
-const PERM_BASE_LV = { report_check:1, blacklist_manage:1, site_pay:2, site_manage:2, import_data:2, handler_tools:2, wage_settings:3, account_manage:3, daicho_manage:3 };
+const PERM_BASE_LV = { report_check:1, blacklist_manage:1, summary_view:1, day_schedule_view:1, member_stats_view:1, sites_view:1, members_view:1, site_pay:2, site_manage:2, import_data:2, handler_tools:2, wage_settings:3, account_manage:3, daicho_manage:3 };
 // has(key): MEがその機能を使えるか(基本権限を満たす、または個別に追加権限がある)
 function has(key){
   if(!ME) return false;
@@ -1005,58 +1077,63 @@ function renderShell(hash){
   const canDaicho = has('daicho_manage');
   const showSystemGroup = canAccountAdmin || canSystemSettings || canRolePerm || canHandlerStatus;
   const showSpreadGroup = canImport || canSchedSrc || canDaicho;
-  const showMemberGroup = isChief;
+  const canSummaryView = has('summary_view');
+  const canDayScheduleView = has('day_schedule_view');
+  const canMemberStatsView = has('member_stats_view');
+  const canSitesView = has('sites_view');
+  const canMembersView = has('members_view');
+  const showMemberGroup = isChief || canSummaryView || canDayScheduleView || canMemberStatsView || canMembersView;
 
   // ナビゲーション構造。children を持つ項目はグループ(タップでサブメニューに切り替わる)、
   // 持たない項目は単独ページへのリンク。権限がない機能は、グループ内の子としても一切出現しない
   // (グループ自体も、中身が1つも無ければ表示されない)。
   const nav = [
-    { path:'#/home', label:'🏠 ホーム', show:true },
-    { label:'📅 スケジュール', show:true, children:[
-      ['#/schedule','📅 マイスケジュール'],
-      ...(canEdit ? [['#/edit','✏️ スケジュール入力']] : []),
-      ...(isHandlerRole ? [['#/self-reports','📮 現場変更報告の承認']] : []),
+    { path:'#/home', icon:'home', label:'ホーム', show:true },
+    { icon:'calendar', label:'スケジュール', show:true, children:[
+      { path:'#/schedule', icon:'calendar', label:'マイスケジュール' },
+      ...(canEdit ? [{ path:'#/edit', icon:'edit', label:'スケジュール入力' }] : []),
+      ...(isHandlerRole ? [{ path:'#/self-reports', icon:'mail', label:'現場変更報告の承認' }] : []),
     ]},
-    { label:'🙋 希望', show:true, children:[
-      ['#/availability','🙋 休み希望・稼働時間の提出'],
-      ...(isHandlerRole ? [['#/availability-team','🗓️ チームの希望一覧']] : []),
-      ...(isChief ? [['#/nominate','👤 メンバーを希望する']] : []),
-      ...(isHandlerRole ? [['#/nominations','✅ メンバー指名の承認']] : []),
+    { icon:'handRaise', label:'希望', show:true, children:[
+      { path:'#/availability', icon:'handRaise', label:'休み希望・稼働時間の提出' },
+      ...(isHandlerRole ? [{ path:'#/availability-team', icon:'calendarDays', label:'チームの希望一覧' }] : []),
+      ...(isChief ? [{ path:'#/nominate', icon:'user', label:'メンバーを希望する' }] : []),
+      ...(isHandlerRole ? [{ path:'#/nominations', icon:'checkCircle', label:'メンバー指名の承認' }] : []),
     ]},
-    { path:'#/sites', label:'🏟️ 現場一覧', show:isChief },
-    { label:'👥 メンバー', show:showMemberGroup, children:[
-      ...(isHandlerRole ? [['#/members/mine',`🧑‍💼 ${ME.name}手配`]] : []),
-      ...(isChief ? [['#/members','👥 メンバー一覧']] : []),
-      ...(isChief ? [['#/summary','📊 稼働サマリー']] : []),
-      ...(isChief ? [['#/member-stats','📈 メンバー分析']] : []),
-      ...(isChief ? [['#/day-schedule','🗂️ スケジュール一覧']] : []),
+    { path:'#/sites', icon:'stadium', label:'現場一覧', show:canSitesView },
+    { icon:'users', label:'メンバー', show:showMemberGroup, children:[
+      ...(isHandlerRole ? [{ path:'#/members/mine', icon:'briefcase', label:`${ME.name}手配` }] : []),
+      ...(canMembersView ? [{ path:'#/members', icon:'users', label:'メンバー一覧' }] : []),
+      ...(canSummaryView ? [{ path:'#/summary', icon:'barChart', label:'稼働サマリー' }] : []),
+      ...(canMemberStatsView ? [{ path:'#/member-stats', icon:'trendingUp', label:'メンバー分析' }] : []),
+      ...(canDayScheduleView ? [{ path:'#/day-schedule', icon:'layoutGrid', label:'スケジュール一覧' }] : []),
     ]},
-    { label:'🆕 新人報告', show:true, children:[
-      ['#/report','📝 新人報告'],
-      ['#/reports','📋 報告一覧'],
-      ...(canDraft ? [['#/draft','⭐ ドラフト']] : []),
-      ...(canBlacklist ? [['#/blacklist','🚫 ブラックリスト']] : []),
-      ...(ME.role==='admin' ? [['#/report-export','📎 スプレッドシート貼り付け用コピー']] : []),
+    { icon:'sparkles', label:'新人報告', show:true, children:[
+      { path:'#/report', icon:'fileText', label:'新人報告' },
+      { path:'#/reports', icon:'clipboardList', label:'報告一覧' },
+      ...(canDraft ? [{ path:'#/draft', icon:'star', label:'ドラフト' }] : []),
+      ...(canBlacklist ? [{ path:'#/blacklist', icon:'ban', label:'ブラックリスト' }] : []),
+      ...(ME.role==='admin' ? [{ path:'#/report-export', icon:'paperclip', label:'スプレッドシート貼り付け用コピー' }] : []),
     ]},
-    { label:'⚙️ システム管理', show: showSystemGroup, children:[
-      ...(canAccountAdmin ? [['#/admin','🔐 アカウント管理']] : []),
-      ...(canSystemSettings ? [['#/admin-settings','🔧 システム設定']] : []),
-      ...(canRolePerm ? [['#/role-permissions','🛡️ 権限の一括設定']] : []),
-      ...(canHandlerStatus ? [['#/handler-status','🟢 ログイン中・編集履歴']] : []),
+    { icon:'settings', label:'システム管理', show: showSystemGroup, children:[
+      ...(canAccountAdmin ? [{ path:'#/admin', icon:'shieldCheck', label:'アカウント管理' }] : []),
+      ...(canSystemSettings ? [{ path:'#/admin-settings', icon:'wrench', label:'システム設定' }] : []),
+      ...(canRolePerm ? [{ path:'#/role-permissions', icon:'shield', label:'権限の一括設定' }] : []),
+      ...(canHandlerStatus ? [{ path:'#/handler-status', icon:'circleFilled', label:'ログイン中・編集履歴' }] : []),
     ]},
-    { label:'📤 スプレッド読み込み', show: showSpreadGroup, children:[
-      ...(canImport ? [['#/import','📥 スプレッドシート取り込み']] : []),
-      ...(canSchedSrc ? [['#/sched-sources','📡 予定表ソース管理']] : []),
-      ...(canDaicho ? [['#/daicho','📦 台帳保管']] : []),
+    { icon:'upload', label:'スプレッド読み込み', show: showSpreadGroup, children:[
+      ...(canImport ? [{ path:'#/import', icon:'download', label:'スプレッドシート取り込み' }] : []),
+      ...(canSchedSrc ? [{ path:'#/sched-sources', icon:'rss', label:'予定表ソース管理' }] : []),
+      ...(canDaicho ? [{ path:'#/daicho', icon:'package', label:'台帳保管' }] : []),
     ]},
   ].filter(n => n.show);
 
   // 現在ページ名(ヘッダー中央に表示)。グループ内の子ページも探索する。
   let curName = '';
   outer: for(const item of nav){
-    if(item.path && hashIs(hash, item.path)){ curName = item.label.replace(/^\S+\s/,''); break; }
+    if(item.path && hashIs(hash, item.path)){ curName = item.label; break; }
     if(item.children){
-      for(const [p,l] of item.children){ if(hashIs(hash, p)){ curName = l.replace(/^\S+\s/,''); break outer; } }
+      for(const c of item.children){ if(hashIs(hash, c.path)){ curName = c.label; break outer; } }
     }
   }
   document.getElementById('root').innerHTML = `
@@ -1106,7 +1183,7 @@ function renderShell(hash){
   const stMenu = PAGE_STATE.menu || (PAGE_STATE.menu = { open:{} });
   // 現在地が属するグループは、初回だけ自動的に開いておく(以降はユーザーの開閉操作を優先)
   nav.forEach((item,i) => {
-    if(item.children && item.children.some(([p]) => hashIs(hash,p)) && stMenu.open[i]===undefined) stMenu.open[i] = true;
+    if(item.children && item.children.some(c => hashIs(hash,c.path)) && stMenu.open[i]===undefined) stMenu.open[i] = true;
   });
 
   const renderDrawer = () => {
@@ -1117,12 +1194,12 @@ function renderShell(hash){
         <div class="drawer-head">メニュー</div>
         ${nav.map((item,i) => {
           if(!item.children){
-            return `<button type="button" class="drawer-link ${hashIs(hash, item.path)?'active':''}" data-go="${item.path}">${item.label}</button>`;
+            return `<button type="button" class="drawer-link ${hashIs(hash, item.path)?'active':''}" data-go="${item.path}">${icon(item.icon)} ${h(item.label)}</button>`;
           }
           const isOpen = !!stMenu.open[i];
-          return `<button type="button" class="drawer-link drawer-group" data-toggle="${i}">${item.label}<span class="drawer-arrow ${isOpen?'open':''}">›</span></button>
+          return `<button type="button" class="drawer-link drawer-group" data-toggle="${i}">${icon(item.icon)} ${h(item.label)}<span class="drawer-arrow ${isOpen?'open':''}">›</span></button>
             <div class="drawer-sub ${isOpen?'':'collapsed'}">
-              ${item.children.map(([p,l]) => `<button type="button" class="drawer-link drawer-sublink ${hashIs(hash,p)?'active':''}" data-go="${p}">${l}</button>`).join('')}
+              ${item.children.map(c => `<button type="button" class="drawer-link drawer-sublink ${hashIs(hash,c.path)?'active':''}" data-go="${c.path}">${icon(c.icon)} ${h(c.label)}</button>`).join('')}
             </div>`;
         }).join('')}
         ${footerLinks}
@@ -1676,23 +1753,23 @@ async function pageHome(app){
   const pendingCount = selfReports.length;
 
   const allMenuItems = [
-    ['#/schedule','📅','マイスケジュール', true],
-    ['#/availability','🙋','休み希望', true],
-    ['#/edit','✏️','スケジュール入力', ME.handler===1],
-    ['#/availability-team','🗓️','チーム希望一覧', isHandlerRole],
-    ['#/nominate','👤','メンバー指名', isChief],
-    ['#/nominations','✅','指名の承認', isHandlerRole],
-    ['#/sites','🏟️','現場一覧', isChief],
-    ['#/members/mine','🧑‍💼',`${h(ME.name)}手配`, isHandlerRole],
-    ['#/members','👥','メンバー一覧', isChief],
-    ['#/summary','📊','稼働サマリー', isChief],
-    ['#/member-stats','📈','メンバー分析', isChief],
-    ['#/day-schedule','🗂️','スケジュール一覧', isChief],
-    ['#/self-reports','📮','変更報告承認', isHandlerRole],
-    ['#/report','🆕','新人報告', true],
-    ['#/reports','📋','報告一覧', true],
-    ['#/import','📥','スプレッド取込', has('import_data')],
-    ['#/admin','🔐','アカウント管理', has('account_manage')],
+    ['#/schedule','calendar','マイスケジュール', true],
+    ['#/availability','handRaise','休み希望', true],
+    ['#/edit','edit','スケジュール入力', ME.handler===1],
+    ['#/availability-team','calendarDays','チーム希望一覧', isHandlerRole],
+    ['#/nominate','user','メンバー指名', isChief],
+    ['#/nominations','checkCircle','指名の承認', isHandlerRole],
+    ['#/sites','stadium','現場一覧', has('sites_view')],
+    ['#/members/mine','briefcase',`${h(ME.name)}手配`, isHandlerRole],
+    ['#/members','users','メンバー一覧', has('members_view')],
+    ['#/summary','barChart','稼働サマリー', has('summary_view')],
+    ['#/member-stats','trendingUp','メンバー分析', has('member_stats_view')],
+    ['#/day-schedule','layoutGrid','スケジュール一覧', has('day_schedule_view')],
+    ['#/self-reports','mail','変更報告承認', isHandlerRole],
+    ['#/report','fileText','新人報告', true],
+    ['#/reports','clipboardList','報告一覧', true],
+    ['#/import','download','スプレッド取込', has('import_data')],
+    ['#/admin','shieldCheck','アカウント管理', has('account_manage')],
   ].filter(m=>m[3]);
   const hidden = getHomeHidden();
   const menuItems = applyHomeOrder(allMenuItems.filter(m => !hidden.includes(m[0])));
@@ -1709,24 +1786,24 @@ async function pageHome(app){
       </div>
       <div class="card home-stat-card">
         <a href="#/schedule" class="home-stat">
-          <span class="home-stat-num">${unreadCount}</span><span class="home-stat-label">🔔 未読の通知</span>
+          <span class="home-stat-num">${unreadCount}</span><span class="home-stat-label">${icon('bell',{size:'13px'})} 未読の通知</span>
         </a>
         ${isHandlerRole ? `<a href="#/self-reports" class="home-stat">
-          <span class="home-stat-num">${pendingCount}</span><span class="home-stat-label">📝 承認待ちの報告</span>
+          <span class="home-stat-num">${pendingCount}</span><span class="home-stat-label">${icon('fileText',{size:'13px'})} 承認待ちの報告</span>
         </a>` : ''}
       </div>
     </div>
 
     <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px">
-      <div class="muted" style="font-size:12px">${homeEditing?'長押し(またはドラッグ)で並び替え、✕で非表示にできます':''}</div>
-      <button class="btn ghost sm" id="home-edit-toggle">${homeEditing?'完了':'✏️ 編集'}</button>
+      <div class="muted" style="font-size:12px">${homeEditing?`長押し(またはドラッグ)で並び替え、${icon('x',{size:'10px'})}で非表示にできます`:''}</div>
+      <button class="btn ghost sm" id="home-edit-toggle">${homeEditing?'完了':icon('edit',{size:'13px'})+' 編集'}</button>
     </div>
     <div class="home-menu" id="home-menu-grid">
-      ${menuItems.map(([hash,icon,label])=>`<a href="${homeEditing?'javascript:void(0)':hash}" class="home-menu-btn ${homeEditing?'editing':''}" data-hash="${hash}">
-        ${homeEditing?`<button class="home-menu-remove" data-hash="${hash}" type="button">✕</button>`:''}
-        <span class="home-menu-icon">${icon}</span><span>${h(label)}</span>
+      ${menuItems.map(([hash,iconName,label])=>`<a href="${homeEditing?'javascript:void(0)':hash}" class="home-menu-btn ${homeEditing?'editing':''}" data-hash="${hash}">
+        ${homeEditing?`<button class="home-menu-remove" data-hash="${hash}" type="button">${icon('x',{size:'12px'})}</button>`:''}
+        <span class="home-menu-icon">${icon(iconName,{size:'22px'})}</span><span>${h(label)}</span>
       </a>`).join('')}
-      ${homeEditing?`<button class="home-menu-btn home-menu-add" id="home-menu-add-btn" type="button"><span class="home-menu-icon">＋</span><span>追加</span></button>`:''}
+      ${homeEditing?`<button class="home-menu-btn home-menu-add" id="home-menu-add-btn" type="button"><span class="home-menu-icon">${icon('plus',{size:'22px'})}</span><span>追加</span></button>`:''}
     </div>`;
 
   const editToggle = $('#home-edit-toggle');
@@ -1748,7 +1825,7 @@ async function pageHome(app){
       if(!hiddenItems.length){ popup('非表示にしている項目がありません'); return; }
       modal(`<h3>ショートカットを追加</h3>
         <div style="display:flex;flex-direction:column;gap:6px">
-          ${hiddenItems.map(([hash,icon,label])=>`<button class="btn ghost home-add-item" data-hash="${hash}" style="text-align:left;display:flex;align-items:center;gap:10px"><span style="font-size:18px">${icon}</span>${h(label)}</button>`).join('')}
+          ${hiddenItems.map(([hash,iconName,label])=>`<button class="btn ghost home-add-item" data-hash="${hash}" style="text-align:left;display:flex;align-items:center;gap:10px"><span style="font-size:18px">${icon(iconName,{size:'18px'})}</span>${h(label)}</button>`).join('')}
         </div>`);
       document.querySelectorAll('.home-add-item').forEach(b => b.onclick = () => {
         const hash = b.dataset.hash;
@@ -1766,19 +1843,45 @@ function enableHomeDragSort(container){
   let dragEl = null, pointerId = null, startX = 0, startY = 0;
   const items = () => Array.from(container.querySelectorAll('.home-menu-btn:not(.home-menu-add)'));
 
+  // FLIP技法: 並び替え直前の各要素の位置を記録しておく
+  const recordPositions = () => {
+    const map = new Map();
+    items().forEach(el => { if(el !== dragEl) map.set(el, el.getBoundingClientRect()); });
+    return map;
+  };
+  // 記録しておいた「直前の位置」と「並び替え後の位置」の差分だけ逆方向にずらした状態から、
+  // 0へアニメーションさせることで、瞬間移動(ジャンプ)ではなく滑らかな移動に見せる
+  const playFlip = (before) => {
+    items().forEach(el => {
+      if(el === dragEl) return;
+      const b = before.get(el);
+      if(!b) return;
+      const a = el.getBoundingClientRect();
+      const dx = b.left - a.left, dy = b.top - a.top;
+      if(!dx && !dy) return;
+      el.style.transition = 'none';
+      el.style.transform = `translate(${dx}px,${dy}px)`;
+      requestAnimationFrame(() => {
+        el.style.transition = 'transform .32s cubic-bezier(.16,1,.3,1)';
+        el.style.transform = '';
+      });
+    });
+  };
+
   container.querySelectorAll('.home-menu-btn:not(.home-menu-add)').forEach(el => {
     el.addEventListener('pointerdown', (e) => {
       if(e.target.closest('.home-menu-remove')) return;
       dragEl = el; pointerId = e.pointerId;
       el.setPointerCapture(pointerId);
       el.classList.add('dragging');
+      el.style.transition = 'none'; // ドラッグ中は指に1:1で追従させるため、遅延なしにする
       startX = e.clientX; startY = e.clientY;
       e.preventDefault();
     });
     el.addEventListener('pointermove', (e) => {
       if(dragEl !== el) return;
       const dx = e.clientX - startX, dy = e.clientY - startY;
-      el.style.transform = `translate(${dx}px,${dy}px) scale(1.06)`;
+      el.style.transform = `translate(${dx}px,${dy}px) scale(1.08)`;
       const rect = el.getBoundingClientRect();
       const cx = rect.left + rect.width/2, cy = rect.top + rect.height/2;
       for(const other of items()){
@@ -1786,7 +1889,9 @@ function enableHomeDragSort(container){
         const r = other.getBoundingClientRect();
         if(cx > r.left && cx < r.right && cy > r.top && cy < r.bottom){
           const before = cx < r.left + r.width/2;
+          const positionsBefore = recordPositions();
           container.insertBefore(el, before ? other : other.nextSibling);
+          playFlip(positionsBefore);
           break;
         }
       }
@@ -1795,9 +1900,14 @@ function enableHomeDragSort(container){
       if(dragEl !== el) return;
       try{ el.releasePointerCapture(pointerId); }catch(_){}
       el.classList.remove('dragging');
+      // 最終位置へ、わずかに弾むスプリング風のイージングで着地させる。
+      // 着地アニメーション中はwiggle(編集モードの揺れ)と重ならないよう一時的に止める。
+      el.style.animation = 'none';
+      el.style.transition = 'transform .4s cubic-bezier(.34,1.4,.64,1)';
       el.style.transform = '';
       dragEl = null;
       setHomeOrder(items().map(x => x.dataset.hash));
+      setTimeout(() => { el.style.transition = ''; el.style.animation = ''; }, 420);
     };
     el.addEventListener('pointerup', end);
     el.addEventListener('pointercancel', end);
@@ -2253,7 +2363,7 @@ async function openMemberDayEdit(uid, u, date){
 
 /* ===== 現場一覧(チーフ以上)===== */
 async function pageSites(app){
-  if(LV[ME.role] < 1){ notFound(app); return; }
+  if(!has('sites_view')){ notFound(app); return; }
   const stSites = PAGE_STATE.sites || (PAGE_STATE.sites = { month: MONTH });
   const month = stSites.month;
   const sites = await api(`/sites?month=${month}`);
@@ -2299,7 +2409,7 @@ async function renderFeaturePending(app, icon, title){
 /* ===== 稼働サマリー(チーフ以上)。月間の出勤日数・シフト数・連勤・手配偏りを一覧できる。
    統計カード・手配担当バーをタップすると、その条件で一覧を絞り込める。 ===== */
 async function pageSummary(app){
-  if(LV[ME.role] < 1){ notFound(app); return; }
+  if(!has('summary_view')){ notFound(app); return; }
   const st = PAGE_STATE.summary || (PAGE_STATE.summary = { month: MONTH, stat: null, mgr: null, sort: 'regno', mgrOpen: true });
   app.innerHTML = `<div class="loading-box"><span class="spinner"></span>読み込み中…</div>`;
   let data;
@@ -2452,7 +2562,7 @@ async function pageSummary(app){
 /* ===== スケジュール一覧(チーフ以上)。日付×人のマトリックス表(チーフ予定表のイメージ)。
    現場の人は現場名(タップで現場詳細)、休みの人は休暇/NG/1日OK/有給を表示。停止中も含む。 ===== */
 async function pageDaySchedule(app){
-  if(LV[ME.role] < 1){ notFound(app); return; }
+  if(!has('day_schedule_view')){ notFound(app); return; }
   const savedSort = localStorage.getItem('ds-sort') || 'regno';
   const st = PAGE_STATE.daySchedule || (PAGE_STATE.daySchedule = { from: jstToday(), days: 7, sort: savedSort, ka:'', han:'', mgr:'' });
   app.innerHTML = `<div class="loading-box"><span class="spinner"></span>読み込み中…</div>`;
@@ -2569,7 +2679,7 @@ async function pageDaySchedule(app){
 /* ===== メンバー分析(チーフ以上)。拠点・課・班・ランクの構成を、全体・課ごとの両方で確認できる。
    手配担当ごとの内訳(拠点・班・ランク)も見られる。カードをタップするとメンバー一覧に絞り込める。 ===== */
 async function pageMemberStats(app){
-  if(LV[ME.role] < 1){ notFound(app); return; }
+  if(!has('member_stats_view')){ notFound(app); return; }
   const st = PAGE_STATE.memberStats || (PAGE_STATE.memberStats = { tab:'全体', filter:null, mgrOpen:null });
   app.innerHTML = `<div class="muted">集計中…</div>`;
   let data;
@@ -2728,7 +2838,7 @@ async function pageMemberStats(app){
 
 /* ===== メンバー一覧(チーフ以上)。1課/2課タブ。2課優先表示 ===== */
 async function pageMembers(app){
-  if(LV[ME.role] < 1){ notFound(app); return; }
+  if(!has('members_view')){ notFound(app); return; }
   const users = await getUsers(true);
   const managers = await api('/managers');
   const st = PAGE_STATE.members || (PAGE_STATE.members = { tab:'2課', q:'', mgr:'' }); // 既定は2課(主に2課が使うため)

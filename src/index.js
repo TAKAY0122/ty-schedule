@@ -12,6 +12,11 @@ const HOURLY = 1150; // 基本時給
 const PERMS = {
   report_check:    { label: '新人報告の2次チェック(記入・修正)', baseLv: 1 },
   blacklist_manage:{ label: 'ブラックリストの閲覧・登録・編集', baseLv: 1 },
+  summary_view:    { label: '稼働サマリーの閲覧', baseLv: 1 },
+  day_schedule_view:{ label: 'スケジュール一覧の閲覧', baseLv: 1 },
+  member_stats_view:{ label: 'メンバー分析の閲覧', baseLv: 1 },
+  sites_view:      { label: '現場一覧の閲覧', baseLv: 1 },
+  members_view:    { label: 'メンバー一覧の閲覧', baseLv: 1 },
   site_pay:        { label: '現場の給与・業務内容を見る', baseLv: 2 },
   site_manage:     { label: '現場へのメンバー登録・編集', baseLv: 2 },
   import_data:     { label: 'スプレッドシートからの取り込み', baseLv: 2 },
@@ -1646,7 +1651,7 @@ async function api(req, env, url) {
 
   // ---- ユーザー ----
   if (method === 'GET' && path === '/users') {
-    if (lv(me) < 1) return ERR('ページが見つかりません', 404);
+    if (!has(me, 'members_view')) return ERR('ページが見つかりません', 404);
     const rows = (await env.DB.prepare('SELECT * FROM users ORDER BY regno').all()).results;
     return J(rows.map(pub));
   }
@@ -2648,7 +2653,7 @@ async function api(req, env, url) {
   }
   // 現場一覧用: その現場日の全員分の休憩時間合計(チーフ以上のみ)。勤務時間との対比で不足の目安も返す。
   if (method === 'GET' && path === '/site-record-breaks') {
-    if (lv(me) < 1) return ERR('ページが見つかりません', 404);
+    if (!has(me, 'sites_view')) return ERR('ページが見つかりません', 404);
     const date = url.searchParams.get('date');
     const site = url.searchParams.get('site');
     if (!date || !site) return ERR('不正なリクエストです');
@@ -2668,7 +2673,7 @@ async function api(req, env, url) {
 
   // 現場一覧(チーフ以上)。現場名×日付ごとに人数・会場をまとめる。month指定可
   if (method === 'GET' && path === '/sites') {
-    if (lv(me) < 1) return ERR('ページが見つかりません', 404);
+    if (!has(me, 'sites_view')) return ERR('ページが見つかりません', 404);
     const month = url.searchParams.get('month') || jstDate().slice(0, 7);
     const rows = (await env.DB.prepare(
       "SELECT date, site, venue, COUNT(*) AS cnt FROM schedule WHERE type='work' AND site<>'' AND date LIKE ? GROUP BY date, site, venue ORDER BY date, site"
@@ -2705,7 +2710,7 @@ async function api(req, env, url) {
   //      日付×人のマトリックス形式で返す。現場に入っている人は現場名、休暇/NG/1日OK/有給の
   //      人はその状態、未入力の人も含める。停止中アカウントも一覧性のため含める。 ----
   if (method === 'GET' && path === '/day-schedule') {
-    if (lv(me) < 1) return ERR('ページが見つかりません', 404);
+    if (!has(me, 'day_schedule_view')) return ERR('ページが見つかりません', 404);
     const fromDate = url.searchParams.get('from') || jstDate();
     const days = Math.min(14, Math.max(1, parseInt(url.searchParams.get('days') || '7', 10)));
     const [fy, fm, fd] = fromDate.split('-').map(Number);
@@ -2757,7 +2762,7 @@ async function api(req, env, url) {
   // ---- メンバー分析(チーフ以上)。拠点・課・班・ランクの構成を、全体・課ごとの両方で集計する。
   //      手配担当ごとの内訳(拠点・班・ランク)も併せて返す。停止中アカウントも含める。 ----
   if (method === 'GET' && path === '/member-stats') {
-    if (lv(me) < 1) return ERR('ページが見つかりません', 404);
+    if (!has(me, 'member_stats_view')) return ERR('ページが見つかりません', 404);
     const [membersRes, managersRes] = await Promise.all([
       env.DB.prepare("SELECT id, name, regno, rank, ka, han, manager_id, suspended FROM users").all(),
       env.DB.prepare("SELECT id, name, ka FROM users WHERE role IN ('handler','admin')").all(),
@@ -2819,7 +2824,7 @@ async function api(req, env, url) {
 
   // ---- 稼働サマリー(チーフ以上)。月間の出勤日数・現場数・最長連勤・手配偏りを集計 ----
   if (method === 'GET' && path === '/summary') {
-    if (lv(me) < 1) return ERR('ページが見つかりません', 404);
+    if (!has(me, 'summary_view')) return ERR('ページが見つかりません', 404);
     const month = url.searchParams.get('month') || jstDate().slice(0, 7);
     const [rowsRes, usersRes] = await Promise.all([
       env.DB.prepare("SELECT user_id, date, site, hours, overtime FROM schedule WHERE type='work' AND site<>'' AND date LIKE ? ORDER BY user_id, date").bind(month + '%').all(),
