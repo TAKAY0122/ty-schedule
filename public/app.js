@@ -273,12 +273,27 @@ function unlockBodyScroll(){
   document.body.style.top = '';
   window.scrollTo(0, modalScrollY || 0);
 }
+// 直前にクリック(またはタップ)された座標を記録しておき、モーダルを開く際の
+// transform-origin(拡大の起点)に使う。ボタンから浮かび上がるような見え方になる。
+let _lastPointerPos = null;
+document.addEventListener('pointerdown', (e) => { _lastPointerPos = { x: e.clientX, y: e.clientY }; }, true);
+
 function modal(html){
   $('#modal-layer').innerHTML = `<div class="modal-bg"><div class="modal"><button class="close-x">✕</button>${html}</div></div>`;
   $('#modal-layer .close-x').onclick = closeModal;
   $('#modal-layer .modal-bg').onclick = e => { if(e.target.classList.contains('modal-bg')) closeModal(); };
   lockBodyScroll();
   fitModalToViewport();
+  const modalEl = $('#modal-layer .modal');
+  if(modalEl){
+    if(_lastPointerPos){
+      const rect = modalEl.getBoundingClientRect(); // ここで一度読むことでレイアウトを確定させてから起点を計算する
+      const ox = Math.max(0, Math.min(rect.width, _lastPointerPos.x - rect.left));
+      const oy = Math.max(0, Math.min(rect.height, _lastPointerPos.y - rect.top));
+      modalEl.style.transformOrigin = `${ox}px ${oy}px`;
+    }
+    requestAnimationFrame(() => { modalEl.classList.add('modal-animate-in'); });
+  }
   // キーボードの開閉などで表示領域の高さが変わった時も、その都度モーダルを追従させる
   if(window.visualViewport) window.visualViewport.addEventListener('resize', fitModalToViewport);
 }
@@ -408,6 +423,16 @@ function popup(message, kind){
   lockBodyScroll();
   fitModalToViewport();
   if(window.visualViewport) window.visualViewport.addEventListener('resize', fitModalToViewport);
+  const modalEl = $('#modal-layer .modal');
+  if(modalEl){
+    if(_lastPointerPos){
+      const rect = modalEl.getBoundingClientRect();
+      const ox = Math.max(0, Math.min(rect.width, _lastPointerPos.x - rect.left));
+      const oy = Math.max(0, Math.min(rect.height, _lastPointerPos.y - rect.top));
+      modalEl.style.transformOrigin = `${ox}px ${oy}px`;
+    }
+    requestAnimationFrame(() => { modalEl.classList.add('modal-animate-in'); });
+  }
   const ok = $('#popup-ok');
   ok.focus();
   ok.onclick = closeModal;
@@ -483,6 +508,29 @@ function openUpdateNotice(){
   $('#modal-layer').querySelectorAll('.upd-link').forEach(a => {
     a.onclick = (e) => { e.preventDefault(); const link = items[Number(a.dataset.idx)].link; close().then(()=>{ goTo(link); }); };
   });
+}
+
+/* ===== バージョン履歴(全員閲覧可)。現在のバージョンと、過去の全アップデート内容を一覧できる。
+   閲覧権限が無い項目は、内容を明かさず「細かな修正・改善」としてまとめて表示する。 ===== */
+async function pageVersionHistory(app){
+  const versions = [...new Set(UPDATE_ITEMS.map(it=>it.v))].sort((a,b)=>b-a);
+  const body = versions.map(v => {
+    const items = UPDATE_ITEMS.filter(it=>it.v===v);
+    const visibleItems = items.filter(it => !it.show || it.show());
+    const hiddenCount = items.length - visibleItems.length;
+    const itemsHtml = visibleItems.map(it =>
+      `<div class="upd-item"><span class="upd-icon">${it.icon}</span><div><b>${h(it.title)}</b><div class="muted">${h(it.desc)}</div></div></div>`
+    ).join('') + (hiddenCount > 0 ? `<div class="upd-item"><span class="upd-icon">🔧</span><div><b>細かな修正・改善</b></div></div>` : '');
+    const isLatest = v === CURRENT_UPDATE_VERSION;
+    return `<div class="card" style="margin-bottom:14px">
+      <h3 style="margin-bottom:10px">v${v}${isLatest?' <span class="tag checked">最新</span>':''}</h3>
+      <div class="upd-list">${itemsHtml || '<div class="muted">細かな修正・改善</div>'}</div>
+    </div>`;
+  }).join('');
+  app.innerHTML = `
+    <h2 style="margin-bottom:4px">📜 バージョン履歴</h2>
+    <div class="muted" style="margin-bottom:16px">現在のバージョン: <b>v${CURRENT_UPDATE_VERSION}</b></div>
+    ${body}`;
 }
 
 function openHandlerPin(onSuccess){
@@ -859,6 +907,7 @@ async function render(){
     else if(hash === '#/role-permissions') await pageRolePermissions(app);
     else if(hash === '#/password') pagePassword(app);
     else if(hash === '#/calendar-guide') await pageCalendarGuide(app);
+    else if(hash === '#/version-history') await pageVersionHistory(app);
     else { location.hash='#/home'; }
   }catch(e){ app.innerHTML = `<div class="msg err">${h(e.message)}</div>`; }
   // 「氏名をタップ→スケジュールへ」を全ページ共通で有効化(各ページが個別にワイヤリングする必要はない)
@@ -1038,6 +1087,7 @@ function renderShell(hash){
   const footerLinks = `
     <div class="drawer-sep"></div>
     <button type="button" class="drawer-link" data-go="#/password">🔑 パスワード変更</button>
+    <button type="button" class="drawer-link" data-go="#/version-history">📜 バージョン履歴</button>
     <button type="button" class="drawer-link" id="dd-refresh">🔄 最新版に更新</button>
     <button type="button" class="drawer-link danger" id="dd-logout">↩️ ログアウト</button>`;
 
