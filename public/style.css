@@ -216,6 +216,21 @@ table.list tr.click:hover{background:#fdf6e0;cursor:pointer}
 .online-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#2ecc71;margin-right:7px}
 .pulse{animation:pulse 2s infinite}
 @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(46,204,113,.5)}70%{box-shadow:0 0 0 7px rgba(46,204,113,0)}100%{box-shadow:0 0 0 0 rgba(46,204,113,0)}}
+/* ===== 読み込み中スピナー ===== */
+.spinner{display:inline-block;width:18px;height:18px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;flex:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-box{display:flex;align-items:center;justify-content:center;gap:10px;padding:40px 0;color:#888;font-size:14px;animation:fadeInUp .2s ease}
+.btn.btn-loading{position:relative;color:transparent!important;pointer-events:none}
+.btn.btn-loading::after{content:'';position:absolute;left:50%;top:50%;width:16px;height:16px;margin:-8px 0 0 -8px;border:2.5px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:spin .6s linear infinite}
+.btn.ghost.btn-loading::after,.btn.gold.btn-loading::after{border-color:rgba(27,35,51,.25);border-top-color:var(--ink)}
+/* ===== ページ上部プログレスバー(通信中を示す。YouTube風に途中で足踏みし、完了で一気に100%へ) ===== */
+#page-progress{position:fixed;top:0;left:0;height:3px;width:0;background:linear-gradient(90deg,var(--gold),#e8c869);z-index:9999;opacity:0;box-shadow:0 0 8px rgba(201,162,39,.6);pointer-events:none}
+#page-progress.active{opacity:1;width:78%;transition:width 6s cubic-bezier(.1,.6,.2,1),opacity .15s ease}
+#page-progress.active.done{width:100%;transition:width .25s ease}
+#page-progress:not(.active){transition:opacity .35s ease .1s}
+/* ===== 一覧の各行を順番に少しずつ遅延させてフェードインさせる演出 ===== */
+@keyframes rowFadeIn{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
+.stagger-row{animation:rowFadeIn .32s ease backwards}
 
 /* PC/スマホ 表示切替(デフォルト=PC:日リストを隠す) */
 .sp-only{display:none}
@@ -276,6 +291,15 @@ table.list tr.click:hover{background:#fdf6e0;cursor:pointer}
 .popup-icon{font-size:42px;line-height:1;animation:popIcon .35s cubic-bezier(.34,1.56,.64,1) .05s both}
 @keyframes popIcon{from{opacity:0;transform:scale(.4)}to{opacity:1;transform:scale(1)}}
 .popup-msg{margin-top:10px;font-size:15px;color:#222;line-height:1.6;font-weight:600}
+/* 成功時: 丸と線が描かれるチェックマークアニメーション */
+.popup-check-svg{width:56px;height:56px;margin:0 auto;display:block;overflow:visible}
+.popup-check-circle{stroke:#1c7a45;stroke-width:2.5;fill:none;stroke-dasharray:145;stroke-dashoffset:145;animation:popupCircle .5s ease-out forwards}
+.popup-check-mark{stroke:#1c7a45;stroke-width:4;stroke-linecap:round;stroke-linejoin:round;fill:none;stroke-dasharray:36;stroke-dashoffset:36;animation:popupCheck .3s .45s ease-out forwards}
+@keyframes popupCircle{to{stroke-dashoffset:0}}
+@keyframes popupCheck{to{stroke-dashoffset:0}}
+/* エラー時: 左右に小さく震える演出 */
+.popup-shake{animation:popIcon .35s cubic-bezier(.34,1.56,.64,1) .05s both,popupShake .4s ease .4s}
+@keyframes popupShake{10%,90%{transform:translateX(-1px)}20%,80%{transform:translateX(2px)}30%,50%,70%{transform:translateX(-4px)}40%,60%{transform:translateX(4px)}}
 
 /* 一括登録セクション */
 .bulk-head{display:flex;justify-content:space-between;align-items:center;cursor:pointer;font-size:14px;color:var(--ink)}
@@ -299,7 +323,11 @@ table.list tr.click:hover{background:#fdf6e0;cursor:pointer}
 
 /* 現場一覧 */
 .st-day{margin-bottom:14px}
-.st-date{font-weight:700;color:var(--ink);font-size:14px;padding:4px 0;border-bottom:2px solid var(--gold);margin-bottom:8px}
+.st-date{font-weight:700;color:var(--ink);font-size:14px;padding:8px 4px;border-bottom:2px solid var(--gold);margin-bottom:8px;cursor:pointer;list-style:none;user-select:none;display:flex;align-items:center;gap:6px;-webkit-tap-highlight-color:transparent}
+.st-date::-webkit-details-marker{display:none}
+.st-date::before{content:'▸';color:var(--gold);font-size:13px;transition:transform .2s cubic-bezier(.34,1.3,.64,1);flex:none}
+.st-day[open] > .st-date::before{transform:rotate(90deg)}
+.st-date:active{opacity:.7}
 .st-date.sat{color:#2f6fb0}.st-date.sun{color:#c0392b}
 .st-sites{display:flex;flex-direction:column;gap:8px}
 .st-site{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:#fff;border:1px solid var(--line);border-radius:8px;padding:12px 14px;cursor:pointer;font-size:14px}
@@ -440,7 +468,7 @@ table.sched tbody tr.editable-row:hover td:not(.site-multi):not(.plan-cell){ bac
 .mgr-row{margin-bottom:8px}
 .mgr-name{font-size:13px;margin-bottom:3px}
 .mgr-bar-wrap{position:relative;background:#eee;border-radius:5px;height:20px;overflow:hidden}
-.mgr-bar{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,var(--ink2),var(--gold));border-radius:5px}
+.mgr-bar{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,var(--ink2),var(--gold));border-radius:5px;width:0;transition:width .7s cubic-bezier(.16,1,.3,1)}
 .mgr-val{position:absolute;right:8px;top:0;bottom:0;display:flex;align-items:center;font-size:11px;color:#333;font-weight:700}
 
 /* メンバー分析(pageMemberStats)専用。.mgr-*系は稼働サマリー専用に後からheight:10px等で上書きされて
@@ -450,7 +478,7 @@ table.sched tbody tr.editable-row:hover td:not(.site-multi):not(.plan-cell){ bac
 .stat-name{font-size:13px;margin-bottom:4px;display:flex;justify-content:space-between;gap:8px}
 .stat-name .stat-count{color:#777;font-size:12px;white-space:nowrap}
 .stat-bar-wrap{position:relative;background:#eee;border-radius:5px;height:22px;overflow:hidden}
-.stat-bar{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,var(--ink2),var(--gold));border-radius:5px;min-width:2px}
+.stat-bar{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,var(--ink2),var(--gold));border-radius:5px;min-width:2px;width:0;transition:width .7s cubic-bezier(.16,1,.3,1)}
 .stat-val{position:absolute;right:8px;top:0;bottom:0;display:flex;align-items:center;font-size:12px;color:#333;font-weight:700}
 .stat-row-clickable{cursor:pointer;padding:6px;margin:-6px -6px 4px;border-radius:8px;transition:background .12s}
 .stat-row-clickable:hover{background:#f3f5f9}
@@ -662,6 +690,14 @@ td.sm-edit-cell{text-align:center;color:var(--gold);font-size:15px}
 .home-menu-btn:hover{background:#faf8f2;box-shadow:0 2px 6px rgba(0,0,0,.08)}
 .home-menu-btn:active{transform:scale(.95)}
 .home-menu-icon{font-size:26px}
+/* ===== ホーム画面のカスタマイズ(編集モード) ===== */
+.home-menu-btn.editing{position:relative;cursor:grab;touch-action:none;animation:homeWiggle .22s ease-in-out infinite}
+.home-menu-btn.editing:nth-child(even){animation-delay:-.11s}
+.home-menu-btn.editing.dragging{cursor:grabbing;z-index:100;box-shadow:0 10px 26px rgba(0,0,0,.28);animation:none;transition:none}
+@keyframes homeWiggle{0%,100%{transform:rotate(-1.2deg)}50%{transform:rotate(1.2deg)}}
+.home-menu-remove{position:absolute;top:-7px;right:-7px;width:22px;height:22px;border-radius:50%;background:#c0392b;color:#fff;border:2px solid #fff;font-size:11px;line-height:1;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.3);z-index:5;padding:0}
+.home-menu-add{border:2px dashed var(--line);background:transparent;color:#999;cursor:pointer}
+.home-menu-add:hover{background:#faf8f2;color:var(--ink)}
 
 /* ===== 休み希望・稼働可能時間の提出 ===== */
 .av-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px;border-bottom:1px solid var(--line)}
