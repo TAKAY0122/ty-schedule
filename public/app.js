@@ -12,7 +12,7 @@ const ICONS = {
   user:'<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a8 8 0 0 1 16 0v1"/>',
   users:'<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
   checkCircle:'<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4L12 14.01l-3-3"/>',
-  stadium:'<ellipse cx="12" cy="12" rx="9" ry="6"/><ellipse cx="12" cy="12" rx="4" ry="2.5"/>',
+  stadium:'<path d="M6 22V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v18"/><path d="M3 22h18"/><path d="M9 22v-4h6v4"/><path d="M9 7h.01M15 7h.01M9 11h.01M15 11h.01"/>',
   briefcase:'<rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>',
   barChart:'<path d="M3 3v18h18"/><path d="M18 17V9M13 17V5M8 17v-4"/>',
   trendingUp:'<path d="M22 7l-8.5 8.5-5-5L2 17"/><path d="M16 7h6v6"/>',
@@ -1850,7 +1850,9 @@ function enableHomeDragSort(container){
     return map;
   };
   // 記録しておいた「直前の位置」と「並び替え後の位置」の差分だけ逆方向にずらした状態から、
-  // 0へアニメーションさせることで、瞬間移動(ジャンプ)ではなく滑らかな移動に見せる
+  // 0へアニメーションさせることで、瞬間移動(ジャンプ)ではなく滑らかな移動に見せる。
+  // 短時間に連続してスワップが起きると、前回セットしたrAFが実行される前に上書きされ、
+  // transformがリセットされないまま残ってしまうことがあるため、要素ごとに前回分をキャンセルする。
   const playFlip = (before) => {
     items().forEach(el => {
       if(el === dragEl) return;
@@ -1858,12 +1860,14 @@ function enableHomeDragSort(container){
       if(!b) return;
       const a = el.getBoundingClientRect();
       const dx = b.left - a.left, dy = b.top - a.top;
-      if(!dx && !dy) return;
+      if(el._flipRaf){ cancelAnimationFrame(el._flipRaf); el._flipRaf = null; }
+      if(!dx && !dy){ el.style.transition = ''; el.style.transform = ''; return; }
       el.style.transition = 'none';
       el.style.transform = `translate(${dx}px,${dy}px)`;
-      requestAnimationFrame(() => {
+      el._flipRaf = requestAnimationFrame(() => {
         el.style.transition = 'transform .32s cubic-bezier(.16,1,.3,1)';
         el.style.transform = '';
+        el._flipRaf = null;
       });
     });
   };
@@ -1906,11 +1910,23 @@ function enableHomeDragSort(container){
       el.style.transition = 'transform .4s cubic-bezier(.34,1.4,.64,1)';
       el.style.transform = '';
       dragEl = null;
+      // 安全策: 短時間の連続スワップでtransformが正しくリセットされずに残ってしまった
+      // 他のカードが無いか、ドロップ確定のタイミングで念のため全件クリアする。
+      items().forEach(other => {
+        if(other === el) return;
+        if(other._flipRaf){ cancelAnimationFrame(other._flipRaf); other._flipRaf = null; }
+        other.style.transition = '';
+        other.style.transform = '';
+      });
       setHomeOrder(items().map(x => x.dataset.hash));
       setTimeout(() => { el.style.transition = ''; el.style.animation = ''; }, 420);
     };
     el.addEventListener('pointerup', end);
     el.addEventListener('pointercancel', end);
+    // DOM順序の変更(insertBefore)でポインターキャプチャが失われることがあり、
+    // その場合pointerupが届かずtransformが残ったまま(カードが浮いた状態)になってしまう。
+    // キャプチャ喪失を検知して確実にクリーンアップする。
+    el.addEventListener('lostpointercapture', end);
   });
 }
 
