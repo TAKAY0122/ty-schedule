@@ -79,6 +79,13 @@ function icon(name, opt={}){
 const timeInputVal = t => { const m = String(t||'').match(/^(\d{1,2}):(\d{2})$/); return m ? `${m[1].padStart(2,'0')}:${m[2]}` : ''; };
 const pad = n => String(n).padStart(2, '0');
 const WD = ['日','月','火','水','木','金','土'];
+// ランクの並び順(A→B→C→D→Eの順)。それ以外の特殊ランク(ケータリング等)は末尾、未設定は最後尾にする。
+const RANK_ORDER = { A:0, B:1, C:2, D:3, E:4 };
+function rankOrder(r){
+  if(!r) return 6;
+  const m = String(r).match(/[A-Ea-e]/);
+  return m ? RANK_ORDER[m[0].toUpperCase()] : 5;
+}
 const ROLE_JP = { admin:'チーフ(管理者)', handler:'チーフ(手配者)', chief:'チーフ', member:'メンツ' };
 function roleLabel(u){ if(u && u.suspended) return (u.role==='member'?'メンツ':'チーフ')+'(アカウント停止)'; return ROLE_JP[u.role]||u.role; }
 const LV = { member:0, chief:1, handler:2, admin:3 };
@@ -2455,9 +2462,10 @@ async function pageSummary(app){
   if(st.mgr) list = list.filter(it => (it.manager_id ? 'm'+it.manager_id : 'chief:'+(it.ka||'未設定')) === st.mgr);
 
   // 一覧の並び替え(統計・手配担当のフィルタの有無に関わらず、常に適用できる)
-  const listSortOptions = { regno:'登録番号順', workDays:'稼働日数順', shifts:'稼働数順', maxStreak:'連勤数順', ...(canPay?{hours:'時間順', overtime:'残業順'}:{}) };
+  const listSortOptions = { regno:'登録番号順', rank:'ランク順', workDays:'稼働日数順', shifts:'稼働数順', maxStreak:'連勤数順', ...(canPay?{hours:'時間順', overtime:'残業順'}:{}) };
   const listSort = listSortOptions[st.sort] ? st.sort : 'regno';
   if(listSort === 'regno') list = [...list].sort((a,b) => String(a.regno||'').localeCompare(String(b.regno||''), undefined, {numeric:true}));
+  else if(listSort === 'rank') list = [...list].sort((a,b) => rankOrder(a.rank) - rankOrder(b.rank) || String(a.regno||'').localeCompare(String(b.regno||''), undefined, {numeric:true}));
   else list = [...list].sort((a,b) => (b[listSort]||0) - (a[listSort]||0));
 
   const rowCls = it => isOverTotal(it) ? 'r-over' : isStreak(it) ? 'r-streak' : isFew(it) ? 'r-few' : '';
@@ -2623,9 +2631,10 @@ async function pageDaySchedule(app){
     (!st.han || r.han === st.han) &&
     (!st.mgr || (st.mgr.startsWith('__chief:') ? (!r.managerId && r.ka === st.mgr.slice(8)) : String(r.managerId)===String(st.mgr)))
   );
-  // ソート適用(登録番号は数値として、それ以外は日本語として比較する)
+  // ソート適用(登録番号は数値、ランクはA→Eの順、それ以外は日本語として比較する)
   list = [...list].sort((a,b) => {
     if(st.sort === 'regno') return String(a.regno||'').localeCompare(String(b.regno||''), undefined, {numeric:true});
+    if(st.sort === 'rank') return rankOrder(a.rank) - rankOrder(b.rank) || String(a.regno||'').localeCompare(String(b.regno||''), undefined, {numeric:true});
     const av = a[st.sort] || '', bv = b[st.sort] || '';
     return String(av).localeCompare(String(bv), 'ja') || String(a.regno||'').localeCompare(String(b.regno||''), undefined, {numeric:true});
   });
@@ -2694,7 +2703,7 @@ async function pageDaySchedule(app){
    手配担当ごとの内訳(拠点・班・ランク)も見られる。カードをタップするとメンバー一覧に絞り込める。 ===== */
 async function pageMemberStats(app){
   if(!has('member_stats_view')){ notFound(app); return; }
-  const st = PAGE_STATE.memberStats || (PAGE_STATE.memberStats = { tab:'全体', filter:null, mgrOpen:null });
+  const st = PAGE_STATE.memberStats || (PAGE_STATE.memberStats = { tab:'全体', filter:null, mgrOpen:null, sort:'regno' });
   app.innerHTML = `<div class="muted">集計中…</div>`;
   let data;
   try{ data = await api('/member-stats'); }
@@ -2782,11 +2791,26 @@ async function pageMemberStats(app){
     const box = $('#ms-filter-result');
     if(!st.filter){ box.style.display='none'; return; }
     box.style.display = '';
-    const list = filteredMembers();
+    const msSortOptions = { regno:'登録番号順', rank:'ランク順', name:'氏名順(あ→ん)', han:'班順' };
+    const sortMsList = (arr) => {
+      const sorted = [...arr];
+      if(st.sort === 'regno') sorted.sort((a,b) => String(a.regno||'').localeCompare(String(b.regno||''), undefined, {numeric:true}));
+      else if(st.sort === 'rank') sorted.sort((a,b) => rankOrder(a.rank) - rankOrder(b.rank) || String(a.regno||'').localeCompare(String(b.regno||''), undefined, {numeric:true}));
+      else if(st.sort === 'name') sorted.sort((a,b) => String(a.name||'').localeCompare(String(b.name||''), 'ja'));
+      else if(st.sort === 'han') sorted.sort((a,b) => String(a.han||'').localeCompare(String(b.han||''), 'ja') || String(a.regno||'').localeCompare(String(b.regno||''), undefined, {numeric:true}));
+      return sorted;
+    };
+    const list = sortMsList(filteredMembers());
     const catLabels = { base:'拠点', ka:'課', han:'班', rank:'ランク', manager:'手配担当' };
     const displayValue = st.filter.category === 'manager' ? st.filter.label : st.filter.value;
     $('#ms-filter-title').textContent = `${catLabels[st.filter.category]}: ${displayValue} (${list.length}人)`;
     $('#ms-filter-body').innerHTML = `
+      <div class="row" style="justify-content:flex-end;align-items:center;gap:6px;margin-bottom:8px">
+        <label class="muted" style="font-size:12px">並び替え</label>
+        <select id="ms-sort" style="font-size:12.5px;padding:5px 6px">
+          ${Object.entries(msSortOptions).map(([k,l])=>`<option value="${k}" ${k===st.sort?'selected':''}>${l}</option>`).join('')}
+        </select>
+      </div>
       <table class="list pc-only">
         <tr><th>氏名</th><th>登録番号</th><th>ランク</th><th>拠点</th><th>課</th><th>班</th><th>手配担当</th><th></th></tr>
         ${list.map(m=>`<tr>
@@ -2810,6 +2834,7 @@ async function pageMemberStats(app){
           </div>
         </div>`).join('') || '<div class="muted">該当なし</div>'}
       </div>`;
+    const msSortSel = $('#ms-sort'); if(msSortSel) msSortSel.onchange = (e) => { st.sort = e.target.value; renderFilterResult(); };
     $('#ms-filter-body').querySelectorAll('.ms-sched').forEach(b => b.onclick = () => { location.hash = '#/schedule/'+b.dataset.id; });
     $('#ms-filter-body').querySelectorAll('.ms-edit').forEach(b => b.onclick = async () => {
       const users = await getUsers();
@@ -2855,7 +2880,7 @@ async function pageMembers(app){
   if(!has('members_view')){ notFound(app); return; }
   const users = await getUsers(true);
   const managers = await api('/managers');
-  const st = PAGE_STATE.members || (PAGE_STATE.members = { tab:'2課', q:'', mgr:'' }); // 既定は2課(主に2課が使うため)
+  const st = PAGE_STATE.members || (PAGE_STATE.members = { tab:'2課', q:'', mgr:'', sort:'regno' }); // 既定は2課(主に2課が使うため)
   const kaOf = u => u.ka || '未設定';
   const cnt2 = users.filter(u=>kaOf(u)==='2課').length;
   const cnt1 = users.filter(u=>kaOf(u)==='1課').length;
@@ -2869,6 +2894,17 @@ async function pageMembers(app){
   const schedBtn = (u,cls='gold') => `<button class="btn ${cls} sm go-sched" data-uid="${u.id}">${icon('calendar')} スケジュール</button>`;
   const goEditBtn = u => isHandler ? `<button class="btn ghost sm go-edit" data-uid="${u.id}">${icon('edit')} 現場入力</button>` : '';
 
+  // 並び替え選択肢。ランクは必ず含める(A〜Eランクの昇順)。
+  const memberSortOptions = { regno:'登録番号順', rank:'ランク順', name:'氏名順(あ→ん)', han:'班順' };
+  const sortList = (list) => {
+    const sorted = [...list];
+    if(st.sort === 'regno') sorted.sort((a,b) => String(a.regno||'').localeCompare(String(b.regno||''), undefined, {numeric:true}));
+    else if(st.sort === 'rank') sorted.sort((a,b) => rankOrder(a.rank) - rankOrder(b.rank) || String(a.regno||'').localeCompare(String(b.regno||''), undefined, {numeric:true}));
+    else if(st.sort === 'name') sorted.sort((a,b) => String(a.name||'').localeCompare(String(b.name||''), 'ja'));
+    else if(st.sort === 'han') sorted.sort((a,b) => String(a.han||'').localeCompare(String(b.han||''), 'ja') || String(a.regno||'').localeCompare(String(b.regno||''), undefined, {numeric:true}));
+    return sorted;
+  };
+
   // リスト部分だけを再構築する。検索欄などフォームのinput要素はここでは一切触らない
   // (input要素をDOMから作り直すと、スマホでソフトウェアキーボードが閉じてしまうため)
   const renderList = () => {
@@ -2880,10 +2916,18 @@ async function pageMembers(app){
       if(fmgr==='__chief') return !u.manager_id;     // チーフ手配
       return String(u.manager_id)===String(fmgr);
     };
-    const list = users.filter(u=>inTab(u)&&matchQ(u)&&matchMgr(u));
+    const list = sortList(users.filter(u=>inTab(u)&&matchQ(u)&&matchMgr(u)));
     const area = $('#m-list-area'); if(!area) return;
     area.innerHTML = `
-      <div class="muted" style="margin:2px 0 10px">${list.length}名 表示中</div>
+      <div class="row" style="margin:2px 0 10px;gap:10px;align-items:center;flex-wrap:wrap">
+        <div class="muted">${list.length}名 表示中</div>
+        <div class="row" style="gap:6px;align-items:center;margin-left:auto">
+          <label class="muted" style="font-size:12px">並び替え</label>
+          <select id="m-sort" style="font-size:12.5px;padding:5px 6px">
+            ${Object.entries(memberSortOptions).map(([k,l])=>`<option value="${k}" ${k===st.sort?'selected':''}>${l}</option>`).join('')}
+          </select>
+        </div>
+      </div>
       ${isHandler?`<div class="row" id="m-bulk-bar" style="margin:2px 0 10px;gap:8px;align-items:center">
         <span class="muted">選択中: <span id="m-sel-count">0</span>件</span>
         <button class="btn ghost sm" id="m-bulk-mgr" disabled>選択した人の手配担当を変更</button>
@@ -2918,6 +2962,7 @@ async function pageMembers(app){
       </div>
 `;
     wireNameLinks(area);
+    const sortSel = $('#m-sort'); if(sortSel) sortSel.onchange = (e) => { st.sort = e.target.value; renderList(); };
     area.querySelectorAll('.go-sched').forEach(b=>b.onclick=()=>{ location.hash='#/schedule/'+b.dataset.uid; });
     area.querySelectorAll('.go-edit').forEach(b=>b.onclick=()=>{
       const uid = b.dataset.uid;
@@ -4704,24 +4749,37 @@ async function pageAdmin(app){
   const users = await getUsers(true);
   const mgrs = await api('/managers');
   const optLists = await api('/option-lists').catch(()=>({ka:[],han:[]}));
-  const st = PAGE_STATE.admin || (PAGE_STATE.admin = { q:'', mgr:'', open:{ list:true } });
+  const st = PAGE_STATE.admin || (PAGE_STATE.admin = { q:'', mgr:'', sort:'regno', open:{ list:true } });
   const openSet = st.open;
   const sec = (id,title,body)=>`<details class="adm-sec" id="sec-${id}" data-sec="${id}" ${openSet[id]?'open':''}><summary><span class="adm-sec-title">${title}</span></summary><div class="adm-body">${body}</div></details>`;
 
   // アカウント一覧のリスト部分だけを再構築する。検索欄など入力要素はここでは触らない
   // (input要素をDOMから作り直すと、スマホでソフトウェアキーボードが閉じてしまうため)
+  const acctSortOptions = { regno:'登録番号順', rank:'ランク順', name:'氏名順(あ→ん)', han:'班順' };
+  const sortAcctList = (list) => {
+    const sorted = [...list];
+    if(st.sort === 'regno') sorted.sort((a,b) => String(a.regno||'').localeCompare(String(b.regno||''), undefined, {numeric:true}));
+    else if(st.sort === 'rank') sorted.sort((a,b) => rankOrder(a.rank) - rankOrder(b.rank) || String(a.regno||'').localeCompare(String(b.regno||''), undefined, {numeric:true}));
+    else if(st.sort === 'name') sorted.sort((a,b) => String(a.name||'').localeCompare(String(b.name||''), 'ja'));
+    else if(st.sort === 'han') sorted.sort((a,b) => String(a.han||'').localeCompare(String(b.han||''), 'ja') || String(a.regno||'').localeCompare(String(b.regno||''), undefined, {numeric:true}));
+    return sorted;
+  };
   const renderAccountList = () => {
     const adq = st.q.trim(), admgr = st.mgr;
-    const aList = users.filter(u=>{
+    const aList = sortAcctList(users.filter(u=>{
       const mq = !adq || (u.name||'').includes(adq) || (u.regno||'').includes(adq);
       const mm = !admgr || (admgr.startsWith('__chief:') ? (!u.manager_id && u.ka===admgr.slice(8)) : String(u.manager_id)===String(admgr));
       return mq && mm;
-    });
+    }));
     const area = $('#ad-list-area'); if(!area) return;
     const countEl = $('#ad-count'); if(countEl) countEl.textContent = `(${aList.length}名)`;
     area.innerHTML = `
-      <div class="row" id="ad-bulk-bar" style="margin:2px 0 10px;gap:8px;align-items:center">
+      <div class="row" id="ad-bulk-bar" style="margin:2px 0 10px;gap:8px;align-items:center;flex-wrap:wrap">
         <span class="muted">${aList.length}名 表示中</span>
+        <label class="muted" style="font-size:12px;margin-left:10px">並び替え</label>
+        <select id="ad-sort" style="font-size:12.5px;padding:5px 6px">
+          ${Object.entries(acctSortOptions).map(([k,l])=>`<option value="${k}" ${k===st.sort?'selected':''}>${l}</option>`).join('')}
+        </select>
         <span class="muted" style="margin-left:auto">選択中: <span id="ad-sel-count">0</span>件</span>
         <button class="btn ghost sm" id="ad-bulk-suspend" disabled>まとめて停止</button>
         <button class="btn ghost sm" id="ad-bulk-restore" disabled>まとめて復活</button>
@@ -4783,6 +4841,7 @@ async function pageAdmin(app){
     });
 
     // 複数選択・一括停止/復活
+    const sortSel = $('#ad-sort'); if(sortSel) sortSel.onchange = (e) => { st.sort = e.target.value; renderAccountList(); };
     const updateBulkBar = () => {
       const checked = area.querySelectorAll('.ad-check:checked');
       const cnt = $('#ad-sel-count'), sb = $('#ad-bulk-suspend'), rb = $('#ad-bulk-restore');
