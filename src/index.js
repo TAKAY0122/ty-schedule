@@ -3555,13 +3555,14 @@ export default {
       }
     }
     const resp = await env.ASSETS.fetch(req);
-    // index.html / app.js / style.css は、ブラウザ・CDNどちらにもキャッシュさせない。
-    // (これらは更新の反映が最優先のファイルであり、古い版が残ると不具合の原因になるため)
+    // index.html / app.js / style.css は、更新の反映が最優先のファイルなので、ブラウザに
+    // そのまま古い版を使わせたくない。ただし no-store(毎回まるごと再ダウンロード)は、
+    // ファイルサイズが大きくなるほど読み込みが重くなる。no-cache(ETagで再検証し、変更が
+    // 無ければ極小の304応答で済ませる)にすることで、「常に最新版」は保ちつつ軽くする。
     const p = url.pathname;
     if (p === '/' || p === '/index.html' || p === '/app.js' || p === '/style.css') {
       const headers = new Headers(resp.headers);
-      headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
-      headers.delete('etag');
+      headers.set('Cache-Control', 'no-cache, must-revalidate');
       return withSecurityHeaders(new Response(resp.body, { status: resp.status, statusText: resp.statusText, headers }));
     }
     return withSecurityHeaders(resp);
