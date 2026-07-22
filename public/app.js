@@ -5062,11 +5062,13 @@ async function pageAdminSettings(app){
         <option value="all" ${notifyData.target==='all'?'selected':''}>メンツを含む全員</option>
       </select>
     </div>
-    <div class="row" style="margin-top:14px;gap:8px;align-items:center">
+    <div class="row" style="margin-top:14px;gap:8px;align-items:center;flex-wrap:wrap">
       <button class="btn gold sm" id="nt-save">通知設定を保存</button>
-      <button class="btn ghost sm" id="nt-test">今すぐテスト送信</button>
+      <button class="btn ghost sm" id="nt-test">今すぐテスト送信(自分だけに)</button>
+      <button class="btn ghost sm" id="nt-run-now">本日分を今すぐ本番送信</button>
       <span id="nt-msg" class="muted"></span>
     </div>
+    <div class="muted" style="margin-top:6px;font-size:12px">自動送信(毎日設定時刻)がうまく動いていない時は、「本日分を今すぐ本番送信」で、その場で対象者へ送信できます。</div>
 
   ` : '<div class="muted">通知設定を取得できませんでした</div>')}
 
@@ -5257,6 +5259,15 @@ async function pageAdminSettings(app){
       $('#nt-msg').textContent='送信中…';
       try{ await api('/notify-test',{method:'POST'}); $('#nt-msg').textContent='テスト通知を送りました(画面上部の通知アイコンを確認)'; popup('テスト通知を送信しました。画面上部の通知アイコンを確認してください'); }
       catch(e){ $('#nt-msg').textContent=e.message; }
+  }; }
+  { const nr = $('#nt-run-now'); if(nr) nr.onclick = async () => {
+      $('#nt-msg').textContent='送信中…';
+      try{
+        const r = await api('/notify-run-now',{method:'POST'});
+        if(r.sent > 0){ $('#nt-msg').textContent = `${r.sent}人に送信しました`; popup(`${r.sent}人に本日分のリマインドを送信しました`); }
+        else { $('#nt-msg').textContent = r.reason || '送信対象がいませんでした'; popup(r.reason || '送信対象がいませんでした(既に送信済み、または対象者0人)'); }
+      }
+      catch(e){ $('#nt-msg').textContent=e.message; popup(e.message,'error'); }
   }; }
 
   $('#pin-save').onclick = async () => {
