@@ -972,7 +972,7 @@ async function render(){
     else if(hash.startsWith('#/edit/')) await pageEdit(app, hash.slice('#/edit/'.length));
     else if(hash === '#/members/mine'){ const st0 = PAGE_STATE.members || (PAGE_STATE.members = { tab:'2課', q:'', mgr:'' }); st0.mgr = String(ME.id); await pageMembers(app); }
     else if(hash === '#/report') pageReportForm(app);
-    else if(hash === '#/reports') await pageReports(app);
+    else if(hash.startsWith('#/reports')) await pageReports(app, hash);
     else if(hash === '#/draft') await pageDraft(app);
     else if(hash === '#/blacklist') await pageBlacklist(app);
     else if(hash === '#/report-export') await pageReportExport(app);
@@ -2414,9 +2414,11 @@ async function pageSites(app){
             <span class="st-site-name">${h(s.site)}</span>
             ${s.venue?`<span class="st-site-venue">${h(s.venue)}</span>`:''}
             <span class="st-site-cnt">${s.cnt}名</span>
-            ${(s.rookieNames&&s.rookieNames.length)?`<span class="st-share rookie" title="新人報告あり:${s.rookieNames.map(h).join('、')}">${icon('badge')} ${s.rookieNames.length}</span>`:''}
             ${(s.blacklistNames&&s.blacklistNames.length)?`<span class="st-share blacklist" title="ブラックリスト登録あり:${s.blacklistNames.map(h).join('、')}">${icon('clockWarn')} ${s.blacklistNames.length}</span>`:''}
-          </button>`).join('')}
+          </button>
+          ${(s.rookies&&s.rookies.length)?`<div class="st-rookie-list">
+            ${s.rookies.map(rk=>`<button type="button" class="st-rookie-item" data-report-id="${rk.reportId||''}">${icon('badge',{size:'11px'})} ${h(rk.name)}${rk.reporterName?`<span class="muted"> (報告:${h(rk.reporterName)})</span>`:''}</button>`).join('')}
+          </div>`:''}`).join('')}
         </div>
       </details>`;
     }).join('') : '<div class="muted" style="padding:20px 0;text-align:center">この月に登録された現場はありません</div>'}
@@ -2424,6 +2426,9 @@ async function pageSites(app){
   $('#st-prev').onclick = () => { stSites.month = shiftMonth(month,-1); pageSites(app); };
   $('#st-next').onclick = () => { stSites.month = shiftMonth(month, 1); pageSites(app); };
   app.querySelectorAll('.st-site').forEach(b => b.onclick = () => openSiteModal(b.dataset.date, b.dataset.site));
+  app.querySelectorAll('.st-rookie-item').forEach(b => b.onclick = () => {
+    location.hash = b.dataset.reportId ? `#/reports?open=${b.dataset.reportId}` : '#/reports';
+  });
 }
 // 開発中の機能ページを「準備中」として表示する共通ヘルパー。
 // 管理者には、システム設定からON/OFFを切り替えられる旨のリンクも案内する。
@@ -3506,7 +3511,7 @@ function pageReportForm(app){
 }
 
 /* ===== 報告一覧・2次チェック ===== */
-async function pageReports(app){
+async function pageReports(app, hash){
   const rows = await api('/reports');
   const acqBadge = ka => ka ? `<span class="tag acquired" title="既にアプリに登録済み">${icon('checkCircle')} ${h(ka)}獲得</span>` : '';
   app.innerHTML = `
@@ -3532,6 +3537,12 @@ async function pageReports(app){
     </div>
   </div>`;
   app.querySelectorAll('[data-id]').forEach(el => el.onclick = () => openReport(rows.find(r=>r.id==el.dataset.id)));
+  // 現場一覧などから「この報告を見る」で遷移してきた場合(#/reports?open=123)、該当の報告を自動で開く
+  const openId = new URLSearchParams((hash||'').split('?')[1] || '').get('open');
+  if(openId){
+    const target = rows.find(r => String(r.id) === String(openId));
+    if(target) openReport(target);
+  }
 }
 
 function openReport(r){

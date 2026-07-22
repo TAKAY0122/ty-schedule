@@ -2680,18 +2680,21 @@ async function api(req, env, url) {
     ).bind(month + '%').all()).results;
     // 新人共有・要注意共有(台帳と新人報告/ブラックリストの氏名マッチ)がある現場に印を付ける。
     // 良い人(新人報告)と悪い人(ブラックリスト)は別々に持たせ、表示側で混同しないようにする。
+    // 新人報告は、誰が報告したか・タップで報告詳細に飛べるよう、report_id/reporter_nameも一緒に返す。
     const matches = (await env.DB.prepare(
-      "SELECT kind, date, site, matched_name FROM rookie_site_matches WHERE date LIKE ?"
+      `SELECT m.kind, m.date, m.site, m.matched_name, m.report_id, r.reporter_name
+       FROM rookie_site_matches m LEFT JOIN reports r ON m.report_id = r.id
+       WHERE m.date LIKE ?`
     ).bind(month + '%').all()).results;
     const rookieMap = {}, blacklistMap = {};
     for (const m of matches) {
       const key = m.date + '|' + m.site;
-      const target = m.kind === 'report' ? rookieMap : blacklistMap;
-      (target[key] ||= []).push(m.matched_name);
+      if (m.kind === 'report') (rookieMap[key] ||= []).push({ name: m.matched_name, reportId: m.report_id, reporterName: m.reporter_name || '' });
+      else (blacklistMap[key] ||= []).push(m.matched_name);
     }
     for (const r of rows) {
       const key = r.date + '|' + r.site;
-      r.rookieNames = rookieMap[key] || [];
+      r.rookies = rookieMap[key] || [];
       r.blacklistNames = blacklistMap[key] || [];
     }
     return J(rows);
@@ -3262,7 +3265,10 @@ async function api(req, env, url) {
 async function cronDaichoReload(env) {
   const targetHour = parseInt(await getSetting(env, 'daicho_reload_hour', '0'), 10);
   const now = new Date(Date.now() + 9 * 3600e3); // JST
-  if (now.getUTCHours() !== targetHour) return; // 指定時刻(既定0時)のみ実行
+  // 「ちょうどtargetHourの回」だけを狙うと、Cron Triggerの実行頻度が低い場合に
+  // タイミングが合わず永遠に実行されないことがあるため、「targetHourを過ぎていれば」実行する。
+  // 日付をまたいだ場合(targetHour=0等)も、日付が変わった時点でlastRunと不一致になり正しく動く。
+  if (now.getUTCHours() < targetHour) return;
   const today = jstDate();
   const lastRun = await getSetting(env, 'daicho_reload_last_run', '');
   if (lastRun === today) return; // 1日1回のみ
@@ -3399,9 +3405,14 @@ async function cronNotify(env) {
   if (enabled === '0') return;
   const targetHour = parseInt(await getSetting(env, 'notify_hour', '21'), 10);
   const now = new Date(Date.now() + 9 * 3600e3);   // JST
-  if (now.getUTCHours() !== targetHour) return;        // 設定時刻の回だけ実行
-
   const today = jstDate();
+  // 「ちょうどtargetHourの回」だけを狙うと、Cron Triggerの実行頻度が低い場合に
+  // タイミングが合わず永遠に実行されないことがあるため、「targetHourを過ぎていて、
+  // かつ今日まだ実行していない」を条件にする(実行頻度に依存しない堅牢な設計)。
+  if (now.getUTCHours() < targetHour) return;
+  const lastRun = await getSetting(env, 'notify_last_run', '');
+  if (lastRun === today) return; // 今日は既に実行済み
+  await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('notify_last_run',?)").bind(today).run();
   const scope = await getSetting(env, 'notify_target', 'chiefs'); // 既定:チーフ以上
   let baseRoles = ['chief', 'handler', 'admin'];
   if (scope === 'handlers') baseRoles = ['handler', 'admin'];
@@ -3464,7 +3475,9 @@ async function cronScheduleSources(env) {
       let shouldRun = false;
       if (src.freq_type === 'daily') {
         const targetHour = Number(src.hour) || 0;
-        if (now.getUTCHours() === targetHour && (src.last_run || '').slice(0, 10) !== jstDate()) shouldRun = true;
+        // 「ちょうどtargetHourの回」だけを狙うと、Cron Triggerの実行頻度が低い場合に
+        // タイミングが合わず永遠に実行されないことがあるため、「targetHourを過ぎていれば」実行する。
+        if (now.getUTCHours() >= targetHour && (src.last_run || '').slice(0, 10) !== jstDate()) shouldRun = true;
       } else {
         const intervalH = Math.max(1, Number(src.interval_hours) || 1);
         if (!src.last_run) shouldRun = true;
