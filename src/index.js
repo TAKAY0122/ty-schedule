@@ -1826,8 +1826,15 @@ async function api(req, env, url) {
   // (Cronトリガーが想定通り動いているか確認する、または動いていない時の応急処置として使う)
   if (method === 'POST' && path === '/notify-run-now') {
     if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
-    const result = await cronNotify(env, { force: true });
-    return J(result);
+    try {
+      const result = await cronNotify(env, { force: true });
+      return J(result);
+    } catch (e) {
+      // このエンドポイントは管理者が原因調査のために使うものなので、通常のAPIとは異なり
+      // エラーメッセージをそのままクライアントに返す(詳細を隠す必要が薄いため)。
+      console.error('notify-run-now failed:', e);
+      return ERR('実行エラー: ' + (e && e.message ? e.message : String(e)), 500);
+    }
   }
 
   // ---- 予定表ソース管理(動的に何個でも追加可能) ----
@@ -3409,8 +3416,9 @@ async function cronDaichoReload(env) {
 // 存在しないことが多い。その場合、上記の条件では対象者が0人になってしまうため、その日どこかの現場
 // (work)が1件でも稼働していれば、対象ロール全員(新人報告未提出者)に通知するフォールバックを設ける。
 async function cronNotify(env, opt = {}) {
+  console.log('[cronNotify] start', JSON.stringify(opt));
   const enabled = await getSetting(env, 'notify_enabled', '1');
-  if (enabled === '0' && !opt.force) return { sent: 0, reason: '通知設定がOFFです' };
+  if (enabled === '0' && !opt.force) { console.log('[cronNotify] disabled'); return { sent: 0, reason: '通知設定がOFFです' }; }
   const targetHour = parseInt(await getSetting(env, 'notify_hour', '21'), 10);
   const now = new Date(Date.now() + 9 * 3600e3);   // JST
   const today = jstDate();
@@ -3418,18 +3426,20 @@ async function cronNotify(env, opt = {}) {
     // 「ちょうどtargetHourの回」だけを狙うと、Cron Triggerの実行頻度が低い場合に
     // タイミングが合わず永遠に実行されないことがあるため、「targetHourを過ぎていて、
     // かつ今日まだ実行していない」を条件にする(実行頻度に依存しない堅牢な設計)。
-    if (now.getUTCHours() < targetHour) return { sent: 0, reason: `まだ設定時刻(${targetHour}時)前です` };
+    if (now.getUTCHours() < targetHour) { console.log('[cronNotify] before target hour', now.getUTCHours(), targetHour); return { sent: 0, reason: `まだ設定時刻(${targetHour}時)前です` }; }
     const lastRun = await getSetting(env, 'notify_last_run', '');
-    if (lastRun === today) return { sent: 0, reason: '本日は既に実行済みです' };
+    if (lastRun === today) { console.log('[cronNotify] already run today', lastRun); return { sent: 0, reason: '本日は既に実行済みです' }; }
   }
   const scope = await getSetting(env, 'notify_target', 'chiefs'); // 既定:チーフ以上
   let baseRoles = ['chief', 'handler', 'admin'];
   if (scope === 'handlers') baseRoles = ['handler', 'admin'];
   else if (scope === 'all') baseRoles = ['member', 'chief', 'handler', 'admin'];
   const phRole = baseRoles.map(() => '?').join(',');
+  console.log('[cronNotify] scope', scope, 'roles', baseRoles);
 
   // その日、稼働している現場が1件も無ければ、そもそも通知の必要が無い
   const hasAnySite = await env.DB.prepare("SELECT 1 FROM schedule WHERE date=? AND type='work' AND site<>'' LIMIT 1").bind(today).first();
+  console.log('[cronNotify] hasAnySite', !!hasAnySite, 'today', today);
   if (!hasAnySite) return { sent: 0, reason: '本日、現場の予定が登録されていません' }; // ここで戻る場合はnotify_last_runを更新しない(現場データが後から入ってくる可能性があるため、その日のうちに再挑戦できるようにする)
   // ここまで来たら、今日はもう実行しない(重複送信防止のため、対象者が0人でも記録する)。強制実行時は記録しない(手動テストのため)。
   if (!opt.force) await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('notify_last_run',?)").bind(today).run();
@@ -3447,6 +3457,7 @@ async function cronNotify(env, opt = {}) {
          SELECT 1 FROM reports r WHERE r.reporter_id = u.id AND r.ts LIKE ?
        )`
   ).bind(today, ...baseRoles, today + '%').all()).results;
+  console.log('[cronNotify] recipients(primary)', recipients.length);
 
   // 該当者が0人の場合(チーフ自身の当日予定データが無い環境)は、対象ロール全員へフォールバックする
   if (!recipients.length) {
@@ -3461,10 +3472,12 @@ async function cronNotify(env, opt = {}) {
            SELECT 1 FROM reports r WHERE r.reporter_id = u.id AND r.ts LIKE ?
          )`
     ).bind(...baseRoles, today + '%').all()).results;
+    console.log('[cronNotify] recipients(fallback)', recipients.length);
   }
 
   const ids = recipients.map(r => r.id);
   if (ids.length) await notify(env, ids, 'remind', `⏰【リマインド】(${today}) 本日現場が稼働しています。新人の報告があれば忘れずに提出してください。`);
+  console.log('[cronNotify] done, sent to', ids.length);
   return { sent: ids.length, reason: ids.length ? '' : '対象者が0人でした(全員報告済み、または対象ロールの人が現場に入っていない可能性があります)' };
 }
 
