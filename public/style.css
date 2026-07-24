@@ -610,7 +610,8 @@ tr.is-suspended .nowrap{opacity:.7}
 .matrix-table{border-collapse:collapse;width:100%;font-size:12.5px;background:#fff;white-space:nowrap}
 .matrix-table th,.matrix-table td{border:1px solid var(--line);padding:6px 8px;text-align:center}
 .matrix-table th{background:#f5f3ec;font-weight:700;font-size:11.5px;line-height:1.5}
-.matrix-name-col{position:sticky;left:0;z-index:2;background:#fff;text-align:left!important;min-width:120px}
+.matrix-name-col{position:sticky;left:0;z-index:2;background:#fff;text-align:left!important;min-width:120px;overflow:hidden}
+.matrix-name-col a,.matrix-name-col span{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 th.matrix-name-col{background:#f5f3ec;z-index:3}
 .matrix-cell{min-width:90px;max-width:160px;overflow:hidden;text-overflow:ellipsis}
 .cell-work{background:#fff}
@@ -627,14 +628,14 @@ tr.is-suspended .matrix-name-col{background:#fafafa}
 /* PC: 名前列+7日分が横スクロール無しで画面に収まるよう、テーブル全体を画面幅に固定し列を均等分割する */
 @media (min-width:901px){
   .matrix-table{table-layout:fixed;width:100%;white-space:normal}
-  .matrix-name-col{width:112px;min-width:112px;max-width:112px}
+  .matrix-name-col{width:135px;min-width:135px;max-width:135px}
   .matrix-cell{width:auto;min-width:0;max-width:none;overflow-wrap:break-word;word-break:break-word}
 }
 /* スマホ: 名前列+2日分だけが画面に収まる幅にし、残りは横スクロールで見る */
 @media (max-width:640px){
   .matrix-table{width:auto}
-  .matrix-name-col{min-width:66px;max-width:66px;width:66px;font-size:11px;padding:6px 4px}
-  .matrix-cell{min-width:calc((100vw - 98px)/2);max-width:calc((100vw - 98px)/2);font-size:11.5px;padding:5px 4px}
+  .matrix-name-col{min-width:78px;max-width:78px;width:78px;font-size:11px;padding:6px 4px}
+  .matrix-cell{min-width:calc((100vw - 110px)/2);max-width:calc((100vw - 110px)/2);font-size:11.5px;padding:5px 4px}
 }
 
 /* ===== PC見栄え調整: 1つの値が2行に折り返さないように ===== */
