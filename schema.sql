@@ -18,6 +18,14 @@ CREATE TABLE IF NOT EXISTS users(
   notify_rookie INTEGER DEFAULT NULL,    -- 新人報告リマインドの個人設定: NULL=役割の基本ルールに従う/1=常に対象/0=常に対象外
   calendar_token TEXT DEFAULT NULL,      -- Googleカレンダー等への購読フィード用の秘密トークン(発行するまでNULL)
   seen_update_version INTEGER DEFAULT 0, -- 最後に確認した「アップデートのお知らせ」のバージョン番号
+  grade TEXT DEFAULT '',                 -- 学年(M2/M1/4/3/2/1)
+  base TEXT DEFAULT '',                  -- (未使用。拠点は登録番号から都度計算する方式に変更済み。将来削除予定)
+  manner_done INTEGER DEFAULT 0,         -- マナー研修 受講済み(E→D自動昇格の条件)
+  team2_done INTEGER DEFAULT 0,          -- チーム研修(2部) 受講済み(D→C自動昇格の条件の一つ)
+  su_done INTEGER DEFAULT 0,             -- ステージアップ研修(SU) 受講済み(D→C自動昇格の条件の一つ)
+  promotion_pending_date TEXT DEFAULT NULL, -- D→C自動昇格の適用予定日(2部+SU完了の翌月1日)
+  promotion_pending_rank TEXT DEFAULT NULL, -- 上記の適用予定日に、実際に切り替える先のランク(D または C)
+  graduate_flag INTEGER DEFAULT 0,       -- 卒業予定
   created TEXT DEFAULT (datetime('now'))
 );
 
@@ -270,8 +278,8 @@ CREATE TABLE IF NOT EXISTS non_site_keywords(
 );
 INSERT OR IGNORE INTO non_site_keywords(keyword, type, sort_order) VALUES
  ('×','x',1), ('✕','x',2), ('x','x',3), ('X','x',4),
- ('休暇','off',10),
- ('1日OK','ok',20), ('○','ok',21), ('〇','ok',22),
+ ('休暇','off',10), ('休暇希望','off',11),
+ ('1日OK','ok',20), ('○','ok',21), ('〇','ok',22), ('⚪︎','ok',23), ('⚪','ok',24),
  ('未定','ignore',30), ('手配','ignore',31);
 
 -- 「現場変更の報告」モーダルの変更内容プルダウンの選択肢。typeはschedule.typeに対応する値。
@@ -338,3 +346,15 @@ CREATE TABLE IF NOT EXISTS login_attempts(
   locked_until INTEGER DEFAULT 0,   -- ロック解除時刻(epoch ms)。0=ロックなし
   last_attempt INTEGER DEFAULT 0
 );
+
+-- ランク変更履歴(研修による自動昇格・査定・手動変更のいずれも記録)
+CREATE TABLE IF NOT EXISTS rank_history(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  before_rank TEXT,
+  after_rank TEXT,
+  reason TEXT NOT NULL,        -- manner_auto(マナー研修自動昇格) / promotion_auto(2部+SU自動昇格) / assessment(査定) / manual(手動変更)
+  changed_by INTEGER,          -- 操作した人(自動昇格の場合はNULL)
+  ts TEXT NOT NULL
+);
+

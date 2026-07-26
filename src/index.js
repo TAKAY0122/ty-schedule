@@ -119,9 +119,9 @@ async function pbkdf2(pw, salt) {
 // アプリの機能アップデートのお知らせに使うバージョン番号。新しいお知らせを追加したら値を増やし、
 // updateNoticeContent()にも内容を追記する。既にパスワードを変更済み(must_change=0)の既存ユーザーが
 // ログインした際、seen_update_version がこれより小さければ「アップデートのお知らせ」を表示する。
-const CURRENT_UPDATE_VERSION = 2;
+const CURRENT_UPDATE_VERSION = 3;
 
-const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0, must_change: u.must_change ? 1 : 0, extra_perms: getPerms(u), notify_rookie: u.notify_rookie === null || u.notify_rookie === undefined ? null : (u.notify_rookie ? 1 : 0), needsUpdateNotice: !u.must_change && (u.seen_update_version || 0) < CURRENT_UPDATE_VERSION, seenUpdateVersion: u.seen_update_version || 0 });
+const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0, must_change: u.must_change ? 1 : 0, extra_perms: getPerms(u), notify_rookie: u.notify_rookie === null || u.notify_rookie === undefined ? null : (u.notify_rookie ? 1 : 0), manner_done: u.manner_done ? 1 : 0, team2_done: u.team2_done ? 1 : 0, su_done: u.su_done ? 1 : 0, graduate_flag: u.graduate_flag ? 1 : 0, promotion_pending_date: u.promotion_pending_date || null, promotion_pending_rank: u.promotion_pending_rank || null, needsUpdateNotice: !u.must_change && (u.seen_update_version || 0) < CURRENT_UPDATE_VERSION, seenUpdateVersion: u.seen_update_version || 0 });
 
 // ===== 給与計算 (RB事業2課ルール) =====
 // 業務名 → 計算区分。 g5=案内料金(最低5h) / l3=搬入出料金(最低3h) / lg,gl,lgl=時間帯分割 / skip=対象外
@@ -197,6 +197,78 @@ function calcPay({ rank, date, tin, tout, duty, loadEnd, showEnd, multi }, resol
   const pay = Math.round(base + OT * gw * 0.25 + night * gw * 0.25 + (multi ? 500 : 0));
   const otDisp = Math.max(0, total - 9);       // スケジュール表示の残業は9時間超
   return { hours: Math.round(total * 100) / 100, overtime: Math.round(otDisp * 100) / 100, night: Math.round(night * 100) / 100, pay };
+}
+
+// ランク変更(自動昇格・査定・手動)があった時、その月の給与を月初から新ランクで計算し直す。
+// 月の途中でランクが上がっても、その月はまるごと新ランクで再計算する、という仕様のための処理。
+async function recalcPayForMonth(env, userId, month, newRank){
+  const resolve = await loadWageResolver(env);
+  const dutyMap = await loadDutyMap(env);
+  const rows = (await env.DB.prepare(
+    "SELECT id, date, tin, tout, duty, load_end, show_end, multi FROM schedule WHERE user_id=? AND date LIKE ? AND type='work'"
+  ).bind(userId, month + '%').all()).results;
+  for (const r of rows) {
+    const c = calcPay({ rank: newRank, date: r.date, tin: r.tin, tout: r.tout, duty: r.duty, loadEnd: r.load_end, showEnd: r.show_end, multi: r.multi }, resolve, dutyMap);
+    if (c) await env.DB.prepare('UPDATE schedule SET hours=?, overtime=?, pay=? WHERE id=?').bind(c.hours, c.overtime, c.pay, r.id).run();
+  }
+}
+
+// 台帳(実績)取込データから、研修受講(マナー研修/チーム研修2部/ステージアップ研修SU)を現場名で自動検出し、
+// 該当者のフラグを更新する。実際の昇格(E→D、D→C)は即時ではなく、翌日/翌月1日に日次バッチ(cronRankPromotion)
+// で行う(マナー研修は翌日から、2部+SU完了は翌月1日から、という仕様のため)。
+async function processTrainingPromotions(env, rows){
+  const detectTraining = (site) => {
+    const s = String(site || '');
+    if (s.includes('マナー')) return 'manner';
+    if (s.includes('2部')) return 'team2';
+    if (s.includes('SU')) return 'su';
+    return null;
+  };
+  const byRegno = {};
+  for (const r of rows) {
+    const training = detectTraining(r.site);
+    if (!training) continue;
+    const regno = normRegno(r.regno);
+    if (!regno) continue;
+    (byRegno[regno] ||= new Set()).add(training);
+  }
+  const regnos = Object.keys(byRegno);
+  if (!regnos.length) return;
+
+  const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
+  let users = [];
+  for (const rc of chunk(regnos, 50)) {
+    const ph = rc.map(() => '?').join(',');
+    const us = (await env.DB.prepare(`SELECT id, regno, rank, manner_done, team2_done, su_done FROM users WHERE regno IN (${ph})`).bind(...rc).all()).results;
+    users = users.concat(us);
+  }
+  const tomorrow = (() => { const d = new Date(Date.now() + 9 * 3600e3); d.setUTCDate(d.getUTCDate() + 1); return d.toISOString().slice(0, 10); })();
+  const nextMonth1st = (() => { const d = new Date(Date.now() + 9 * 3600e3); d.setUTCMonth(d.getUTCMonth() + 1, 1); return d.toISOString().slice(0, 10); })();
+
+  for (const u of users) {
+    const trainings = byRegno[normRegno(u.regno)];
+    if (!trainings) continue;
+    const R = rankLetter(u.rank);
+    // マナー研修: Eランクの人のみ対象。受講したら、翌日からDランクへ昇格予約
+    if (trainings.has('manner') && !u.manner_done && R === 'E') {
+      await env.DB.prepare('UPDATE users SET manner_done=1, promotion_pending_date=?, promotion_pending_rank=? WHERE id=?')
+        .bind(tomorrow, 'D', u.id).run();
+      continue; // マナー研修とチーム研修/SUは対象ランクが異なるため、同時該当は通常ない
+    }
+    // チーム研修(2部)・ステージアップ研修(SU): Dランクの人のみ対象。両方受講したら、翌月1日にCランクへ昇格予約
+    if (R === 'D') {
+      const team2Done = trainings.has('team2') ? 1 : u.team2_done;
+      const suDone = trainings.has('su') ? 1 : u.su_done;
+      if (team2Done !== u.team2_done || suDone !== u.su_done) {
+        if (team2Done && suDone) {
+          await env.DB.prepare('UPDATE users SET team2_done=?, su_done=?, promotion_pending_date=?, promotion_pending_rank=? WHERE id=?')
+            .bind(team2Done, suDone, nextMonth1st, 'C', u.id).run();
+        } else {
+          await env.DB.prepare('UPDATE users SET team2_done=?, su_done=? WHERE id=?').bind(team2Done, suDone, u.id).run();
+        }
+      }
+    }
+  }
 }
 
 // 給与確定ロック: 現場日からロック日数(既定14)を過ぎたら確定(編集不可)
@@ -620,7 +692,7 @@ async function clearAbsentFromDaicho(env, rows, editorId) {
   return { clearedPeople, clearedDays: dates.length };
 }
 
-async function applyImportRows(env, rows, editorId, mode = 'replace-person-day', srcLabel = 'spreadsheet') {
+async function applyImportRows(env, rows, editorId, mode = 'replace-person-day', srcLabel = 'spreadsheet', isDaicho = false) {
   const ts = jstTs();
   const resolve = await loadWageResolver(env);
   const dutyMap = await loadDutyMap(env);
@@ -768,6 +840,9 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
       for (const rr of matches) await notify(env, [rc.uid], 'rookie', `🔰 ${rr.next_date} ${rr.next_site} に新人「${rr.candidate_name}」が入る予定です`);
     }
   }
+  // 台帳(実績)取込の場合のみ、研修受講(マナー/2部/SU)の自動判定を行う。
+  // 予定表ソース等、まだ確定していない予定の取込では判定しない。
+  if (isDaicho) { try { await processTrainingPromotions(env, rows); } catch (e) { errors.push('研修判定でエラー: ' + e.message); } }
   return { applied, skipped, skippedUnregistered, skippedUnchanged, skippedInvalid, skippedOtherOrg, errors };
 }
 
@@ -840,6 +915,10 @@ async function matchRookieAndBlacklist(env, rows) {
 function detectFormat(grid) {
   const head = grid.slice(0, 14).flat().join(' ');
   if (/退勤時間|打刻時間|集合時間|終了予定時間|就業回数/.test(head)) return 'C';
+  // 手配管理表形式: 「現場/会場/時間」の組が横に何人分も並び、日付列もブロックごとに繰り返される。
+  // 日付列が2つ以上あることを条件にして、従来の予定表(日付列が1つ)と取り違えないようにする。
+  const hr = findArrangeHeaderRow(grid);
+  if (hr >= 1 && findDayCols(grid, hr).length >= 2) return 'D';
   return 'AB';
 }
 
@@ -1338,6 +1417,106 @@ function parseFormatAB(rows, ym, cfg, keywordMap) {
       const kw = keywordMap[site];
       if (kw) { if (kw !== 'ignore') out.push({ regno: m.regno, date, type: kw, site: '', venue: '', note }); continue; }
       out.push({ regno: m.regno, date, type: 'work', site, venue, note });
+    }
+  }
+  return { rows: out };
+}
+
+// シートの左上あたりから「年」と「月」を拾って YYYY-MM を作る。
+// 手配管理表は1タブ=1か月で、年と月が別セルに分かれて置かれているため、
+// 取り込み実行日ではなくシート自身が持つ年月を優先して使う(翌月分を先に取り込む運用に対応)。
+function detectYmFromGrid(grid, fallbackYm) {
+  let year = '', month = '';
+  for (let r = 0; r < Math.min(grid.length, 6); r++) {
+    const line = grid[r] || [];
+    for (let c = 0; c < Math.min(line.length, 8); c++) {
+      const v = String(line[c] == null ? '' : line[c]).trim();
+      if (!year) { const m = v.match(/^(20\d{2})年?$/); if (m) year = m[1]; }
+      if (!month) { const m = v.match(/^(\d{1,2})月$/); if (m) month = String(m[1]).padStart(2, '0'); }
+    }
+  }
+  return (year && month) ? `${year}-${month}` : fallbackYm;
+}
+
+// ヘッダー行(「現場」が2つ以上ならぶ行)を探す。見つからなければ -1。
+function findArrangeHeaderRow(grid) {
+  for (let r = 0; r < Math.min(grid.length, 12); r++) {
+    let n = 0;
+    for (const v of (grid[r] || [])) if (String(v == null ? '' : v).trim() === '現場') n++;
+    if (n >= 2) return r;
+  }
+  return -1;
+}
+
+// 「1日」「15日」のような値が繰り返し現れる列(=日付列)を検出する。
+// 手配管理表は横に長いため、日付列がブロックごとに何度も出てくる。
+function findDayCols(grid, headerRow) {
+  const count = {};
+  for (let r = headerRow + 1; r < grid.length; r++) {
+    const line = grid[r] || [];
+    for (let c = 0; c < line.length; c++) {
+      if (/^\d{1,2}日$/.test(String(line[c] == null ? '' : line[c]).trim())) count[c] = (count[c] || 0) + 1;
+    }
+  }
+  // たまたま1行だけ「3日」等が入っている列を拾わないよう、5行以上あるものだけを日付列とみなす
+  return Object.keys(count).map(Number).filter(c => count[c] >= 5).sort((a, b) => a - b);
+}
+
+// フォーマットD(手配管理表)を解析する。
+// 「日付列 + 複数人分の[現場/会場/時間]列」というブロックが、横方向に何組も並ぶ形式。
+//   2行目: (左端)年       …… 各人の氏名(現場列の位置)、ランク(時間列の位置)
+//   3行目: (左端)月       …… 各人の登録番号(現場列の位置)、最寄駅(会場列の位置)
+//   4行目: 「現場/会場/時間」のヘッダーが人数分くり返される
+//   5行目以降: (日付列)「1日」「月」…… 各人のその日の現場名・会場名
+// 日付列がブロックごとに繰り返されるため、各人の日付は「自分より左側で最も近い日付列」から取る。
+// 「時間」列は見込み時間(実績のIN/OUTではない)なので、給与計算に影響させないため取り込まない。
+function parseFormatD(grid, ym, keywordMap) {
+  keywordMap = keywordMap || {};
+  const cell = (r, c) => String(((grid[r] || [])[c]) == null ? '' : (grid[r] || [])[c]).trim();
+
+  const headerRow = findArrangeHeaderRow(grid);
+  if (headerRow < 1) return { rows: [] }; // 登録番号行(1つ上)が必要なので headerRow>=1
+
+  // --- 各メンバーのブロック(現場列・会場列)を組み立てる ---
+  const header = grid[headerRow] || [];
+  const blocks = [];
+  for (let c = 0; c < header.length; c++) {
+    if (String(header[c] == null ? '' : header[c]).trim() !== '現場') continue;
+    // 「現場」の右隣から数列以内にある「会場」を探す(結合セル解除で空列がはさまる場合があるため)
+    let venueCol = -1;
+    for (let d = c + 1; d <= c + 3 && d < header.length; d++) {
+      const v = String(header[d] == null ? '' : header[d]).trim();
+      if (v === '会場') { venueCol = d; break; }
+      if (v === '現場') break; // 次の人の領域に入ったので打ち切り
+    }
+    // 登録番号はヘッダーの1つ上の行、現場列と同じ位置にある
+    const regno = normRegno(cell(headerRow - 1, c));
+    if (!/^\d{3,}$/.test(regno)) continue;
+    blocks.push({ regno, siteCol: c, venueCol });
+  }
+  if (!blocks.length) return { rows: [] };
+
+  const dayCols = findDayCols(grid, headerRow);
+  if (!dayCols.length) return { rows: [] };
+  // 各ブロックに、自分より左側で最も近い日付列を割り当てる
+  for (const b of blocks) {
+    let dc = dayCols[0];
+    for (const c of dayCols) { if (c < b.siteCol) dc = c; else break; }
+    b.dayCol = dc;
+  }
+
+  // --- 明細を組み立てる ---
+  const out = [];
+  for (let r = headerRow + 1; r < grid.length; r++) {
+    for (const b of blocks) {
+      const date = normSheetDate(cell(r, b.dayCol), ym);
+      if (!date) continue;
+      const site = normalizeSiteName(cell(r, b.siteCol));
+      if (!site) continue;
+      const kw = keywordMap[site];
+      if (kw) { if (kw !== 'ignore') out.push({ regno: b.regno, date, type: kw, site: '', venue: '', note: '' }); continue; }
+      const venue = b.venueCol >= 0 ? cell(r, b.venueCol) : '';
+      out.push({ regno: b.regno, date, type: 'work', site, venue, note: '' });
     }
   }
   return { rows: out };
@@ -2106,7 +2285,25 @@ async function api(req, env, url) {
         const v = body.notify_rookie === null ? null : (body.notify_rookie ? 1 : 0);
         await env.DB.prepare('UPDATE users SET notify_rookie=? WHERE id=?').bind(v, uid).run();
       }
-      for (const f of ['name', 'rank', 'han', 'station', 'ka']) {
+      if (body.rank !== undefined) { // ランクの手動変更。履歴に記録し、当月の給与を新ランクで再計算する
+        if (!has(me, 'site_manage') && !has(me, 'account_manage')) return ERR('権限がありません', 403);
+        const cur = await env.DB.prepare('SELECT rank FROM users WHERE id=?').bind(uid).first();
+        const beforeRank = cur ? cur.rank : '';
+        if (beforeRank !== body.rank) {
+          await env.DB.prepare('UPDATE users SET rank=? WHERE id=?').bind(body.rank, uid).run();
+          await env.DB.prepare('INSERT INTO rank_history(user_id,before_rank,after_rank,reason,changed_by,ts) VALUES(?,?,?,?,?,?)')
+            .bind(uid, beforeRank, body.rank, 'manual', me.id, jstTs()).run();
+          try { await recalcPayForMonth(env, uid, jstDate().slice(0, 7), body.rank); } catch (e) {}
+        }
+      }
+      // 研修受講状況・卒業予定フラグの手動編集(現場データに基づく自動判定を待たず、直接補正したい場合用)
+      for (const f of ['manner_done', 'team2_done', 'su_done', 'graduate_flag']) {
+        if (body[f] !== undefined) {
+          if (!has(me, 'site_manage') && !has(me, 'account_manage')) return ERR('権限がありません', 403);
+          await env.DB.prepare(`UPDATE users SET ${f}=? WHERE id=?`).bind(body[f] ? 1 : 0, uid).run();
+        }
+      }
+      for (const f of ['name', 'han', 'station', 'ka']) {
         if (body[f] !== undefined) {
           if (!has(me, 'site_manage') && !has(me, 'account_manage')) return ERR('権限がありません', 403);
           await env.DB.prepare(`UPDATE users SET ${f}=? WHERE id=?`).bind(body[f], uid).run();
@@ -2122,6 +2319,39 @@ async function api(req, env, url) {
       await env.DB.prepare('DELETE FROM schedule WHERE user_id=?').bind(uid).run();
       return J({ ok: 1 });
     }
+  }
+  // 査定によるランクアップ(C→B、C→A、B→A)。研修による自動昇格とは別に、手配者以上が判断して実行する。
+  // 昇格した月は、月初に遡って新ランクで給与を再計算する。
+  if ((mm = path.match(/^\/users\/(\d+)\/assess$/)) && method === 'POST') {
+    if (!has(me, 'site_manage') && !has(me, 'account_manage')) return ERR('権限がありません', 403);
+    const uid = Number(mm[1]);
+    const target = String(body.rank || '').toUpperCase();
+    if (!['A', 'B'].includes(target)) return ERR('査定で指定できるのはAランクまたはBランクのみです');
+    const u = await env.DB.prepare('SELECT id, rank FROM users WHERE id=?').bind(uid).first();
+    if (!u) return ERR('対象のメンバーが見つかりません', 404);
+    const cur = rankLetter(u.rank);
+    // C→B、C→A、B→A のみ許可(降格・同ランクへの変更は査定では行わない)
+    const allowed = (cur === 'C' && (target === 'B' || target === 'A')) || (cur === 'B' && target === 'A');
+    if (!allowed) return ERR(`現在${cur || '未設定'}ランクのため、査定で${target}ランクへは変更できません(C→B、C→A、B→Aのみ)`);
+    await env.DB.prepare('UPDATE users SET rank=? WHERE id=?').bind(target, uid).run();
+    await env.DB.prepare('INSERT INTO rank_history(user_id,before_rank,after_rank,reason,changed_by,ts) VALUES(?,?,?,?,?,?)')
+      .bind(uid, u.rank, target, 'assessment', me.id, jstTs()).run();
+    const month = jstDate().slice(0, 7);
+    try { await recalcPayForMonth(env, uid, month, target); } catch (e) { console.error('recalcPay failed:', e); }
+    await notify(env, [uid], 'rank', `🎉 査定により、ランクが ${target} に上がりました。今月分の給与も新しいランクで再計算されています。`);
+    return J({ ok: 1, rank: target });
+  }
+  // ランク変更履歴の取得(いつ・誰が・なぜ変更したか)
+  if ((mm = path.match(/^\/users\/(\d+)\/rank-history$/)) && method === 'GET') {
+    if (lv(me) < 1) return ERR('権限がありません', 403);
+    const uid = Number(mm[1]);
+    const rows = (await env.DB.prepare(
+      `SELECT h.*, u.name AS changed_by_name FROM rank_history h
+       LEFT JOIN users u ON h.changed_by = u.id
+       WHERE h.user_id=? ORDER BY h.id DESC LIMIT 100`
+    ).bind(uid).all()).results;
+    const reasonLabel = { manner_auto: 'マナー研修による自動昇格', promotion_auto: '2部+SU研修による自動昇格', assessment: '査定', manual: '手動変更' };
+    return J(rows.map(r => ({ ...r, reason_label: reasonLabel[r.reason] || r.reason })));
   }
   if ((mm = path.match(/^\/users\/(\d+)\/resetpw$/)) && method === 'POST') {
     if (me.role !== 'admin') return ERR('権限がありません', 403);
@@ -2939,6 +3169,7 @@ async function api(req, env, url) {
           const fmt = body.format && body.format !== 'auto' ? body.format : detectFormat(grid);
           let parsed;
           if (fmt === 'C') parsed = parseFormatC(grid, body.cfg, fileDate).rows;
+          else if (fmt === 'D') parsed = parseFormatD(grid, detectYmFromGrid(grid, month), keywordMap).rows;
           else parsed = parseFormatAB(grid, month, body.cfg, keywordMap).rows;
           if (parsed && parsed.length) { allRows = allRows.concat(parsed); sheetReport.push({ name: nm, count: parsed.length }); }
           else sheetReport.push({ name: nm, count: 0 });
@@ -2953,7 +3184,7 @@ async function api(req, env, url) {
         results.push({ url: rawUrl, ok: false, error: `取り込めるデータが見つかりませんでした ${detail}${xerr}`, sheets: sheetReport, mode: fellBack ? '単一シート(全タブ取得に失敗)' : '全シート' });
         continue;
       }
-      const r = await applyImportRows(env, allRows, me.id, mode, 'スプレッドシートURL');
+      const r = await applyImportRows(env, allRows, me.id, mode, 'スプレッドシートURL', true);
       // 台帳に登場しない人を休暇にする処理は、複数ファイル(URL)を横断して判定する必要があるため、
       // ここ(手動取り込み・1URLごと)では行わず、夜間の自動再取り込み(cronDaichoReload)でのみ実行する。
       urlMeta[rawUrl] = { sheetTitle: sheetFileTitle || '', targetDate: fileDate || '' };
@@ -3321,6 +3552,7 @@ async function cronDaichoReload(env) {
             const fmt = detectFormat(grid);
             let parsed;
             if (fmt === 'C') parsed = parseFormatC(grid, null, fileDate).rows;
+            else if (fmt === 'D') parsed = parseFormatD(grid, detectYmFromGrid(grid, jstDate().slice(0, 7)), keywordMap).rows;
             else parsed = parseFormatAB(grid, jstDate().slice(0, 7), null, keywordMap).rows;
             if (parsed && parsed.length) { allRows = allRows.concat(parsed); sheetReport.push({ name: sh.name, count: parsed.length }); }
           } catch (e) {
@@ -3329,7 +3561,7 @@ async function cronDaichoReload(env) {
         }
         if (!allRows.length) { results.push({ url: rawUrl, ok: false, error: 'データなし' }); }
         else {
-          const r = await applyImportRows(env, allRows, editorId, 'replace-person-day', '台帳自動再取り込み');
+          const r = await applyImportRows(env, allRows, editorId, 'replace-person-day', '台帳自動再取り込み', true);
           allRowsCombined.push(...allRows); // 不在者判定用に集約(この時点ではまだ休暇化しない)
 
           // R2台帳を保管(同じfile_idの古いバージョンを削除して最新版だけ残す)
@@ -3415,6 +3647,39 @@ async function cronDaichoReload(env) {
 // (当日・翌日は台帳の実績取り込みを優先するため)なので、チーフ自身の「当日」のscheduleレコードは
 // 存在しないことが多い。その場合、上記の条件では対象者が0人になってしまうため、その日どこかの現場
 // (work)が1件でも稼働していれば、対象ロール全員(新人報告未提出者)に通知するフォールバックを設ける。
+// 研修による昇格予約(promotion_pending_date)が到来した人のランクを、実際に切り替える日次バッチ。
+// マナー研修は受講の翌日、チーム研修(2部)+ステージアップ研修(SU)完了は翌月1日から適用される。
+// 切り替え時は履歴を残し、その月の給与を月初から新ランクで再計算する。
+async function cronRankPromotion(env) {
+  const today = jstDate();
+  const lastRun = await getSetting(env, 'rank_promotion_last_run', '');
+  if (lastRun === today) return { promoted: 0 }; // 1日1回のみ
+  await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('rank_promotion_last_run',?)").bind(today).run();
+
+  const targets = (await env.DB.prepare(
+    "SELECT id, rank, promotion_pending_rank FROM users WHERE promotion_pending_date IS NOT NULL AND promotion_pending_date <= ? AND COALESCE(suspended,0)=0"
+  ).bind(today).all()).results;
+  const ts = jstTs();
+  let promoted = 0;
+  for (const u of targets) {
+    const newRank = u.promotion_pending_rank;
+    if (!newRank) {
+      await env.DB.prepare('UPDATE users SET promotion_pending_date=NULL, promotion_pending_rank=NULL WHERE id=?').bind(u.id).run();
+      continue;
+    }
+    const reason = newRank === 'D' ? 'manner_auto' : 'promotion_auto';
+    await env.DB.prepare('UPDATE users SET rank=?, promotion_pending_date=NULL, promotion_pending_rank=NULL WHERE id=?').bind(newRank, u.id).run();
+    await env.DB.prepare('INSERT INTO rank_history(user_id,before_rank,after_rank,reason,changed_by,ts) VALUES(?,?,?,?,?,?)')
+      .bind(u.id, u.rank, newRank, reason, null, ts).run();
+    // 昇格した月は、月初から新ランクで給与を計算し直す
+    try { await recalcPayForMonth(env, u.id, today.slice(0, 7), newRank); } catch (e) { console.error('recalcPay failed for user', u.id, e); }
+    await notify(env, [u.id], 'rank', `🎉 ランクが ${newRank} に上がりました。今月分の給与も新しいランクで再計算されています。`);
+    promoted++;
+  }
+  console.log('[cronRankPromotion] promoted', promoted);
+  return { promoted };
+}
+
 async function cronNotify(env, opt = {}) {
   console.log('[cronNotify] start', JSON.stringify(opt));
   const enabled = await getSetting(env, 'notify_enabled', '1');
@@ -3587,6 +3852,7 @@ export default {
     console.log(`[scheduled] start at ${startTs}`);
     try { await cronDaichoReload(env); } catch (e) { console.error('cronDaichoReload failed:', e); }
     try { await cronScheduleSources(env); } catch (e) { console.error('cronScheduleSources failed:', e); }
+    try { await cronRankPromotion(env); } catch (e) { console.error('cronRankPromotion failed:', e); }
     try { await cronNotify(env); } catch (e) { console.error('cronNotify failed:', e); }
     console.log(`[scheduled] end (started at ${startTs})`);
   }

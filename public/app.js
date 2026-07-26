@@ -109,7 +109,7 @@ let UPDATE_NOTICE_SHOWN = false; // 1セッション中に一度だけ表示す�
 // アップデートのお知らせに表示する項目。新機能を追加したら、ここに { v: 新しいバージョン番号, ... } で
 // 追記し、CURRENT_UPDATE_VERSION(この下)をインクリメントする。過去の項目はそのまま残しておいてよい
 // (各ユーザーは自分がまだ見ていないバージョン分の項目だけを見るため、勝手に重複表示されることはない)。
-const CURRENT_UPDATE_VERSION = 2;
+const CURRENT_UPDATE_VERSION = 3;
 const UPDATE_ITEMS = [
   { v:1, icon:'home', title:'ホーム画面を追加', desc:'ログイン後、今日・明日の現場や通知が一目で見られるようになりました。', show: () => true },
   { v:1, icon:'handRaise', title:'休み希望・稼働時間の提出', desc:'マイスケジュールから、休み希望や「この時間なら動ける」を手配担当者に伝えられます。', show: () => true },
@@ -120,6 +120,8 @@ const UPDATE_ITEMS = [
   { v:2, icon:'layoutGrid', title:'スケジュール一覧を追加', desc:'全メンバーの1週間分の予定を、チーフ予定表のような一覧(日付×人のマトリックス表)で確認できます。', show: () => LV[ME.role] >= 1 },
   { v:2, icon:'trendingUp', title:'メンバー分析を追加', desc:'拠点・課・班・ランクの構成を、全体・課ごとにリアルタイムで確認できます。手配担当ごとの内訳も見られます。', show: () => LV[ME.role] >= 1 },
   { v:2, icon:'home', title:'ホーム画面を自由にカスタマイズ', desc:'ホーム画面の「編集」から、ショートカットの並び替え・非表示・追加ができるようになりました(iPhoneのホーム画面のような感覚で使えます)。', show: () => true },
+  { v:3, icon:'star', title:'ランクの自動昇格・査定', desc:'マナー研修を受けると翌日にDランク、チーム研修(2部)とステージアップ研修(SU)の両方を受けると翌月1日にCランクへ自動で昇格します。C→B、B→Aは査定ボタンで昇格でき、昇格した月の給与は月初に遡って新しいランクで再計算されます。', show: () => true },
+  { v:3, icon:'scroll', title:'ランク変更履歴', desc:'メンバー編集画面から、いつ・誰が・どんな理由でランクを変更したかの履歴を確認できるようになりました。', show: () => LV[ME.role] >= 1 },
 ];
 // 機能公開設定の対象画面。バックエンドのFEATURE_KEYSと必ず一致させる。
 // 新しい画面を追加したら、ここと src/index.js の FEATURE_KEYS の両方に追記する。
@@ -3062,6 +3064,9 @@ function openMemberEdit(u, users, managers){
   if(!has('site_manage') && !has('account_manage')){ return; }
   const isAdmin = has('account_manage');
   const ranks = [...new Set(users.map(x=>x.rank).filter(Boolean))].sort();
+  const curRank = (String(u.rank||'').match(/[A-Ea-e]/)||[''])[0].toUpperCase();
+  // 査定で上げられる先(C→B、C→A、B→A のみ)
+  const assessTargets = curRank === 'C' ? ['B','A'] : curRank === 'B' ? ['A'] : [];
   modal(`<h3>${h(u.name)} の情報を編集</h3>
     <div class="form-grid" style="grid-template-columns:84px 1fr;gap:8px 10px;align-items:center">
       <label>氏名</label><input id="ue-name" value="${h(u.name)}">
@@ -3079,8 +3084,56 @@ function openMemberEdit(u, users, managers){
       ${isAdmin?`<label>役割</label><select id="ue-role">${Object.keys(LV).map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${ROLE_JP[r]}</option>`).join('')}</select>`:''}
     </div>
     <datalist id="ue-ranks">${ranks.map(r=>`<option value="${h(r)}"></option>`).join('')}</datalist>
-    <button class="btn gold" id="ue-save" style="width:100%;margin-top:14px">保存する</button>
+
+    <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
+      <div style="font-weight:700;font-size:13.5px;margin-bottom:8px">研修の受講状況</div>
+      <div class="row" style="gap:14px;flex-wrap:wrap">
+        <label style="display:flex;align-items:center;gap:5px"><input type="checkbox" id="ue-manner" ${u.manner_done?'checked':''}> マナー研修</label>
+        <label style="display:flex;align-items:center;gap:5px"><input type="checkbox" id="ue-team2" ${u.team2_done?'checked':''}> チーム研修(2部)</label>
+        <label style="display:flex;align-items:center;gap:5px"><input type="checkbox" id="ue-su" ${u.su_done?'checked':''}> ステージアップ研修(SU)</label>
+        <label style="display:flex;align-items:center;gap:5px"><input type="checkbox" id="ue-grad" ${u.graduate_flag?'checked':''}> 卒業予定</label>
+      </div>
+      ${u.promotion_pending_date?`<div class="muted" style="margin-top:8px;font-size:12px">${icon('clock',{size:'12px'})} ${h(u.promotion_pending_date)} に ${h(u.promotion_pending_rank||'')} ランクへ自動昇格予定</div>`:''}
+    </div>
+
+    ${assessTargets.length?`<div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+      <div style="font-weight:700;font-size:13.5px;margin-bottom:8px">査定によるランクアップ</div>
+      <div class="row" style="gap:8px;flex-wrap:wrap">
+        ${assessTargets.map(t=>`<button class="btn ghost sm ue-assess" data-rank="${t}">${icon('star',{size:'12px'})} ${t}ランクへ査定</button>`).join('')}
+      </div>
+      <div class="muted" style="margin-top:6px;font-size:11.5px">査定すると即座に反映され、今月分の給与も新しいランクで再計算されます。</div>
+    </div>`:''}
+
+    <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
+      <button class="btn ghost sm" id="ue-history">${icon('scroll',{size:'12px'})} ランク変更履歴を見る</button>
+      <div id="ue-history-body" style="margin-top:8px"></div>
+    </div>
+
+    <button class="btn gold" id="ue-save" style="width:100%;margin-top:16px">保存する</button>
     `);
+  // 査定ボタン
+  document.querySelectorAll('.ue-assess').forEach(b => b.onclick = async () => {
+    const target = b.dataset.rank;
+    if(!confirm(`${u.name}さんを ${target}ランクへ査定します。今月分の給与も再計算されます。よろしいですか?`)) return;
+    await withLoading(b, async () => {
+      try{
+        await api(`/users/${u.id}/assess`, { method:'POST', body:{ rank: target } });
+        USERS_CACHE = null; closeModal(); popup(`${target}ランクへ査定しました`); render();
+      }catch(e){ popup(e.message,'error'); }
+    });
+  });
+  // ランク変更履歴
+  $('#ue-history').onclick = async () => {
+    const box = $('#ue-history-body');
+    box.innerHTML = `<div class="muted"><span class="spinner" style="width:13px;height:13px;border-width:2px;margin-right:5px"></span>読み込み中…</div>`;
+    try{
+      const rows = await api(`/users/${u.id}/rank-history`);
+      box.innerHTML = rows.length
+        ? `<table class="list" style="font-size:12px"><tr><th>日時</th><th>変更</th><th>理由</th><th>操作者</th></tr>
+           ${rows.map(r=>`<tr><td class="nowrap">${h(r.ts)}</td><td class="nowrap">${h(r.before_rank||'—')} → ${h(r.after_rank||'')}</td><td>${h(r.reason_label)}</td><td>${h(r.changed_by_name||'自動')}</td></tr>`).join('')}</table>`
+        : '<div class="muted">変更履歴はまだありません</div>';
+    }catch(e){ box.innerHTML = `<div class="msg err">${h(e.message)}</div>`; }
+  };
   $('#ue-save').onclick = async () => {
     const name = $('#ue-name').value.trim();
     if(!name){ popup('氏名は必須です','error'); return; }
@@ -3092,6 +3145,10 @@ function openMemberEdit(u, users, managers){
       station: $('#ue-station').value.trim(),
       skills: $('#ue-skills').value.trim(),
       manager_id: $('#ue-mgr').value ? Number($('#ue-mgr').value) : null,
+      manner_done: $('#ue-manner').checked ? 1 : 0,
+      team2_done: $('#ue-team2').checked ? 1 : 0,
+      su_done: $('#ue-su').checked ? 1 : 0,
+      graduate_flag: $('#ue-grad').checked ? 1 : 0,
     };
     if(isAdmin){ const r=$('#ue-role'); if(r) body.role = r.value; }
     await withLoading($('#ue-save'), async () => {
@@ -3795,6 +3852,7 @@ async function pageImport(app){
           <option value="auto">自動判定</option>
           <option value="C">IN/OUT表(勤務表)</option>
           <option value="AB">個人スケジュール(月間表)</option>
+          <option value="D">手配管理表(横並び・複数人)</option>
         </select>
       </label>
       <label><input type="checkbox" id="imp-add"> 既存に追加(同日を置き換えない)</label>
