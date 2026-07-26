@@ -292,14 +292,22 @@ async function importScheduleSheet(env, source, url, editorId, fromDate) {
   const sheetReport = [];
   let anyLabelFound = false;
   for (const sh of got.sheets) {
-    const parsed = parseChiefScheduleSheet(sh.grid, fromDate, keywordMap);
+    let parsed;
+    if (isArrangeSheet(sh.grid)) {
+      // 手配管理表(日付列 + 複数人分の[現場/会場/時間]列が横に何組も並ぶ形式)
+      const ym = detectYmFromGrid(sh.grid, jstDate().slice(0, 7));
+      parsed = { rows: parseFormatD(sh.grid, ym, keywordMap, fromDate).rows, labelFound: true };
+    } else {
+      // 従来のチーフ予定表(日付列が1つ、日付はシリアル値)
+      parsed = parseChiefScheduleSheet(sh.grid, fromDate, keywordMap);
+    }
     if (parsed.labelFound) anyLabelFound = true;
     if (parsed.rows.length) { allRows = allRows.concat(parsed.rows); sheetReport.push({ name: sh.name, count: parsed.rows.length }); }
   }
   if (!allRows.length) {
     const msg = anyLabelFound
-      ? '対象日以降の予定が見つかりませんでした'
-      : 'このシートには「現場」の見出しが横に並ぶレイアウトが見つかりませんでした。予定表ソースは、現場名の見出し行が上部にあり、そこから右にメンバーごとの列が並ぶ「チーフ予定表」専用の形式のみに対応しています。台帳(IN/OUT表)など別のレイアウトのシートは登録しないでください。';
+      ? `対象日(${fromDate})以降の予定が見つかりませんでした。予定表ソースは実績を優先するため、取り込み日の2日後以降の日付のみを反映します。過去〜直近の予定を反映したい場合は「スプレッドシート取り込み」から手動で取り込んでください。`
+      : 'このシートには「現場」の見出しが横に並ぶレイアウトが見つかりませんでした。予定表ソースが対応しているのは、チーフ予定表(日付列が1つ)と手配管理表(日付列と人ごとの現場/会場/時間の組が横に繰り返される)の2形式です。台帳(IN/OUT表)など別のレイアウトのシートは登録しないでください。';
     return { applied: 0, skipped: 0, sheets: sheetReport, unchangedPeople: 0, changedPeople: 0, errors: [msg] };
   }
 
@@ -915,10 +923,8 @@ async function matchRookieAndBlacklist(env, rows) {
 function detectFormat(grid) {
   const head = grid.slice(0, 14).flat().join(' ');
   if (/退勤時間|打刻時間|集合時間|終了予定時間|就業回数/.test(head)) return 'C';
-  // 手配管理表形式: 「現場/会場/時間」の組が横に何人分も並び、日付列もブロックごとに繰り返される。
-  // 日付列が2つ以上あることを条件にして、従来の予定表(日付列が1つ)と取り違えないようにする。
-  const hr = findArrangeHeaderRow(grid);
-  if (hr >= 1 && findDayCols(grid, hr).length >= 2) return 'D';
+  // 手配管理表形式: 「現場/会場/時間」の組が横に何人分も並び、日付列もブロックごとに繰り返される
+  if (isArrangeSheet(grid)) return 'D';
   return 'AB';
 }
 
@@ -1448,18 +1454,32 @@ function findArrangeHeaderRow(grid) {
   return -1;
 }
 
-// 「1日」「15日」のような値が繰り返し現れる列(=日付列)を検出する。
+// 「1日」「15日」のような値、または日付シリアル値が繰り返し現れる列(=日付列)を検出する。
 // 手配管理表は横に長いため、日付列がブロックごとに何度も出てくる。
+// シート側で日付セルとして書式設定されている場合はシリアル値で届くため、両方を数える。
 function findDayCols(grid, headerRow) {
   const count = {};
   for (let r = headerRow + 1; r < grid.length; r++) {
     const line = grid[r] || [];
     for (let c = 0; c < line.length; c++) {
-      if (/^\d{1,2}日$/.test(String(line[c] == null ? '' : line[c]).trim())) count[c] = (count[c] || 0) + 1;
+      const v = line[c];
+      const s = String(v == null ? '' : v).trim();
+      const isDayText = /^\d{1,2}日$/.test(s);
+      const n = Number(s);
+      const isSerial = s !== '' && Number.isFinite(n) && n > 40000 && n < 60000;
+      if (isDayText || isSerial) count[c] = (count[c] || 0) + 1;
     }
   }
   // たまたま1行だけ「3日」等が入っている列を拾わないよう、5行以上あるものだけを日付列とみなす
   return Object.keys(count).map(Number).filter(c => count[c] >= 5).sort((a, b) => a - b);
+}
+
+// 手配管理表(フォーマットD)かどうかを判定する。
+// 「現場」が2つ以上ならぶヘッダー行があり、かつ日付列が2つ以上ある(=ブロックが横に繰り返される)ことを条件とする。
+// 日付列が1つしかない従来のチーフ予定表と取り違えないための条件。
+function isArrangeSheet(grid) {
+  const hr = findArrangeHeaderRow(grid);
+  return hr >= 1 && findDayCols(grid, hr).length >= 2;
 }
 
 // フォーマットD(手配管理表)を解析する。
@@ -1470,9 +1490,11 @@ function findDayCols(grid, headerRow) {
 //   5行目以降: (日付列)「1日」「月」…… 各人のその日の現場名・会場名
 // 日付列がブロックごとに繰り返されるため、各人の日付は「自分より左側で最も近い日付列」から取る。
 // 「時間」列は見込み時間(実績のIN/OUTではない)なので、給与計算に影響させないため取り込まない。
-function parseFormatD(grid, ym, keywordMap) {
+function parseFormatD(grid, ym, keywordMap, fromDate) {
   keywordMap = keywordMap || {};
   const cell = (r, c) => String(((grid[r] || [])[c]) == null ? '' : (grid[r] || [])[c]).trim();
+  // 日付は「1日」等のテキストと、日付書式のセル(シリアル値)の両方に対応する
+  const toDate = (v) => normSheetDate(v, ym) || excelSerialToDate(v);
 
   const headerRow = findArrangeHeaderRow(grid);
   if (headerRow < 1) return { rows: [] }; // 登録番号行(1つ上)が必要なので headerRow>=1
@@ -1509,8 +1531,9 @@ function parseFormatD(grid, ym, keywordMap) {
   const out = [];
   for (let r = headerRow + 1; r < grid.length; r++) {
     for (const b of blocks) {
-      const date = normSheetDate(cell(r, b.dayCol), ym);
-      if (!date) continue;
+      const date = toDate(cell(r, b.dayCol));
+      if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+      if (fromDate && date < fromDate) continue; // 予定表として取り込む場合、対象日より前は実績を優先するためスキップ
       const site = normalizeSiteName(cell(r, b.siteCol));
       if (!site) continue;
       const kw = keywordMap[site];
