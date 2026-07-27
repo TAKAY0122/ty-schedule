@@ -3106,22 +3106,27 @@ async function api(req, env, url) {
     const yesterday = (() => { const d = new Date(Date.now() + 9 * 3600e3); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); })();
     const isStale = (d) => !d || (d !== today && d !== yesterday);
 
+    // 個々のクエリでエラーが起きても、ダッシュボード全体を落とさず「取得できなかった」扱いにする。
+    // (例:マイグレーション未適用で新しい列が本番DBに存在しない場合など)
+    const safe = (p, fallback) => p.catch(e => { console.error('[dashboard] query failed:', e); return fallback; });
+    const emptyAll = { results: [] };
+
     const [
       daichoLastRun, rankLastRun, notifyLastRun, schedSourcesRes,
       selfReportsRes, nominationsRes, reportsRes,
       monthRowsRes, prevMonthRowsRes, usersRes, lockDays,
     ] = await Promise.all([
-      getSetting(env, 'daicho_reload_last_run', ''),
-      getSetting(env, 'rank_promotion_last_run', ''),
-      getSetting(env, 'notify_last_run', ''),
-      env.DB.prepare("SELECT label, last_run FROM sched_sources WHERE enabled=1 ORDER BY last_run ASC").all(),
-      env.DB.prepare("SELECT created_at FROM self_reports WHERE status='pending'").all(),
-      env.DB.prepare("SELECT created_at FROM site_nominations WHERE status='pending'").all(),
-      env.DB.prepare("SELECT id FROM reports WHERE status='pending'").all(),
-      env.DB.prepare("SELECT user_id, site, hours, overtime, pay FROM schedule WHERE type='work' AND site<>'' AND date LIKE ?").bind(month + '%').all(),
-      env.DB.prepare("SELECT hours, overtime, pay FROM schedule WHERE type='work' AND site<>'' AND date LIKE ?").bind(prevMonth + '%').all(),
-      env.DB.prepare("SELECT id, name, regno, rank, manager_id, suspended, manner_done, team2_done, su_done, promotion_pending_date, promotion_pending_rank FROM users").all(),
-      getLockDays(env),
+      safe(getSetting(env, 'daicho_reload_last_run', ''), ''),
+      safe(getSetting(env, 'rank_promotion_last_run', ''), ''),
+      safe(getSetting(env, 'notify_last_run', ''), ''),
+      safe(env.DB.prepare("SELECT label, last_run FROM sched_sources WHERE enabled=1 ORDER BY last_run ASC").all(), emptyAll),
+      safe(env.DB.prepare("SELECT created_at FROM self_reports WHERE status='pending'").all(), emptyAll),
+      safe(env.DB.prepare("SELECT created_at FROM site_nominations WHERE status='pending'").all(), emptyAll),
+      safe(env.DB.prepare("SELECT id FROM reports WHERE status='pending'").all(), emptyAll),
+      safe(env.DB.prepare("SELECT user_id, site, hours, overtime, pay FROM schedule WHERE type='work' AND site<>'' AND date LIKE ?").bind(month + '%').all(), emptyAll),
+      safe(env.DB.prepare("SELECT hours, overtime, pay FROM schedule WHERE type='work' AND site<>'' AND date LIKE ?").bind(prevMonth + '%').all(), emptyAll),
+      safe(env.DB.prepare("SELECT id, name, regno, rank, manager_id, suspended, manner_done, team2_done, su_done, promotion_pending_date, promotion_pending_rank FROM users").all(), emptyAll),
+      safe(getLockDays(env), 14),
     ]);
 
     // ① システム状態
@@ -3166,7 +3171,7 @@ async function api(req, env, url) {
       if (r.site) a.siteCounts[r.site] = (a.siteCounts[r.site] || 0) + 1;
     }
     // maxStreakの計算にはdate列も要るため、別途取得(user_id, dateのみ、軽量)
-    const dateRows = (await env.DB.prepare("SELECT user_id, date FROM schedule WHERE type='work' AND site<>'' AND date LIKE ?").bind(month + '%').all()).results;
+    const dateRows = (await safe(env.DB.prepare("SELECT user_id, date FROM schedule WHERE type='work' AND site<>'' AND date LIKE ?").bind(month + '%').all(), emptyAll)).results;
     const datesByUser = {};
     for (const r of dateRows) (datesByUser[r.user_id] ||= []).push(r.date);
     let overTotal = 0, streak = 0, few = 0, samesite = 0, overtimeCnt = 0;
@@ -3201,7 +3206,7 @@ async function api(req, env, url) {
     let suspendedButScheduled = 0;
     if (suspendedIds.length) {
       const ph = suspendedIds.map(() => '?').join(',');
-      const r = await env.DB.prepare(`SELECT COUNT(DISTINCT user_id) AS c FROM schedule WHERE type='work' AND date>=? AND user_id IN (${ph})`).bind(today, ...suspendedIds).first();
+      const r = await safe(env.DB.prepare(`SELECT COUNT(DISTINCT user_id) AS c FROM schedule WHERE type='work' AND date>=? AND user_id IN (${ph})`).bind(today, ...suspendedIds).first(), null);
       suspendedButScheduled = r ? r.c : 0;
     }
     const dataIssues = { noRank, noManager, suspendedButScheduled };
