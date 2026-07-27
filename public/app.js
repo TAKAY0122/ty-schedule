@@ -68,6 +68,7 @@ const ICONS = {
   construction:'<rect x="2" y="6" width="20" height="8" rx="1"/><path d="M17 14v7M7 14v7M17 3v3M7 3v3M4 14v-6M20 14v-6"/>',
   eye:'<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>',
   gauge:'<path d="M12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/><path d="M13.4 10.6L19 5"/><path d="M20.5 15a9 9 0 1 0-17 0"/>',
+  play:'<path d="M5 3l14 9-14 9V3z"/>',
   alertTriangle:'<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/>',
   inbox:'<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
 };
@@ -4048,6 +4049,8 @@ async function pageImport(app){
       <span class="muted" id="dr-msg"></span>
     </div>
     <div id="daicho-reload-status" class="muted" style="margin-top:16px"><span class="spinner" style="width:13px;height:13px;border-width:2px;margin-right:5px"></span>読み込み中…</div>
+    <div id="daicho-reload-urls" style="margin-top:12px"></div>
+    <div id="dr-run-msg" class="muted" style="margin-top:8px"></div>
   </div>` : ''}`;
 
   const renderNsk = (list) => {
@@ -4156,15 +4159,81 @@ async function pageImport(app){
       });
     };
     // 台帳自動再取り込みの最終実行結果と保存済みURLの件数を表示
-    api('/import-urls').then(d => {
-      const el = $('#daicho-reload-status'); if(!el) return;
-      api('/settings/daicho-reload-result').then(res => {
-        const savedCount = d.urls.length;
-        const r = res && res.result;
-        el.innerHTML = `<div style="margin-bottom:6px">現在の保存済みURL: <b>${savedCount}件</b>${savedCount?` <span class="muted">(次回0:00に自動再取り込み後、削除されます)</span>`:' <span class="muted">(再取り込み対象なし)</span>'}</div>`
-          + (r ? `<div class="muted" style="word-break:break-all">最終実行: ${h(r.ts)} / ${r.count}件のURLを再取り込み${r.clearedAbsent?` / ${icon('sun',{size:'12px'})} どのファイルにも登場しなかった人の現場を${r.clearedAbsent}件、休暇に変更`:''}<br>${r.results.map(x=>`${x.ok?icon('checkCircle',{size:'12px'}):icon('xCircle',{size:'12px'})} ${h((x.url||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>')}</div>` : '<div class="muted">まだ自動実行されていません</div>');
-      }).catch(()=>{ el.textContent='設定を取得できませんでした'; });
-    }).catch(()=>{});
+    const renderDrUrls = (urlList) => {
+      const box = $('#daicho-reload-urls'); if(!box) return;
+      if(!urlList.length){ box.innerHTML = ''; return; }
+      box.innerHTML = `
+        <div style="font-weight:700;font-size:13px;margin-bottom:6px">保存済みURLから、今すぐ手動で再取り込む</div>
+        <div class="muted" style="font-size:11.5px;margin-bottom:8px">深夜の自動実行を待たずに、選んだURLだけ今すぐ再取り込みできます。</div>
+        <div style="max-height:220px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:6px 10px;margin-bottom:8px">
+          ${urlList.map((u,i)=>`<label style="display:flex;align-items:flex-start;gap:7px;padding:5px 0;font-size:12.5px;border-bottom:1px solid var(--line)">
+            <input type="checkbox" class="dr-url-chk" value="${h(u.url)}" checked style="margin-top:3px">
+            <span style="min-width:0;word-break:break-all">${u.sheetTitle?`<b>${h(u.sheetTitle)}</b><br>`:''}<span class="muted">${h(u.url)}</span></span>
+          </label>`).join('')}
+        </div>
+        <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+          <button class="btn ghost xs" id="dr-sel-all">全選択</button>
+          <button class="btn ghost xs" id="dr-sel-none">全解除</button>
+        </div>
+        <label style="display:flex;align-items:flex-start;gap:7px;font-size:12.5px;margin-bottom:4px;padding:8px 10px;background:#faf9f6;border-radius:8px;border:1px solid var(--line)">
+          <input type="checkbox" id="dr-check-absent" checked style="margin-top:2px">
+          <span>選択したファイルのどれにも登場しない人を、休暇に変更する<br><span class="muted" id="dr-absent-warn"></span></span>
+        </label>
+        <button class="btn gold sm" id="dr-run-now" style="width:100%;margin-top:4px">${icon('play',{size:'13px'})} 選択したURLを今すぐ取り込む</button>
+      `;
+      const absentChk = $('#dr-check-absent');
+      const warnEl = $('#dr-absent-warn');
+      const updateAbsentWarn = () => {
+        const selectedCount = box.querySelectorAll('.dr-url-chk:checked').length;
+        const isAll = selectedCount === urlList.length && selectedCount > 0;
+        // 一部のURLしか選んでいない状態でチェックが入っていると、選ばなかった他のファイルに
+        // 載っている人まで誤って休暇にしてしまう恐れがあるため、その場合だけ警告する
+        warnEl.innerHTML = (!isAll && absentChk.checked)
+          ? `${icon('alertTriangle',{size:'11px'})} 一部のURLのみが対象です。選んでいない他のファイルに載っている人まで休暇にされる可能性があります`
+          : '全てのファイルを対象にした場合に、より正確に判定できます';
+        warnEl.style.color = (!isAll && absentChk.checked) ? 'var(--danger)' : '';
+      };
+      updateAbsentWarn();
+      absentChk.onchange = updateAbsentWarn;
+      box.querySelectorAll('.dr-url-chk').forEach(c => c.onchange = updateAbsentWarn);
+      $('#dr-sel-all').onclick = () => { box.querySelectorAll('.dr-url-chk').forEach(c=>c.checked=true); updateAbsentWarn(); };
+      $('#dr-sel-none').onclick = () => { box.querySelectorAll('.dr-url-chk').forEach(c=>c.checked=false); updateAbsentWarn(); };
+      const runBtn = $('#dr-run-now');
+      runBtn.onclick = async () => {
+        const selected = [...box.querySelectorAll('.dr-url-chk:checked')].map(c=>c.value);
+        if(!selected.length){ popup('取り込むURLを選んでください','error'); return; }
+        const msgEl = $('#dr-run-msg'); // renderDrUrlsの外側の固定要素。一覧の再描画後も結果が消えない
+        const isAll = selected.length === urlList.length;
+        const checkAbsent = absentChk.checked;
+        const absentNote = checkAbsent
+          ? (isAll ? '\n\n選択した全ファイルのどれにも登場しない人を休暇にします。' : '\n\n⚠ 一部のURLのみですが、休暇化を行います。選んでいない他のファイルに載っている人まで休暇にされる可能性があります。')
+          : '\n\n休暇化は行いません。';
+        if(!confirm(`選択した${selected.length}件を今すぐ再取り込みします。${absentNote}\n\nシートの内容によっては時間がかかる場合があります。よろしいですか？`)) return;
+        msgEl.textContent = '取り込み中…(内容によっては数十秒かかります)';
+        await withLoading(runBtn, async () => {
+          try{
+            const r = await api('/daicho-reload-run-now', { method:'POST', body:{ urls: selected, checkAbsent } });
+            msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${r.checkedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''}<br>`
+              + r.results.map(x=>`${x.ok?icon('checkCircle',{size:'12px'}):icon('xCircle',{size:'12px'})} ${h((x.url||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>');
+            popup(`取り込みが完了しました(${r.okCount}件成功)`);
+            loadStatus(true); // 最終実行結果のみ更新。URL一覧は再構築しない(選択・チェック状態を維持するため)
+          }catch(e){ msgEl.innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
+        });
+      };
+    };
+    const loadStatus = (skipUrlsRerender) => {
+      api('/import-urls').then(d => {
+        const el = $('#daicho-reload-status'); if(!el) return;
+        if(!skipUrlsRerender) renderDrUrls(d.urls);
+        api('/settings/daicho-reload-result').then(res => {
+          const savedCount = d.urls.length;
+          const r = res && res.result;
+          el.innerHTML = `<div style="margin-bottom:6px">現在の保存済みURL: <b>${savedCount}件</b>${savedCount?` <span class="muted">(次回0:00に自動再取り込み後、削除されます)</span>`:' <span class="muted">(再取り込み対象なし)</span>'}</div>`
+            + (r ? `<div class="muted" style="word-break:break-all">最終実行: ${h(r.ts)} / ${r.count}件のURLを再取り込み${r.clearedAbsent?` / ${icon('sun',{size:'12px'})} どのファイルにも登場しなかった人の現場を${r.clearedAbsent}件、休暇に変更`:''}<br>${r.results.map(x=>`${x.ok?icon('checkCircle',{size:'12px'}):icon('xCircle',{size:'12px'})} ${h((x.url||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>')}</div>` : '<div class="muted">まだ自動実行されていません</div>');
+        }).catch(()=>{ el.textContent='設定を取得できませんでした'; });
+      }).catch(()=>{});
+    };
+    loadStatus();
   }
 }
 

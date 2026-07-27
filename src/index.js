@@ -2144,6 +2144,30 @@ async function api(req, env, url) {
     await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_hour',?)").bind(String(hour)).run();
     return J({ ok: 1, hour });
   }
+  // 台帳の再取り込みを、深夜を待たずに今すぐ手動で実行する。
+  // body.urls を指定すればそのURLだけ対象にし、未指定なら保存済み全URLを対象にする。
+  // 一部URLのみの実行時は、他の未選択ファイルを巻き込まないよう不在者の休暇化は行わない。
+  if (method === 'POST' && path === '/daicho-reload-run-now') {
+    if (!has(me, 'import_data')) return ERR('権限がありません', 403);
+    const savedRaw = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
+    const savedUrls = savedRaw.map(x => typeof x === 'string' ? x : x.url);
+    if (!savedUrls.length) return ERR('保存済みの取り込みURLがありません。先に「スプレッドシート取り込み」でURLを保存してください。');
+    let targetUrls = Array.isArray(body.urls) && body.urls.length ? body.urls.filter(u => savedUrls.includes(u)) : savedUrls;
+    if (!targetUrls.length) return ERR('取り込み対象のURLが見つかりません(保存済みリストが更新された可能性があります。画面を再読み込みしてください)');
+    const isFullSet = targetUrls.length === savedUrls.length;
+    // 不在者の休暇化は、既定では「全件選択時のみ」だが、body.checkAbsentで明示的に指定があればそれに従う
+    // (一部URLのみでも、利用者が意図して選んだ場合は許可する。フロント側で警告を表示した上でのチェックを想定)
+    const checkAbsent = body.checkAbsent !== undefined ? !!body.checkAbsent : isFullSet;
+    try {
+      const r = await runDaichoReload(env, targetUrls, { updateRemaining: false, checkAbsent, sourceLabel: '台帳手動再取り込み' });
+      return J({
+        ok: 1, okCount: r.okCount, ngCount: r.ngCount, totalApplied: r.totalApplied,
+        results: r.results, clearedAbsent: r.absentResult.clearedPeople, checkedAbsent: checkAbsent,
+      });
+    } catch (e) {
+      return ERR('取り込み中にエラーが発生しました: ' + e.message);
+    }
+  }
 
   // ---- 給与確定ロック期間の設定 ----
   if (method === 'GET' && path === '/lock-settings') {
@@ -3679,33 +3703,31 @@ async function api(req, env, url) {
 // 実行後:
 //   - 取り込んだURLを保存済みリストから削除する
 //   - R2台帳は同じfile_idの古いバージョンを削除し、最新版だけ残す
-async function cronDaichoReload(env) {
-  const targetHour = parseInt(await getSetting(env, 'daicho_reload_hour', '0'), 10);
-  const now = new Date(Date.now() + 9 * 3600e3); // JST
-  // 「ちょうどtargetHourの回」だけを狙うと、Cron Triggerの実行頻度が低い場合に
-  // タイミングが合わず永遠に実行されないことがあるため、「targetHourを過ぎていれば」実行する。
-  // 日付をまたいだ場合(targetHour=0等)も、日付が変わった時点でlastRunと不一致になり正しく動く。
-  if (now.getUTCHours() < targetHour) return;
-  const today = jstDate();
-  const lastRun = await getSetting(env, 'daicho_reload_last_run', '');
-  if (lastRun === today) return; // 1日1回のみ
-  await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_run',?)").bind(today).run();
-
-  const urlsRaw = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
-  const urls = urlsRaw.map(x => typeof x === 'string' ? x : x.url);
-  if (!urls.length) return;
+// 台帳の再取り込み本体。cron(cronDaichoReload)と手動実行(POST /daicho-reload-run-now)の両方から呼ばれる共通ロジック。
+// opt.updateRemaining: true の場合、1件処理し終えるたびに import_urls 設定から取り除いて保存する
+//   (cron実行中の途中終了への耐性のため)。手動で一部URLだけ選んだ場合は、保存済みリストが
+//   壊れないよう false にする。
+// opt.checkAbsent: true の場合のみ、対象ファイルに登場しない人を休暇化する。一部のURLだけを
+//   対象にした手動実行では、他の未選択ファイルに載っている人まで誤って休暇にしてしまうため、
+//   「保存済み全URL」を対象にした場合のみ true にすること。
+// opt.sourceLabel: daicho_archive に残す取込元ラベル。
+async function runDaichoReload(env, urls, opt = {}) {
+  const sourceLabel = opt.sourceLabel || '台帳再取り込み';
+  if (!urls.length) return { okCount: 0, ngCount: 0, totalApplied: 0, results: [], absentResult: { clearedPeople: 0, clearedDays: 0 } };
 
   const adminUser = await env.DB.prepare("SELECT id, name FROM users WHERE role='admin' LIMIT 1").first();
   const editorId = adminUser ? adminUser.id : 0;
   const editorName = adminUser ? adminUser.name : '自動';
   const results = [];
-  const allRowsCombined = []; // 今夜取り込む全URL(全ファイル)を横断して集める。不在者判定はこれを使って最後にまとめて行う。
+  const allRowsCombined = []; // 対象URL(全ファイル)を横断して集める。不在者判定はこれを使って最後にまとめて行う。
   const keywordMap = await loadNonSiteKeywords(env);
 
   // 処理中に残っているURL一覧。1件処理し終えるたびに、ここから取り除いて都度保存する。
-  // (Cloudflare Workersの実行時間制限で処理が途中終了しても、既に処理済みのURLが
-  //  再度残ってしまう=「URLが消えない」不具合と、それに伴う「通知が来ない」不具合を防ぐため)
-  let remainingUrls = [...urls];
+  let remainingUrls = null;
+  if (opt.updateRemaining) {
+    const allSavedRaw = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
+    remainingUrls = allSavedRaw.map(x => typeof x === 'string' ? x : x.url);
+  }
 
   for (const rawUrl of urls) {
     const meta = parseSheetUrl(rawUrl);
@@ -3732,7 +3754,7 @@ async function cronDaichoReload(env) {
         }
         if (!allRows.length) { results.push({ url: rawUrl, ok: false, error: 'データなし' }); }
         else {
-          const r = await applyImportRows(env, allRows, editorId, 'replace-person-day', '台帳自動再取り込み', true);
+          const r = await applyImportRows(env, allRows, editorId, 'replace-person-day', sourceLabel, true);
           allRowsCombined.push(...allRows); // 不在者判定用に集約(この時点ではまだ休暇化しない)
 
           // R2台帳を保管(同じfile_idの古いバージョンを削除して最新版だけ残す)
@@ -3746,7 +3768,7 @@ async function cronDaichoReload(env) {
             const fname = safeTitle ? `${safeTitle}.xlsx` : `台帳_${ts.slice(0, 10)}_${meta.id.slice(0, 8)}.xlsx`;
             await env.DB.prepare(
               'INSERT INTO daicho_archive(ts,importer_id,importer_name,source_url,file_id,r2_key,file_name,size,applied,sheets) VALUES(?,?,?,?,?,?,?,?,?,?)'
-            ).bind(ts, editorId, editorName + '(自動)', rawUrl, meta.id, r2key, fname, got.raw.length, r.applied, sheetReport.length).run();
+            ).bind(ts, editorId, editorName + (opt.updateRemaining ? '(自動)' : '(手動)'), rawUrl, meta.id, r2key, fname, got.raw.length, r.applied, sheetReport.length).run();
 
             // 同じfile_idの古いバージョンを削除(最新版=今追加した1件だけ残す)
             const oldRecs = (await env.DB.prepare(
@@ -3763,50 +3785,67 @@ async function cronDaichoReload(env) {
         results.push({ url: rawUrl, ok: false, error: e.message });
       }
     }
-    // このURLの処理を終えたら、都度リストから取り除いて保存する(途中終了への耐性)
-    remainingUrls = remainingUrls.filter(u => u !== rawUrl);
-    try { await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('import_urls',?)").bind(JSON.stringify(remainingUrls)).run(); } catch (e) {}
+    // このURLの処理を終えたら、都度リストから取り除いて保存する(cronの途中終了への耐性)
+    if (opt.updateRemaining) {
+      remainingUrls = remainingUrls.filter(u => u !== rawUrl);
+      try { await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('import_urls',?)").bind(JSON.stringify(remainingUrls)).run(); } catch (e) {}
+    }
   }
 
-  // 取り込み結果を先に確定・通知しておく(この後の不在者判定・照合処理でタイムアウトしても、
-  // 取り込み自体の成否は必ず管理者に届くようにするため)
   const totalApplied = results.reduce((s, r) => s + (r.ok ? (r.applied || 0) : 0), 0);
   const okCount = results.filter(r => r.ok).length;
   const ngCount = results.length - okCount;
+
+  // 不在者の休暇化: 対象URL(全ファイル)を横断して判定する。
+  // (1ファイルごとに判定すると、Aファイルには載っているがBファイルには載っていない人まで
+  //  誤って休暇にしてしまうため、必ず全ファイル分を集めてから最後に1回だけ行う。
+  //  一部URLのみの手動実行では、他の未選択ファイルの人を巻き込む恐れがあるため実行しない)
+  let absentResult = { clearedPeople: 0, clearedDays: 0 };
+  if (allRowsCombined.length) {
+    if (opt.checkAbsent) {
+      try { absentResult = await clearAbsentFromDaicho(env, allRowsCombined, editorId); }
+      catch (e) { console.error('clearAbsentFromDaicho failed:', e); }
+    }
+    try { await matchRookieAndBlacklist(env, allRowsCombined); }
+    catch (e) { console.error('matchRookieAndBlacklist failed:', e); }
+  }
+
+  return { okCount, ngCount, totalApplied, results, absentResult, editorId };
+}
+
+async function cronDaichoReload(env) {
+  const targetHour = parseInt(await getSetting(env, 'daicho_reload_hour', '0'), 10);
+  const now = new Date(Date.now() + 9 * 3600e3); // JST
+  // 「ちょうどtargetHourの回」だけを狙うと、Cron Triggerの実行頻度が低い場合に
+  // タイミングが合わず永遠に実行されないことがあるため、「targetHourを過ぎていれば」実行する。
+  // 日付をまたいだ場合(targetHour=0等)も、日付が変わった時点でlastRunと不一致になり正しく動く。
+  if (now.getUTCHours() < targetHour) return;
+  const today = jstDate();
+  const lastRun = await getSetting(env, 'daicho_reload_last_run', '');
+  if (lastRun === today) return; // 1日1回のみ
+  await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_run',?)").bind(today).run();
+
+  const urlsRaw = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
+  const urls = urlsRaw.map(x => typeof x === 'string' ? x : x.url);
+  if (!urls.length) return;
+
+  const r = await runDaichoReload(env, urls, { updateRemaining: true, checkAbsent: true, sourceLabel: '台帳自動再取り込み' });
+
+  // 取り込み結果を先に確定・通知しておく(この後の不在者判定・照合処理でタイムアウトしても、
+  // 取り込み自体の成否は必ず管理者に届くようにするため)
   await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_result',?)").bind(
-    JSON.stringify({ ts: jstTs(), count: urls.length, results, clearedAbsent: 0 })
+    JSON.stringify({ ts: jstTs(), count: urls.length, results: r.results, clearedAbsent: r.absentResult.clearedPeople })
   ).run();
   try {
     const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
     if (admins.length) {
       await notify(env, admins.map(a => a.id), 'sched_import',
-        `🌙 台帳の深夜自動再取り込みが完了しました(${jstTs()})。${okCount}件成功(反映${totalApplied}件)${ngCount ? ` / ${ngCount}件失敗` : ''}`);
+        `🌙 台帳の深夜自動再取り込みが完了しました(${jstTs()})。${r.okCount}件成功(反映${r.totalApplied}件)${r.ngCount ? ` / ${r.ngCount}件失敗` : ''}`);
+      if (r.absentResult.clearedPeople) {
+        await notify(env, admins.map(a => a.id), 'sched_import', `🌙 台帳自動再取り込みに伴い、不在者の休暇化を${r.absentResult.clearedPeople}件行いました。`);
+      }
     }
   } catch (e) {}
-
-  // 不在者の休暇化: 今夜取り込んだ「全URL(全ファイル)」を横断して判定する。
-  // (1ファイルごとに判定すると、Aファイルには載っているがBファイルには載っていない人まで
-  //  誤って休暇にしてしまうため、必ず全ファイル分を集めてから最後に1回だけ行う)
-  let absentResult = { clearedPeople: 0, clearedDays: 0 };
-  if (allRowsCombined.length) {
-    try { absentResult = await clearAbsentFromDaicho(env, allRowsCombined, editorId); }
-    catch (e) { console.error('clearAbsentFromDaicho failed:', e); }
-    try { await matchRookieAndBlacklist(env, allRowsCombined); }
-    catch (e) { console.error('matchRookieAndBlacklist failed:', e); }
-  }
-
-  // 不在者の休暇化件数が確定したら、結果記録を更新する(通知は既に送信済みなので再送しない)
-  if (absentResult.clearedPeople) {
-    try {
-      await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_result',?)").bind(
-        JSON.stringify({ ts: jstTs(), count: urls.length, results, clearedAbsent: absentResult.clearedPeople })
-      ).run();
-      const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
-      if (admins.length) {
-        await notify(env, admins.map(a => a.id), 'sched_import', `🌙 台帳自動再取り込みに伴い、不在者の休暇化を${absentResult.clearedPeople}件行いました。`);
-      }
-    } catch (e) {}
-  }
 }
 
 // 新人報告リマインド通知。
