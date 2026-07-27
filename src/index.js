@@ -990,7 +990,19 @@ function gvizCsvUrl(id, gid) {
 // xlsx は zip なので、ZIP(ストア/Deflate)を自前展開し、sheetN.xml を簡易パースする。
 async function fetchXlsxSheets(id) {
   const url = `https://docs.google.com/spreadsheets/d/${id}/export?format=xlsx`;
-  const resp = await fetch(url, { redirect: 'follow', headers: GSHEET_FETCH_HEADERS });
+  // 応答が極端に遅い/ハングするシートがあっても、他の予定表ソースの処理をブロックしないよう
+  // 明示的にタイムアウトを設定する(cron実行1回あたりの上限を考慮し25秒)。
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 25000);
+  let resp;
+  try {
+    resp = await fetch(url, { redirect: 'follow', headers: GSHEET_FETCH_HEADERS, signal: ac.signal });
+  } catch (e) {
+    if (e.name === 'AbortError') throw new Error('シートの取得がタイムアウトしました(25秒)。ファイルが大きすぎるか、共有設定を確認してください。');
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
   if (!resp.ok) throw new Error(`xlsx取得失敗(HTTP ${resp.status})`);
   // ダウンロード時のファイル名はレスポンスヘッダーにも入っていることが多く、
   // docProps/core.xml の dc:title より確実に取れるので優先的にこちらを使う。
@@ -3940,7 +3952,13 @@ async function cronScheduleSources(env) {
       const d = new Date(Date.now() + 9 * 3600e3); d.setDate(d.getDate() + 2);
       const fromDate = d.toISOString().slice(0, 10); // 読み込み日の2日後
       const adminUser = await env.DB.prepare("SELECT id FROM users WHERE role='admin' LIMIT 1").first();
-      const r = await importScheduleSheet(env, 'sched_src_' + src.id, src.url, adminUser ? adminUser.id : 0, fromDate);
+      // fetch自体のタイムアウトに加え、パース等の処理も含めた全体に上限を設ける(二重の安全策)。
+      // 1ソースが極端に重くても、cron全体・他のソースの処理を巻き込んで止めないようにするため。
+      const timeoutMs = 28000;
+      const r = await Promise.race([
+        importScheduleSheet(env, 'sched_src_' + src.id, src.url, adminUser ? adminUser.id : 0, fromDate),
+        new Promise((_, rej) => setTimeout(() => rej(new Error(`処理がタイムアウトしました(${timeoutMs / 1000}秒)`)), timeoutMs)),
+      ]);
       await env.DB.prepare('UPDATE sched_sources SET last_run=?, last_result=? WHERE id=?').bind(
         jstTs(),
         JSON.stringify({ ts: jstTs(), applied: r.applied, skipped: r.skipped, unchangedPeople: r.unchangedPeople, changedPeople: r.changedPeople, error: (r.errors && r.errors[0]) || '' }),
