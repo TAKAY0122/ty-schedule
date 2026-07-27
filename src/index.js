@@ -3119,7 +3119,7 @@ async function api(req, env, url) {
       safe(getSetting(env, 'daicho_reload_last_run', ''), ''),
       safe(getSetting(env, 'rank_promotion_last_run', ''), ''),
       safe(getSetting(env, 'notify_last_run', ''), ''),
-      safe(env.DB.prepare("SELECT label, last_run FROM sched_sources WHERE enabled=1 ORDER BY last_run ASC").all(), emptyAll),
+      safe(env.DB.prepare("SELECT label, last_run, last_result, freq_type, interval_hours, hour FROM sched_sources WHERE enabled=1 ORDER BY last_run ASC").all(), emptyAll),
       safe(env.DB.prepare("SELECT created_at FROM self_reports WHERE status='pending'").all(), emptyAll),
       safe(env.DB.prepare("SELECT created_at FROM site_nominations WHERE status='pending'").all(), emptyAll),
       safe(env.DB.prepare("SELECT id FROM reports WHERE status='pending'").all(), emptyAll),
@@ -3131,9 +3131,18 @@ async function api(req, env, url) {
 
     // ① システム状態
     const oldestSource = (schedSourcesRes.results || [])[0]; // last_run ASCなので先頭が最も遅れている
+    let schedSourceDetail = '';
+    if (oldestSource) {
+      const freqLabel = oldestSource.freq_type === 'daily'
+        ? `毎日${String(oldestSource.hour ?? 6).padStart(2, '0')}:00`
+        : `${oldestSource.interval_hours || 1}時間ごと`;
+      let lastError = '';
+      try { const lr = JSON.parse(oldestSource.last_result || '{}'); if (lr.error) lastError = lr.error; } catch (e) {}
+      schedSourceDetail = `「${oldestSource.label}」(${freqLabel})` + (lastError ? ` — 前回エラー: ${lastError}` : '');
+    }
     const jobs = [
       { key: 'daicho', label: '台帳の再取り込み', lastRun: daichoLastRun, bad: isStale(daichoLastRun) },
-      { key: 'schedSources', label: '予定表ソース取込', lastRun: oldestSource ? (oldestSource.last_run || '').slice(0, 10) : '', bad: !schedSourcesRes.results.length ? false : isStale((oldestSource.last_run || '').slice(0, 10)) },
+      { key: 'schedSources', label: '予定表ソース取込', lastRun: oldestSource ? (oldestSource.last_run || '').slice(0, 10) : '', bad: !schedSourcesRes.results.length ? false : isStale((oldestSource.last_run || '').slice(0, 10)), detail: schedSourceDetail },
       { key: 'rankPromotion', label: 'ランク昇格の適用', lastRun: rankLastRun, bad: isStale(rankLastRun) },
       { key: 'notify', label: '新人報告リマインド', lastRun: notifyLastRun, bad: isStale(notifyLastRun) },
     ];

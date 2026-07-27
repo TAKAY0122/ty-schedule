@@ -1775,7 +1775,7 @@ async function pageDashboard(app){
           <span class="dash-nm">${jobLabel(j.key, j.label, jobShort[j.key]||j.label)}</span>
           <span class="dash-tm">${h(j.lastRun||'未実行')}</span>
           <span class="dash-rs">${j.bad?(j.lastRun?'実行が滞っています':'未実行です'):'正常'}</span>
-        </div>`).join('')}
+        </div>${j.bad && j.detail ? `<div class="dash-job-detail">${h(j.detail)}</div>` : ''}`).join('')}
       </div>
     </div>
 

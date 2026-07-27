@@ -761,6 +761,7 @@ td.sm-edit-cell{text-align:center;color:var(--gold);font-size:15px}
 .dash-status.bad .dash-status-badge{color:var(--danger)}
 .dash-status-sub{font-size:12px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dash-jobs{margin-top:13px;border-top:1px solid var(--line);padding-top:11px;display:flex;flex-direction:column;gap:8px}
+.dash-job-detail{margin:-4px 0 2px 18px;font-size:11px;color:var(--danger);word-break:break-word;line-height:1.5}
 .dash-job{display:grid;grid-template-columns:9px minmax(0,1fr) auto auto;align-items:center;gap:9px;font-size:12.5px}
 .dash-job .dash-dot{width:9px;height:9px;border-radius:50%;background:var(--ok)}
 .dash-job.bad .dash-dot{background:var(--danger)}
