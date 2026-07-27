@@ -214,15 +214,16 @@ async function recalcPayForMonth(env, userId, month, newRank){
   }
 }
 
-// 台帳(実績)取込データから、研修受講(マナー研修/チーム研修2部/ステージアップ研修SU)を現場名で自動検出し、
+// 台帳(実績)取込データから、研修受講(マナー研修/チーム研修/ステージアップ研修)を現場名で自動検出し、
 // 該当者のフラグを更新する。実際の昇格(E→D、D→C)は即時ではなく、翌日/翌月1日に日次バッチ(cronRankPromotion)
-// で行う(マナー研修は翌日から、2部+SU完了は翌月1日から、という仕様のため)。
+// で行う(マナー研修は翌日から、チーム研修+ステージアップ研修完了は翌月1日から、という仕様のため)。
 async function processTrainingPromotions(env, rows){
   const detectTraining = (site) => {
     const s = String(site || '');
     if (s.includes('マナー')) return 'manner';
-    if (s.includes('2部')) return 'team2';
-    if (s.includes('SU')) return 'su';
+    if (s.includes('チーム研修') || s.includes('2部')) return 'team2';
+    // ステージアップ研修は、正式名称のほか「SU」という半角略称で記載される場合もある
+    if (s.includes('ステージアップ研修') || s.includes('SU')) return 'su';
     return null;
   };
   const byRegno = {};
