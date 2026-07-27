@@ -795,10 +795,12 @@ async function openSiteRecord(uid, uname, date, site){
       const e = row.querySelector('.sr-break-end').value;
       if(s || e) breaks.push({start:s, end:e});
     });
-    try{
-      await api('/site-record', { method:'PUT', body:{ uid, date, site, placement: $('#sr-placement').value, breaks, memo: $('#sr-memo').value } });
-      closeModal(); popup('現場記録を保存しました');
-    }catch(e){ popup(e.message,'error'); }
+    await withLoading($('#sr-save'), async () => {
+      try{
+        await api('/site-record', { method:'PUT', body:{ uid, date, site, placement: $('#sr-placement').value, breaks, memo: $('#sr-memo').value } });
+        closeModal(); popup('現場記録を保存しました');
+      }catch(e){ popup(e.message,'error'); }
+    });
   };
 }
 
@@ -829,14 +831,16 @@ async function openSiteBulkEdit(date, site, venue, list){
     const keep=[], remove=[];
     document.querySelectorAll('.be-chk').forEach(c=>{ (c.checked?keep:remove).push(Number(c.dataset.uid)); });
     if(!siteNew){ popup('現場名は空にできません','error'); return; }
-    try{
-      const r = await api('/site-edit',{method:'PUT',body:{ date, site, keepUids:keep, removeUids:remove,
-        newSite:siteNew, venue:venueNew, tin, tout }});
-      closeModal();
-      popup(`${r.updated||0}名を更新${r.removed?` / ${r.removed}名を削除`:''}しました。`);
-      if(typeof pageSites==='function' && location.hash.startsWith('#/sites')){ const app=document.getElementById('app'); pageSites(app); }
-      else render();
-    }catch(e){ popup(e.message,'error'); }
+    await withLoading($('#be-save'), async () => {
+      try{
+        const r = await api('/site-edit',{method:'PUT',body:{ date, site, keepUids:keep, removeUids:remove,
+          newSite:siteNew, venue:venueNew, tin, tout }});
+        closeModal();
+        popup(`${r.updated||0}名を更新${r.removed?` / ${r.removed}名を削除`:''}しました。`);
+        if(typeof pageSites==='function' && location.hash.startsWith('#/sites')){ const app=document.getElementById('app'); pageSites(app); }
+        else render();
+      }catch(e){ popup(e.message,'error'); }
+    });
   };
 }
 
@@ -1172,7 +1176,9 @@ function renderShell(hash){
   if(pinBtn) pinBtn.onclick = async () => {
     if(ME.handler === 1){
       if(!confirm('手配者モードを終了しますか?')) return;
-      await api('/handler-mode',{method:'DELETE'}); ME.handler=0; render();
+      await withLoading(pinBtn, async () => {
+        await api('/handler-mode',{method:'DELETE'}); ME.handler=0; render();
+      });
     } else {
       openHandlerPin();
     }
@@ -1356,8 +1362,10 @@ async function openCalendarSync(){
       box.innerHTML = `<button class="close-x">${icon('x',{size:'12px'})}</button><h3>${icon('calendar')} カレンダー連携</h3>
         <button class="btn gold" id="cs-start" style="width:100%">連携を開始する</button>`;
       $('#cs-start').onclick = async () => {
-        try{ await api('/calendar-token', { method:'POST' }); render2(); }
-        catch(e){ popup(e.message,'error'); }
+        await withLoading($('#cs-start'), async () => {
+          try{ await api('/calendar-token', { method:'POST' }); render2(); }
+          catch(e){ popup(e.message,'error'); }
+        });
       };
       box.querySelector('.close-x').onclick = closeModal;
       return;
@@ -1384,8 +1392,10 @@ async function openCalendarSync(){
     };
     $('#cs-regen').onclick = async () => {
       if(!confirm('URLを再発行しますか？古いURLは使えなくなり、カレンダーアプリ側で登録し直す必要があります。')) return;
-      try{ await api('/calendar-token/regenerate', { method:'POST' }); popup('再発行しました'); render2(); }
-      catch(e){ popup(e.message,'error'); }
+      await withLoading($('#cs-regen'), async () => {
+        try{ await api('/calendar-token/regenerate', { method:'POST' }); popup('再発行しました'); render2(); }
+        catch(e){ popup(e.message,'error'); }
+      });
     };
   };
   render2();
@@ -1721,14 +1731,18 @@ async function pageCalendarGuide(app){
     const rg = $('#cg-regen');
     if(rg) rg.onclick = async () => {
       if(!confirm('URLを再発行しますか？古いURLは使えなくなり、カレンダーアプリ側で登録し直す必要があります。')) return;
-      try{ await api('/calendar-token/regenerate', { method:'POST' }); popup('再発行しました'); pageCalendarGuide(app); }
-      catch(e){ popup(e.message,'error'); }
+      await withLoading(rg, async () => {
+        try{ await api('/calendar-token/regenerate', { method:'POST' }); popup('再発行しました'); pageCalendarGuide(app); }
+        catch(e){ popup(e.message,'error'); }
+      });
     };
   };
   const st = $('#cg-start');
   if(st) st.onclick = async () => {
-    try{ await api('/calendar-token', { method:'POST' }); pageCalendarGuide(app); }
-    catch(e){ popup(e.message,'error'); }
+    await withLoading(st, async () => {
+      try{ await api('/calendar-token', { method:'POST' }); pageCalendarGuide(app); }
+      catch(e){ popup(e.message,'error'); }
+    });
   };
   wireCopy();
 }
@@ -2235,14 +2249,18 @@ async function pageSchedule(app, hash){
     if(td.dataset.venue) window.open('https://www.google.com/maps/search/?api=1&query='+encodeURIComponent(td.dataset.venue),'_blank');
   });
   if(canPlan){
+    let planSaving = false; // td要素はdisabled化できないため、独自フラグで連打を防ぐ
     app.querySelectorAll('.plan-cell, .m-plan').forEach(td => td.onclick = async (ev) => {
       ev.stopPropagation();
+      if(planSaving) return;
       const v = prompt(`${u.name} さん ${td.dataset.date} の育成計画`, td.dataset.plan || '');
       if(v==null) return;
+      planSaving = true;
       try{
         await api('/schedule-plan', { method:'PUT', body:{ uid, date: td.dataset.date, plan: v } });
         render();
       }catch(e){ alert(e.message); }
+      finally{ planSaving = false; }
     });
   }
   app.querySelectorAll('.site-cell').forEach(td => td.onclick = (ev) => { ev.stopPropagation(); openSiteModal(td.dataset.date, td.dataset.site); });
@@ -2405,11 +2423,13 @@ async function openScheduleSelfReport(date){
       const fromTime = $('#av-m-from').value;
       const toTime = $('#av-m-to').value;
       const departure = $('#av-m-departure').value.trim();
-      try{
-        await api('/availability', { method:'PUT', body:{ date, type, fromTime, toTime, departure } });
-        closeModal();
-        popup('休み希望・稼働時間を保存しました');
-      }catch(e){ popup(e.message,'error'); }
+      await withLoading($('#av-m-save'), async () => {
+        try{
+          await api('/availability', { method:'PUT', body:{ date, type, fromTime, toTime, departure } });
+          closeModal();
+          popup('休み希望・稼働時間を保存しました');
+        }catch(e){ popup(e.message,'error'); }
+      });
     };
   };
 
@@ -2490,23 +2510,27 @@ async function openMemberDayEdit(uid, u, date){
         note:s.querySelector('.md-note').value.trim()});
     });
     if(!slots.length){ popup('現場名を入力してください','error'); return; }
-    try{
-      let r = await api('/schedule',{method:'PUT',body:{uid,date,slots}});
-      if(r.ok===0 && r.conflicts){
-        if(!(await conflictModal(r.conflicts))) return;
-        r = await api('/schedule',{method:'PUT',body:{uid,date,slots,force:true}});
-      }
-      closeModal(); popup(withWarnNote('保存しました', r));
-      if(location.hash.startsWith('#/sites')){ pageSites(document.getElementById('app')); } else render();
-    }catch(e){ popup(e.message,'error'); }
+    await withLoading($('#md-save'), async () => {
+      try{
+        let r = await api('/schedule',{method:'PUT',body:{uid,date,slots}});
+        if(r.ok===0 && r.conflicts){
+          if(!(await conflictModal(r.conflicts))) return;
+          r = await api('/schedule',{method:'PUT',body:{uid,date,slots,force:true}});
+        }
+        closeModal(); popup(withWarnNote('保存しました', r));
+        if(location.hash.startsWith('#/sites')){ pageSites(document.getElementById('app')); } else render();
+      }catch(e){ popup(e.message,'error'); }
+    });
   };
   document.querySelectorAll('.md-status').forEach(b=>b.onclick = async () => {
     const t=b.dataset.t, lbl={ok:'1日OK',off:'休暇',paid:'有給',x:'×'}[t];
-    try{
-      await api('/schedule',{method:'PUT',body:{uid,date,slots:[{type:t}]}});
-      closeModal(); popup(lbl+'に設定しました');
-      if(location.hash.startsWith('#/sites')){ pageSites(document.getElementById('app')); } else render();
-    }catch(e){ popup(e.message,'error'); }
+    await withLoading(b, async () => {
+      try{
+        await api('/schedule',{method:'PUT',body:{uid,date,slots:[{type:t}]}});
+        closeModal(); popup(lbl+'に設定しました');
+        if(location.hash.startsWith('#/sites')){ pageSites(document.getElementById('app')); } else render();
+      }catch(e){ popup(e.message,'error'); }
+    });
   });
 }
 
@@ -3104,8 +3128,10 @@ async function pageMembers(app){
       const u = users.find(x=>x.id==b.dataset.skill);
       const v = prompt(`${u.name} のできることリスト(カンマ区切り)`, u.skills||'');
       if(v==null) return;
-      await api('/users/'+u.id, { method:'PATCH', body:{ skills:v } });
-      USERS_CACHE = null; render();
+      await withLoading(b, async () => {
+        await api('/users/'+u.id, { method:'PATCH', body:{ skills:v } });
+        USERS_CACHE = null; render();
+      });
     });
     area.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => {
       openMemberEdit(users.find(x=>x.id==b.dataset.edit), users, managers);
@@ -3138,10 +3164,12 @@ async function pageMembers(app){
           <button class="btn gold" id="bm-save" style="width:100%;margin-top:14px">変更する</button>`);
         $('#bm-save').onclick = async () => {
           const mgrId = $('#bm-mgr').value;
-          try{
-            const r = await api('/users/bulk-manager', { method:'POST', body:{ ids, manager_id: mgrId ? Number(mgrId) : null } });
-            USERS_CACHE = null; closeModal(); popup(`${r.count}件の手配担当を変更しました`); render();
-          }catch(e){ popup(e.message,'error'); }
+          await withLoading($('#bm-save'), async () => {
+            try{
+              const r = await api('/users/bulk-manager', { method:'POST', body:{ ids, manager_id: mgrId ? Number(mgrId) : null } });
+              USERS_CACHE = null; closeModal(); popup(`${r.count}件の手配担当を変更しました`); render();
+            }catch(e){ popup(e.message,'error'); }
+          });
         };
       };
     }
@@ -3575,20 +3603,22 @@ async function pageEdit(app, initialUid){
       const uid=Number($('#e-user').value);
       const slots=readDaySlots();
       MONTH_DATA[date]=slots;
-      try{
-        let r = await api('/schedule',{method:'PUT',body:{uid,date,slots}});
-        if(r.ok===0 && r.conflicts){
-          if(!(await conflictModal(r.conflicts))) return;
-          r = await api('/schedule',{method:'PUT',body:{uid,date,slots,force:true}});
-        }
-        // 保存後に再読込してマークを更新
-        const m=$('#e-month').value; const d=await api(`/schedule?uid=${uid}&month=${m}`);
-        MONTH_DATA[date]=(d.entries[date]||[]).map(e=>({...e}));
-        const [y,mo]=m.split('-').map(Number); buildMobile(m,y,mo,new Date(y,mo,0).getDate());
-        $('#me-date').value=date; renderDay(date);
-        const uname=(USERS_CACHE||[]).find(u=>u.id===uid);
-        popup(withWarnNote(`${uname?uname.name+' さんの ':''}${date} を保存しました。`, r));
-      }catch(e){ popup(e.message, 'error'); }
+      await withLoading($('#me-save'), async () => {
+        try{
+          let r = await api('/schedule',{method:'PUT',body:{uid,date,slots}});
+          if(r.ok===0 && r.conflicts){
+            if(!(await conflictModal(r.conflicts))) return;
+            r = await api('/schedule',{method:'PUT',body:{uid,date,slots,force:true}});
+          }
+          // 保存後に再読込してマークを更新
+          const m=$('#e-month').value; const d=await api(`/schedule?uid=${uid}&month=${m}`);
+          MONTH_DATA[date]=(d.entries[date]||[]).map(e=>({...e}));
+          const [y,mo]=m.split('-').map(Number); buildMobile(m,y,mo,new Date(y,mo,0).getDate());
+          $('#me-date').value=date; renderDay(date);
+          const uname=(USERS_CACHE||[]).find(u=>u.id===uid);
+          popup(withWarnNote(`${uname?uname.name+' さんの ':''}${date} を保存しました。`, r));
+        }catch(e){ popup(e.message, 'error'); }
+      });
     };
   }
 
@@ -3638,15 +3668,17 @@ async function pageEdit(app, initialUid){
     // entries形式(同日複数行)でまとめて送る
     const entries = [];
     for(const date of Object.keys(byDate)) for(const e of byDate[date]) entries.push(e);
-    try{
-      let r = await api('/schedule', { method:'PUT', body:{ uid, entries } });
-      if(r.ok===0 && r.conflicts){
-        if(!(await conflictModal(r.conflicts))){ return; }
-        r = await api('/schedule', { method:'PUT', body:{ uid, entries, force:true } });
-      }
-      load();
-      popup(withWarnNote('スケジュールを保存しました。', r));
-    }catch(e){ popup(e.message, 'error'); }
+    await withLoading($('#e-save'), async () => {
+      try{
+        let r = await api('/schedule', { method:'PUT', body:{ uid, entries } });
+        if(r.ok===0 && r.conflicts){
+          if(!(await conflictModal(r.conflicts))){ return; }
+          r = await api('/schedule', { method:'PUT', body:{ uid, entries, force:true } });
+        }
+        load();
+        popup(withWarnNote('スケジュールを保存しました。', r));
+      }catch(e){ popup(e.message, 'error'); }
+    });
   };
   load();
 }
@@ -3765,24 +3797,28 @@ function openReport(r){
   const cs = $('#c-save');
   if(cs) cs.onclick = async () => {
     const wasPending = pending;
-    try{
-      await api('/reports/'+r.id, { method:'PATCH', body:{
-        s_motivation:$('#c-mot').value, s_response:$('#c-res').value, s_total:$('#c-tot').value,
-        draft:$('#c-draft').value, plan:$('#c-plan').value, checker:$('#c-checker').value
-      }});
-      const draftMsg = $('#c-draft').value==='OK' ? 'ドラフト一覧に追加されました。' : '';
-      closeModal(); render();
-      popup((wasPending?'2次チェックを完了しました。':'2次チェックを更新しました。')+draftMsg);
-    }catch(e){ popup(e.message, 'error'); }
+    await withLoading(cs, async () => {
+      try{
+        await api('/reports/'+r.id, { method:'PATCH', body:{
+          s_motivation:$('#c-mot').value, s_response:$('#c-res').value, s_total:$('#c-tot').value,
+          draft:$('#c-draft').value, plan:$('#c-plan').value, checker:$('#c-checker').value
+        }});
+        const draftMsg = $('#c-draft').value==='OK' ? 'ドラフト一覧に追加されました。' : '';
+        closeModal(); render();
+        popup((wasPending?'2次チェックを完了しました。':'2次チェックを更新しました。')+draftMsg);
+      }catch(e){ popup(e.message, 'error'); }
+    });
   };
   const blAdd = $('#bl-add');
   if(blAdd) blAdd.onclick = async () => {
     if(!confirm(`「${r.candidate_name}」をブラックリストに登録しますか?(5段階評価・詳細はブラックリスト画面で追記できます)`)) return;
-    try{
-      await api('/blacklist', { method:'POST', body:{ name:r.candidate_name, reporter:r.reporter_name, reason:'' } });
-      closeModal();
-      popup('ブラックリストに登録しました。');
-    }catch(e){ popup(e.message, 'error'); }
+    await withLoading(blAdd, async () => {
+      try{
+        await api('/blacklist', { method:'POST', body:{ name:r.candidate_name, reporter:r.reporter_name, reason:'' } });
+        closeModal();
+        popup('ブラックリストに登録しました。');
+      }catch(e){ popup(e.message, 'error'); }
+    });
   };
 }
 
@@ -4024,8 +4060,10 @@ async function pageImport(app){
     </div>` : '<div class="muted">登録されている文言はありません</div>';
     el.querySelectorAll('.nsk-del').forEach(b=>b.onclick=async()=>{
       if(!confirm('この文言を削除しますか？')) return;
-      try{ await api(`/non-site-keywords/${b.dataset.id}`,{method:'DELETE'}); const d=await api('/non-site-keywords'); renderNsk(d); }
-      catch(e){ popup(e.message,'error'); }
+      await withLoading(b, async () => {
+        try{ await api(`/non-site-keywords/${b.dataset.id}`,{method:'DELETE'}); const d=await api('/non-site-keywords'); renderNsk(d); }
+        catch(e){ popup(e.message,'error'); }
+      });
     });
   };
   renderNsk(nskList);
@@ -4033,12 +4071,14 @@ async function pageImport(app){
     const keyword = $('#nsk-keyword').value.trim();
     const type = $('#nsk-type').value;
     if(!keyword){ popup('文言を入力してください','error'); return; }
-    try{
-      await api('/non-site-keywords',{method:'POST',body:{keyword,type}});
-      $('#nsk-keyword').value='';
-      const d = await api('/non-site-keywords'); renderNsk(d);
-      popup('追加しました');
-    }catch(e){ popup(e.message,'error'); }
+    await withLoading($('#nsk-add'), async () => {
+      try{
+        await api('/non-site-keywords',{method:'POST',body:{keyword,type}});
+        $('#nsk-keyword').value='';
+        const d = await api('/non-site-keywords'); renderNsk(d);
+        popup('追加しました');
+      }catch(e){ popup(e.message,'error'); }
+    });
   };
 
   const showSaved = async () => {
@@ -4058,12 +4098,16 @@ async function pageImport(app){
       const ca = $('#imp-clear-all');
       if(ca) ca.onclick = async () => {
         if(!confirm('保存済みURLをすべて削除しますか？\n\n※取り込み済みのスケジュール・給与データ・保管した台帳は残ります。次回また取り込む際にURLを貼り直す必要があるだけです。')) return;
-        try{ await api('/import-urls/delete',{method:'POST',body:{all:true}}); popup('保存済みURLをすべて削除しました'); showSaved(); }
-        catch(e){ popup(e.message,'error'); }
+        await withLoading(ca, async () => {
+          try{ await api('/import-urls/delete',{method:'POST',body:{all:true}}); popup('保存済みURLをすべて削除しました'); showSaved(); }
+          catch(e){ popup(e.message,'error'); }
+        });
       };
       el.querySelectorAll('.imp-del-one').forEach(b => b.onclick = async () => {
-        try{ await api('/import-urls/delete',{method:'POST',body:{url:b.dataset.url}}); popup('URLを削除しました'); showSaved(); }
-        catch(e){ popup(e.message,'error'); }
+        await withLoading(b, async () => {
+          try{ await api('/import-urls/delete',{method:'POST',body:{url:b.dataset.url}}); popup('URLを削除しました'); showSaved(); }
+          catch(e){ popup(e.message,'error'); }
+        });
       });
     }catch(_){}
   };
@@ -4104,10 +4148,12 @@ async function pageImport(app){
     if(dr) dr.onclick = async () => {
       const hour = Number($('#dr-hour').value);
       $('#dr-msg').textContent='保存中…';
-      try{ await api('/daicho-reload-settings',{method:'PUT',body:{hour}});
-        $('#dr-msg').textContent = `毎日 ${String(hour).padStart(2,'0')}:00 に自動再取り込み`;
-        popup('設定を保存しました'); }
-      catch(e){ $('#dr-msg').textContent=e.message; }
+      await withLoading(dr, async () => {
+        try{ await api('/daicho-reload-settings',{method:'PUT',body:{hour}});
+          $('#dr-msg').textContent = `毎日 ${String(hour).padStart(2,'0')}:00 に自動再取り込み`;
+          popup('設定を保存しました'); }
+        catch(e){ $('#dr-msg').textContent=e.message; }
+      });
     };
     // 台帳自動再取り込みの最終実行結果と保存済みURLの件数を表示
     api('/import-urls').then(d => {
@@ -4253,11 +4299,13 @@ function openSelfReportApprove(r){
       multi: $('#sra-multi').checked ? 1 : 0,
       note: $('#sra-note').value.trim(),
     };
-    try{
-      await api(`/self-reports/${r.id}/approve`, { method:'POST', body });
-      closeModal(); popup('承認しました');
-      if(location.hash === '#/self-reports') pageSelfReports(document.getElementById('app'));
-    }catch(e){ popup(e.message,'error'); }
+    await withLoading($('#sra-save'), async () => {
+      try{
+        await api(`/self-reports/${r.id}/approve`, { method:'POST', body });
+        closeModal(); popup('承認しました');
+        if(location.hash === '#/self-reports') pageSelfReports(document.getElementById('app'));
+      }catch(e){ popup(e.message,'error'); }
+    });
   };
 }
 
@@ -4453,11 +4501,13 @@ async function pageRolePermissions(app){
     const keys = [...document.querySelectorAll(`.rperm-cb-${role}:not(:disabled)`)].filter(c=>c.checked).map(c=>c.value);
     const msgEl = $('#rmsg-'+role);
     msgEl.textContent = '保存中…';
-    try{
-      const r = await api(`/role-perms/${role}`, { method:'PUT', body:{ perms: keys } });
-      msgEl.textContent = `${r.updated}人に反映しました`;
-      popup('一括で権限を反映しました');
-    }catch(e){ msgEl.textContent = e.message; }
+    await withLoading(btn, async () => {
+      try{
+        const r = await api(`/role-perms/${role}`, { method:'PUT', body:{ perms: keys } });
+        msgEl.textContent = `${r.updated}人に反映しました`;
+        popup('一括で権限を反映しました');
+      }catch(e){ msgEl.textContent = e.message; }
+    });
   });
 }
 
@@ -4527,8 +4577,10 @@ async function pagePermissions(app, hash){
     $('#perm-save').onclick = async () => {
       const keys = [...document.querySelectorAll('.perm-cb:not(:disabled)')].filter(c=>c.checked).map(c=>c.value);
       $('#perm-msg').textContent = '保存中…';
-      try{ await api(`/users/${uid}/perms`, {method:'PUT', body:{perms:keys}}); $('#perm-msg').textContent='保存しました'; popup('権限を保存しました'); }
-      catch(e){ $('#perm-msg').textContent = e.message; }
+      await withLoading($('#perm-save'), async () => {
+        try{ await api(`/users/${uid}/perms`, {method:'PUT', body:{perms:keys}}); $('#perm-msg').textContent='保存しました'; popup('権限を保存しました'); }
+        catch(e){ $('#perm-msg').textContent = e.message; }
+      });
     };
   }
 
@@ -4539,8 +4591,10 @@ async function pagePermissions(app, hash){
     $('#nr-save').onclick = async () => {
       const v = sel.value === '' ? null : Number(sel.value);
       $('#nr-msg').textContent = '保存中…';
-      try{ await api(`/users/${uid}`, {method:'PATCH', body:{notify_rookie:v}}); $('#nr-msg').textContent='保存しました'; popup('通知設定を保存しました'); }
-      catch(e){ $('#nr-msg').textContent = e.message; }
+      await withLoading($('#nr-save'), async () => {
+        try{ await api(`/users/${uid}`, {method:'PATCH', body:{notify_rookie:v}}); $('#nr-msg').textContent='保存しました'; popup('通知設定を保存しました'); }
+        catch(e){ $('#nr-msg').textContent = e.message; }
+      });
     };
   }
 }
@@ -4658,11 +4712,13 @@ async function pageSchedSources(app){
     const notifyAdmin = $('#ss-new-notify').checked;
     if(!label || !url){ $('#ss-add-msg').textContent='名前とURLを入力してください'; return; }
     $('#ss-add-msg').textContent='追加中…';
-    try{
-      await api('/sched-sources',{method:'POST',body:{label,url,freqType,intervalHours,hour,notifyAdmin}});
-      popup('予定表ソースを追加しました');
-      pageSchedSources(app);
-    }catch(e){ $('#ss-add-msg').textContent = e.message; }
+    await withLoading(addBtn, async () => {
+      try{
+        await api('/sched-sources',{method:'POST',body:{label,url,freqType,intervalHours,hour,notifyAdmin}});
+        popup('予定表ソースを追加しました');
+        pageSchedSources(app);
+      }catch(e){ $('#ss-add-msg').textContent = e.message; }
+    });
   };
 
   // 編集フォームの開閉
@@ -4693,11 +4749,13 @@ async function pageSchedSources(app){
     const msgEl = document.querySelector(`.ss-msg[data-id="${id}"]`);
     if(!label || !url){ if(msgEl) msgEl.textContent='名前とURLを入力してください'; return; }
     if(msgEl) msgEl.textContent='保存中…';
-    try{
-      await api(`/sched-sources/${id}`,{method:'PUT',body:{label,url,enabled,freqType,intervalHours,hour,notifyAdmin}});
-      popup('保存しました');
-      pageSchedSources(app);
-    }catch(e){ if(msgEl) msgEl.textContent = e.message; }
+    await withLoading(btn, async () => {
+      try{
+        await api(`/sched-sources/${id}`,{method:'PUT',body:{label,url,enabled,freqType,intervalHours,hour,notifyAdmin}});
+        popup('保存しました');
+        pageSchedSources(app);
+      }catch(e){ if(msgEl) msgEl.textContent = e.message; }
+    });
   });
 
   // 今すぐ取り込む
@@ -4718,8 +4776,10 @@ async function pageSchedSources(app){
   document.querySelectorAll('.ss-del').forEach(btn => btn.onclick = async () => {
     const id = btn.dataset.id;
     if(!confirm('この予定表ソースを削除しますか？\n\n※既に取り込まれたスケジュールデータは残ります。')) return;
-    try{ await api(`/sched-sources/${id}`,{method:'DELETE'}); popup('削除しました'); pageSchedSources(app); }
-    catch(e){ popup(e.message,'error'); }
+    await withLoading(btn, async () => {
+      try{ await api(`/sched-sources/${id}`,{method:'DELETE'}); popup('削除しました'); pageSchedSources(app); }
+      catch(e){ popup(e.message,'error'); }
+    });
   });
 }
 
@@ -4849,11 +4909,13 @@ async function pageDaicho(app){
     if(bulkDel) bulkDel.onclick = async () => {
       const ids = [...selected];
       if(!confirm(`選択した${ids.length}件の台帳を削除しますか？\n\n※元Excelファイルが完全に削除されます。すでに登録済みのスケジュール・給与データは残ります。`)) return;
-      try{
-        await api('/daicho/bulk-delete', { method:'POST', body:{ ids } });
-        popup(`${ids.length}件削除しました`);
-        pageDaicho(app);
-      }catch(e){ popup(e.message,'error'); }
+      await withLoading(bulkDel, async () => {
+        try{
+          await api('/daicho/bulk-delete', { method:'POST', body:{ ids } });
+          popup(`${ids.length}件削除しました`);
+          pageDaicho(app);
+        }catch(e){ popup(e.message,'error'); }
+      });
     };
     area.querySelectorAll('.dc-th').forEach(th => th.onclick = () => {
       const c = th.dataset.col;
@@ -4870,8 +4932,10 @@ async function pageDaicho(app){
     });
     area.querySelectorAll('.dc-del').forEach(b => b.onclick = async () => {
       if(!confirm(`${b.dataset.ts} に取り込んだ台帳を削除しますか？\n\n※元Excelファイルが完全に削除されます。すでに登録済みのスケジュール・給与データは残ります。`)) return;
-      try{ await api(`/daicho/${b.dataset.id}/delete`,{method:'POST'}); popup('削除しました'); pageDaicho(app); }
-      catch(e){ popup(e.message,'error'); }
+      await withLoading(b, async () => {
+        try{ await api(`/daicho/${b.dataset.id}/delete`,{method:'POST'}); popup('削除しました'); pageDaicho(app); }
+        catch(e){ popup(e.message,'error'); }
+      });
     });
   };
 
@@ -4931,12 +4995,14 @@ function openRegnoEdit(uid, name, current, onDone){
     if(!v){ popup('登録番号を入力してください','error'); return; }
     if(v === current){ closeModal(); return; }
     if(!confirm(`登録番号を「${current}」→「${v}」に変更します。よろしいですか？`)) return;
-    try{
-      await api(`/users/${uid}`, { method:'PATCH', body:{ regno:v } });
-      USERS_CACHE = null;
-      closeModal(); popup('登録番号を変更しました');
-      if(onDone) onDone();
-    }catch(e){ popup(e.message,'error'); }
+    await withLoading($('#rn-save'), async () => {
+      try{
+        await api(`/users/${uid}`, { method:'PATCH', body:{ regno:v } });
+        USERS_CACHE = null;
+        closeModal(); popup('登録番号を変更しました');
+        if(onDone) onDone();
+      }catch(e){ popup(e.message,'error'); }
+    });
   };
 }
 
@@ -5023,17 +5089,23 @@ async function pageAdmin(app){
     area.querySelectorAll('[data-suspend]').forEach(b => b.onclick = async () => {
       const id = b.dataset.suspend, cur = b.dataset.cur === '1';
       if(!confirm(cur ? 'このアカウントを復活します(ログイン可)。よろしいですか?' : 'このアカウントを停止します(ログイン不可。一覧・スケジュール入力・現場一覧には引き続き表示)。よろしいですか?')) return;
-      try{ await api(`/users/${id}`,{method:'PATCH',body:{suspended:cur?0:1}}); USERS_CACHE=null; popup(cur?'復活しました':'停止しました'); renderAccountList(); }
-      catch(e){ popup(e.message,'error'); }
+      await withLoading(b, async () => {
+        try{ await api(`/users/${id}`,{method:'PATCH',body:{suspended:cur?0:1}}); USERS_CACHE=null; popup(cur?'復活しました':'停止しました'); renderAccountList(); }
+        catch(e){ popup(e.message,'error'); }
+      });
     });
     area.querySelectorAll('[data-reset]').forEach(b => b.onclick = async () => {
       if(!confirm('パスワードを初期化しますか?(登録番号でログインできるようになります)')) return;
-      await api(`/users/${b.dataset.reset}/resetpw`, { method:'POST' }); alert('初期化しました');
+      await withLoading(b, async () => {
+        await api(`/users/${b.dataset.reset}/resetpw`, { method:'POST' }); alert('初期化しました');
+      });
     });
     area.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
       if(!confirm('このアカウントを削除しますか?スケジュールも削除されます。')) return;
-      try{ await api('/users/'+b.dataset.del, { method:'DELETE' }); USERS_CACHE=null; render(); }
-      catch(e){ alert(e.message); }
+      await withLoading(b, async () => {
+        try{ await api('/users/'+b.dataset.del, { method:'DELETE' }); USERS_CACHE=null; render(); }
+        catch(e){ alert(e.message); }
+      });
     });
 
     // 複数選択・一括停止/復活
@@ -5157,33 +5229,41 @@ async function pageAdmin(app){
     }catch(e){ $('#dv-out').innerHTML = `<div class="msg err">${h(e.message)}</div>`; }
   };
   $('#a-add').onclick = async () => {
-    try{
-      await api('/users',{method:'POST',body:{
-        regno:$('#a-regno').value, name:$('#a-name').value, rank:$('#a-rank').value,
-        ka:$('#a-ka').value, han:$('#a-han').value, station:$('#a-station').value,
-        role:$('#a-role').value, manager_id:$('#a-mgr').value ? Number($('#a-mgr').value) : null
-      }});
-      USERS_CACHE=null; render();
-    }catch(e){ $('#a-msg').innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
+    await withLoading($('#a-add'), async () => {
+      try{
+        await api('/users',{method:'POST',body:{
+          regno:$('#a-regno').value, name:$('#a-name').value, rank:$('#a-rank').value,
+          ka:$('#a-ka').value, han:$('#a-han').value, station:$('#a-station').value,
+          role:$('#a-role').value, manager_id:$('#a-mgr').value ? Number($('#a-mgr').value) : null
+        }});
+        USERS_CACHE=null; render();
+      }catch(e){ $('#a-msg').innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
+    });
   };
   const aom = $('#a-opt-manage');
   if(aom) aom.onclick = () => { const p=$('#a-opt-panel'); if(p) p.style.display = p.style.display==='none' ? '' : 'none'; };
   const akAdd = $('#a-ka-add');
   if(akAdd) akAdd.onclick = async () => {
     const v = $('#a-ka-new').value.trim(); if(!v) return;
-    try{ await api('/option-lists',{method:'POST',body:{category:'ka',value:v}}); pageAdmin(app); }
-    catch(e){ popup(e.message,'error'); }
+    await withLoading(akAdd, async () => {
+      try{ await api('/option-lists',{method:'POST',body:{category:'ka',value:v}}); pageAdmin(app); }
+      catch(e){ popup(e.message,'error'); }
+    });
   };
   const ahAdd = $('#a-han-add');
   if(ahAdd) ahAdd.onclick = async () => {
     const v = $('#a-han-new').value.trim(); if(!v) return;
-    try{ await api('/option-lists',{method:'POST',body:{category:'han',value:v}}); pageAdmin(app); }
-    catch(e){ popup(e.message,'error'); }
+    await withLoading(ahAdd, async () => {
+      try{ await api('/option-lists',{method:'POST',body:{category:'han',value:v}}); pageAdmin(app); }
+      catch(e){ popup(e.message,'error'); }
+    });
   };
   app.querySelectorAll('.opt-del').forEach(b => b.onclick = async () => {
     if(!confirm('この選択肢を削除しますか？(既に設定されているメンバーの値はそのまま残ります)')) return;
-    try{ await api(`/option-lists/${b.dataset.id}`,{method:'DELETE'}); pageAdmin(app); }
-    catch(e){ popup(e.message,'error'); }
+    await withLoading(b, async () => {
+      try{ await api(`/option-lists/${b.dataset.id}`,{method:'DELETE'}); pageAdmin(app); }
+      catch(e){ popup(e.message,'error'); }
+    });
   });
   const adS=$('#ad-search');
   if(adS){
@@ -5369,8 +5449,10 @@ async function pageAdminSettings(app){
     });
     el.querySelectorAll('.rto-del').forEach(b => b.onclick = async () => {
       if(!confirm('この選択肢を削除しますか？')) return;
-      try{ await api(`/report-type-options/${b.dataset.id}`,{method:'DELETE'}); const d=await api('/report-type-options'); renderRto(d); }
-      catch(e){ popup(e.message,'error'); }
+      await withLoading(b, async () => {
+        try{ await api(`/report-type-options/${b.dataset.id}`,{method:'DELETE'}); const d=await api('/report-type-options'); renderRto(d); }
+        catch(e){ popup(e.message,'error'); }
+      });
     });
   };
   renderRto(rtoList);
@@ -5378,26 +5460,32 @@ async function pageAdminSettings(app){
       const type = $('#rto-type').value;
       const label = $('#rto-label').value.trim();
       if(!label){ popup('表示ラベルを入力してください','error'); return; }
-      try{
-        await api('/report-type-options',{method:'POST',body:{type,label}});
-        $('#rto-label').value='';
-        const d = await api('/report-type-options'); renderRto(d);
-        popup('追加しました');
-      }catch(e){ popup(e.message,'error'); }
+      await withLoading(rb, async () => {
+        try{
+          await api('/report-type-options',{method:'POST',body:{type,label}});
+          $('#rto-label').value='';
+          const d = await api('/report-type-options'); renderRto(d);
+          popup('追加しました');
+        }catch(e){ popup(e.message,'error'); }
+      });
   }; }
 
   { const ws = $('#wage-save'); if(ws) ws.onclick = async () => {
       const rates = [...document.querySelectorAll('.wage-in')].map(i=>({effective_from:i.dataset.ef,rank:i.dataset.rank,kind:i.dataset.kind,amount:Number(i.value)})).filter(r=>Number.isFinite(r.amount)&&r.amount>=0);
       $('#wage-msg').textContent='保存中…';
-      try{ const r=await api('/wage-rates',{method:'PUT',body:{rates}}); $('#wage-msg').textContent=`${r.updated}件 保存しました`; popup('時給を更新しました'); }
-      catch(e){ $('#wage-msg').textContent=e.message; }
+      await withLoading(ws, async () => {
+        try{ const r=await api('/wage-rates',{method:'PUT',body:{rates}}); $('#wage-msg').textContent=`${r.updated}件 保存しました`; popup('時給を更新しました'); }
+        catch(e){ $('#wage-msg').textContent=e.message; }
+      });
   }; }
   { const ls = $('#lock-save'); if(ls) ls.onclick = async () => {
       const days = Number($('#lock-days').value);
       $('#lock-msg').textContent='保存中…';
-      try{ const r=await api('/lock-settings',{method:'PUT',body:{days}});
-        $('#lock-msg').textContent=`${r.lockBefore} 以前を確定`; popup('ロック期間を保存しました'); pageAdminSettings(app); }
-      catch(e){ $('#lock-msg').textContent=e.message; }
+      await withLoading(ls, async () => {
+        try{ const r=await api('/lock-settings',{method:'PUT',body:{days}});
+          $('#lock-msg').textContent=`${r.lockBefore} 以前を確定`; popup('ロック期間を保存しました'); pageAdminSettings(app); }
+        catch(e){ $('#lock-msg').textContent=e.message; }
+      });
   }; }
   { const rb = $('#recalc-btn'); if(rb) rb.onclick = async () => {
       if(!confirm('取り込み済みの全現場の給与・残業を、現在の時給・新ルールで再計算します。手動入力した給与も上書きされます。よろしいですか？')) return;
@@ -5416,53 +5504,65 @@ async function pageAdminSettings(app){
   app.querySelectorAll('.duty-del').forEach(b => b.onclick = async () => {
     const duty = b.dataset.duty;
     if(!confirm(`「${duty}」を対応表から削除します。以後この業務名は「対象外」として扱われます。よろしいですか？`)) return;
-    try{
-      await api('/duty-map/'+encodeURIComponent(duty), { method:'DELETE' });
-      popup('削除しました'); pageAdminSettings(app);
-    }catch(e){ popup(e.message,'error'); }
+    await withLoading(b, async () => {
+      try{
+        await api('/duty-map/'+encodeURIComponent(duty), { method:'DELETE' });
+        popup('削除しました'); pageAdminSettings(app);
+      }catch(e){ popup(e.message,'error'); }
+    });
   });
   { const da = $('#duty-add'); if(da) da.onclick = async () => {
       const duty = $('#duty-new-name').value.trim();
       const seg = $('#duty-new-seg').value;
       if(!duty){ $('#duty-msg').textContent = '業務名を入力してください'; return; }
-      try{
-        await api('/duty-map', { method:'POST', body:{ duty, seg } });
-        popup('追加しました'); pageAdminSettings(app);
-      }catch(e){ $('#duty-msg').textContent = e.message; }
+      await withLoading(da, async () => {
+        try{
+          await api('/duty-map', { method:'POST', body:{ duty, seg } });
+          popup('追加しました'); pageAdminSettings(app);
+        }catch(e){ $('#duty-msg').textContent = e.message; }
+      });
   }; }
   { const ns = $('#nt-save'); if(ns) ns.onclick = async () => {
       const enabled = $('#nt-enabled').checked;
       const hour = Number($('#nt-hour').value);
       const target = $('#nt-target').value;
       $('#nt-msg').textContent='保存中…';
-      try{ const r=await api('/notify-settings',{method:'PUT',body:{enabled,hour,target}});
-        $('#nt-msg').textContent = r.enabled ? `毎日 ${String(r.hour).padStart(2,'0')}:00 に送信` : '通知オフ';
-        popup('通知設定を保存しました'); }
-      catch(e){ $('#nt-msg').textContent=e.message; }
+      await withLoading(ns, async () => {
+        try{ const r=await api('/notify-settings',{method:'PUT',body:{enabled,hour,target}});
+          $('#nt-msg').textContent = r.enabled ? `毎日 ${String(r.hour).padStart(2,'0')}:00 に送信` : '通知オフ';
+          popup('通知設定を保存しました'); }
+        catch(e){ $('#nt-msg').textContent=e.message; }
+      });
   }; }
   { const nt = $('#nt-test'); if(nt) nt.onclick = async () => {
       $('#nt-msg').textContent='送信中…';
-      try{ await api('/notify-test',{method:'POST'}); $('#nt-msg').textContent='テスト通知を送りました(画面上部の通知アイコンを確認)'; popup('テスト通知を送信しました。画面上部の通知アイコンを確認してください'); }
-      catch(e){ $('#nt-msg').textContent=e.message; }
+      await withLoading(nt, async () => {
+        try{ await api('/notify-test',{method:'POST'}); $('#nt-msg').textContent='テスト通知を送りました(画面上部の通知アイコンを確認)'; popup('テスト通知を送信しました。画面上部の通知アイコンを確認してください'); }
+        catch(e){ $('#nt-msg').textContent=e.message; }
+      });
   }; }
   { const nr = $('#nt-run-now'); if(nr) nr.onclick = async () => {
       $('#nt-msg').textContent='送信中…';
-      try{
-        const r = await api('/notify-run-now',{method:'POST'});
-        if(r.sent > 0){ $('#nt-msg').textContent = `${r.sent}人に送信しました`; popup(`${r.sent}人に本日分のリマインドを送信しました`); }
-        else { $('#nt-msg').textContent = r.reason || '送信対象がいませんでした'; popup(r.reason || '送信対象がいませんでした(既に送信済み、または対象者0人)'); }
-      }
-      catch(e){ $('#nt-msg').textContent=e.message; popup(e.message,'error'); }
+      await withLoading(nr, async () => {
+        try{
+          const r = await api('/notify-run-now',{method:'POST'});
+          if(r.sent > 0){ $('#nt-msg').textContent = `${r.sent}人に送信しました`; popup(`${r.sent}人に本日分のリマインドを送信しました`); }
+          else { $('#nt-msg').textContent = r.reason || '送信対象がいませんでした'; popup(r.reason || '送信対象がいませんでした(既に送信済み、または対象者0人)'); }
+        }
+        catch(e){ $('#nt-msg').textContent=e.message; popup(e.message,'error'); }
+      });
   }; }
 
   $('#pin-save').onclick = async () => {
     const v = $('#pin-new').value.trim();
     if(!confirm(`手配者専用パスワードを「${v}」に変更しますか?`)) return;
-    try{
-      await api('/settings/handler-pin', { method:'POST', body:{ pin:v } });
-      $('#pin-now').textContent = v; $('#pin-new').value='';
-      $('#pin-msg').innerHTML = '<span class="msg ok">変更しました</span>';
-    }catch(e){ $('#pin-msg').innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
+    await withLoading($('#pin-save'), async () => {
+      try{
+        await api('/settings/handler-pin', { method:'POST', body:{ pin:v } });
+        $('#pin-now').textContent = v; $('#pin-new').value='';
+        $('#pin-msg').innerHTML = '<span class="msg ok">変更しました</span>';
+      }catch(e){ $('#pin-msg').innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
+    });
   };
   $('#imp-copy').onclick = () => {
     const el = $('#imp-tok'); el.select();
@@ -5473,11 +5573,13 @@ async function pageAdminSettings(app){
   };
   $('#imp-regen').onclick = async () => {
     if(!confirm('取り込みトークンを再発行しますか?古いトークンは使えなくなります(シート側のスクリプトの貼り替えが必要です)')) return;
-    try{
-      const d = await api('/settings/import-token', { method:'POST' });
-      $('#imp-tok').value = d.token;
-      $('#imp-msg').innerHTML = '<span class="msg ok">再発行しました</span>';
-    }catch(e){ $('#imp-msg').innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
+    await withLoading($('#imp-regen'), async () => {
+      try{
+        const d = await api('/settings/import-token', { method:'POST' });
+        $('#imp-tok').value = d.token;
+        $('#imp-msg').innerHTML = '<span class="msg ok">再発行しました</span>';
+      }catch(e){ $('#imp-msg').innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
+    });
   };
   app.querySelectorAll('.feat-select').forEach(sel => sel.onchange = async () => {
     const key = sel.dataset.key;
@@ -5499,16 +5601,18 @@ async function pageAdminSettings(app){
       ? '管理者以外の全員を今すぐ強制ログアウトし、メンテナンスを終了するまでログインできなくします。よろしいですか?'
       : 'メンテナンスを終了し、全員が通常通りログインできるようにします。よろしいですか?';
     if(!confirm(msg)) return;
-    try{
-      const r = await api('/settings/maintenance', { method:'POST', body:{ enabled:nextEnable } });
-      maintenance.enabled = r.enabled;
-      $('#maint-status').className = `tag ${r.enabled?'pending':'checked'}`;
-      $('#maint-status').innerHTML = r.enabled ? `${icon('construction',{size:'10px'})} メンテナンス中` : `${icon('circleFilled',{size:'10px'})} 通常稼働中`;
-      $('#maint-toggle').className = `btn ${r.enabled?'gold':'danger'}`;
-      $('#maint-toggle').textContent = r.enabled ? 'メンテナンスを終了する' : 'メンテナンスを開始する(全員強制ログアウト)';
-      $('#maint-msg').textContent = r.enabled ? `メンテナンスを開始しました(${r.loggedOut}人を強制ログアウトしました)` : 'メンテナンスを終了しました';
-      popup(r.enabled ? 'メンテナンスモードを有効にしました' : 'メンテナンスモードを解除しました');
-    }catch(e){ $('#maint-msg').textContent = e.message; }
+    await withLoading($('#maint-toggle'), async () => {
+      try{
+        const r = await api('/settings/maintenance', { method:'POST', body:{ enabled:nextEnable } });
+        maintenance.enabled = r.enabled;
+        $('#maint-status').className = `tag ${r.enabled?'pending':'checked'}`;
+        $('#maint-status').innerHTML = r.enabled ? `${icon('construction',{size:'10px'})} メンテナンス中` : `${icon('circleFilled',{size:'10px'})} 通常稼働中`;
+        $('#maint-toggle').className = `btn ${r.enabled?'gold':'danger'}`;
+        $('#maint-toggle').textContent = r.enabled ? 'メンテナンスを終了する' : 'メンテナンスを開始する(全員強制ログアウト)';
+        $('#maint-msg').textContent = r.enabled ? `メンテナンスを開始しました(${r.loggedOut}人を強制ログアウトしました)` : 'メンテナンスを終了しました';
+        popup(r.enabled ? 'メンテナンスモードを有効にしました' : 'メンテナンスモードを解除しました');
+      }catch(e){ $('#maint-msg').textContent = e.message; }
+    });
   };
 }
 
@@ -5524,10 +5628,12 @@ function pagePassword(app){
   <div class="row" style="margin-top:16px"><button class="btn gold" id="p-save">変更する</button><span id="p-msg"></span></div></div>`;
   $('#p-save').onclick = async () => {
     if($('#p-new').value !== $('#p-new2').value){ $('#p-msg').innerHTML='<span class="msg err">確認用パスワードが一致しません</span>'; return; }
-    try{
-      await api('/password',{method:'POST',body:{oldpw:$('#p-old').value,newpw:$('#p-new').value}});
-      $('#p-msg').innerHTML='<span class="msg ok">変更しました</span>';
-      $('#p-old').value=$('#p-new').value=$('#p-new2').value='';
-    }catch(e){ $('#p-msg').innerHTML=`<span class="msg err">${h(e.message)}</span>`; }
+    await withLoading($('#p-save'), async () => {
+      try{
+        await api('/password',{method:'POST',body:{oldpw:$('#p-old').value,newpw:$('#p-new').value}});
+        $('#p-msg').innerHTML='<span class="msg ok">変更しました</span>';
+        $('#p-old').value=$('#p-new').value=$('#p-new2').value='';
+      }catch(e){ $('#p-msg').innerHTML=`<span class="msg err">${h(e.message)}</span>`; }
+    });
   };
 }
