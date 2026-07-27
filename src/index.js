@@ -24,6 +24,7 @@ const PERMS = {
   wage_settings:   { label: '時給・給与確定ロック・通知の設定', baseLv: 3 },
   account_manage:  { label: 'アカウントの作成・権限変更・停止', baseLv: 3 },
   daicho_manage:   { label: '台帳保管の閲覧・ダウンロード・削除', baseLv: 3 },
+  dashboard_view:  { label: '管理者ダッシュボードの閲覧', baseLv: 3 },
 };
 function getPerms(u) { try { return JSON.parse(u.extra_perms || '[]'); } catch (e) { return []; } }
 // has: その機能を使えるか(基本権限を満たす、または個別に追加権限が付与されている)
@@ -273,7 +274,7 @@ async function processTrainingPromotions(env, rows){
 
 // 給与確定ロック: 現場日からロック日数(既定14)を過ぎたら確定(編集不可)
 // lockDays は呼び出し側で getLockDays(env) から取得して渡す
-function payLockDate(lockDays){ const d = new Date(Date.now() + 9 * 3600e3); d.setDate(d.getDate() - (lockDays || 14)); return d.toISOString().slice(0, 10); }
+function payLockDate(lockDays){ const d = new Date(Date.now() + 9 * 3600e3); d.setDate(d.getDate() - (lockDays ?? 14)); return d.toISOString().slice(0, 10); }
 function isLocked(date, me, lockDays){ if (me && me.role === 'admin') return false; return String(date) <= payLockDate(lockDays); }
 async function getLockDays(env){ const v = parseInt(await getSetting(env, 'lock_days', '14'), 10); return (isNaN(v) || v < 0) ? 14 : v; }
 
@@ -1825,6 +1826,7 @@ async function api(req, env, url) {
   // ここ(FEATURE_KEYS)とフロントエンドのFEATURE_LABELSの両方に追記する。
   // 未設定のキーは既定で'ready'として扱う(既存画面が突然消えないように)。
   const FEATURE_KEYS = [
+    'dashboard',
     'edit', 'self-reports', 'availability', 'availability-team', 'nominate', 'nominations',
     'sites', 'members', 'summary', 'member-stats', 'day-schedule',
     'report', 'reports', 'draft', 'blacklist', 'report-export',
@@ -3091,6 +3093,125 @@ async function api(req, env, url) {
     }));
 
     return J({ total: members.length, byBase, byKa, byHan, byRank, byHanKa, byRankKa, byManager, members: memberList });
+  }
+
+  // ---- 管理者ダッシュボード。複数の集計を1画面にまとめて返す ----
+  if (method === 'GET' && path === '/dashboard') {
+    if (!has(me, 'dashboard_view')) return ERR('ページが見つかりません', 404);
+    const canPay = has(me, 'site_pay'); // 給与見込みを見せるかどうか
+    const today = jstDate();
+    const month = today.slice(0, 7);
+    const prevMonth = (() => { const d = new Date(Date.now() + 9 * 3600e3); d.setUTCMonth(d.getUTCMonth() - 1, 1); return d.toISOString().slice(0, 7); })();
+    // cronが「今日」「昨日」のいずれでもない日付なら、実行が滞っているとみなす
+    const yesterday = (() => { const d = new Date(Date.now() + 9 * 3600e3); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); })();
+    const isStale = (d) => !d || (d !== today && d !== yesterday);
+
+    const [
+      daichoLastRun, rankLastRun, notifyLastRun, schedSourcesRes,
+      selfReportsRes, nominationsRes, reportsRes,
+      monthRowsRes, prevMonthRowsRes, usersRes, lockDays,
+    ] = await Promise.all([
+      getSetting(env, 'daicho_reload_last_run', ''),
+      getSetting(env, 'rank_promotion_last_run', ''),
+      getSetting(env, 'notify_last_run', ''),
+      env.DB.prepare("SELECT label, last_run FROM sched_sources WHERE enabled=1 ORDER BY last_run ASC").all(),
+      env.DB.prepare("SELECT created_at FROM self_reports WHERE status='pending'").all(),
+      env.DB.prepare("SELECT created_at FROM site_nominations WHERE status='pending'").all(),
+      env.DB.prepare("SELECT id FROM reports WHERE status='pending'").all(),
+      env.DB.prepare("SELECT user_id, site, hours, overtime, pay FROM schedule WHERE type='work' AND site<>'' AND date LIKE ?").bind(month + '%').all(),
+      env.DB.prepare("SELECT hours, overtime, pay FROM schedule WHERE type='work' AND site<>'' AND date LIKE ?").bind(prevMonth + '%').all(),
+      env.DB.prepare("SELECT id, name, regno, rank, manager_id, suspended, manner_done, team2_done, su_done, promotion_pending_date, promotion_pending_rank FROM users").all(),
+      getLockDays(env),
+    ]);
+
+    // ① システム状態
+    const oldestSource = (schedSourcesRes.results || [])[0]; // last_run ASCなので先頭が最も遅れている
+    const jobs = [
+      { key: 'daicho', label: '台帳の再取り込み', lastRun: daichoLastRun, bad: isStale(daichoLastRun) },
+      { key: 'schedSources', label: '予定表ソース取込', lastRun: oldestSource ? (oldestSource.last_run || '').slice(0, 10) : '', bad: !schedSourcesRes.results.length ? false : isStale((oldestSource.last_run || '').slice(0, 10)) },
+      { key: 'rankPromotion', label: 'ランク昇格の適用', lastRun: rankLastRun, bad: isStale(rankLastRun) },
+      { key: 'notify', label: '新人報告リマインド', lastRun: notifyLastRun, bad: isStale(notifyLastRun) },
+    ];
+    const systemStatus = { jobs, hasIssue: jobs.some(j => j.bad) };
+
+    // ② 対応が必要(滞留日数も一緒に返す)
+    const daysSince = (ts) => { if (!ts) return 0; const d = Math.floor((Date.now() - Date.parse(ts.replace(' ', 'T') + '+09:00')) / 86400000); return Math.max(0, d); };
+    const maxDays = (rows) => rows.reduce((m, r) => Math.max(m, daysSince(r.created_at)), 0);
+    const todo = {
+      selfReports: { count: selfReportsRes.results.length, maxDays: maxDays(selfReportsRes.results) },
+      nominations: { count: nominationsRes.results.length, maxDays: maxDays(nominationsRes.results) },
+      reportChecks: { count: reportsRes.results.length },
+    };
+
+    // ③ 今月の状況 + 前月比
+    const sumRows = (rows) => {
+      const sites = new Set(); let hours = 0, overtime = 0, pay = 0;
+      for (const r of rows) { if (r.site) sites.add(r.site); hours += r.hours || 0; overtime += r.overtime || 0; pay += r.pay || 0; }
+      return { sites: sites.size, headcount: rows.length, hours: Math.round(hours), pay: Math.round(pay) };
+    };
+    const cur = sumRows(monthRowsRes.results);
+    const prev = sumRows(prevMonthRowsRes.results);
+    const monthly = {
+      month, sites: cur.sites, headcount: cur.headcount, hours: cur.hours,
+      pay: canPay ? cur.pay : null,
+      diffSites: cur.sites - prev.sites, diffHeadcount: cur.headcount - prev.headcount, diffHours: cur.hours - prev.hours,
+      diffPay: canPay ? cur.pay - prev.pay : null,
+    };
+
+    // ④ 気になる人(稼働サマリーと同じ判定基準)
+    const byUser = {};
+    for (const r of monthRowsRes.results) {
+      const a = byUser[r.user_id] ||= { dates: new Set(), hours: 0, overtime: 0, siteCounts: {} };
+      a.hours += r.hours || 0; a.overtime += r.overtime || 0;
+      if (r.site) a.siteCounts[r.site] = (a.siteCounts[r.site] || 0) + 1;
+    }
+    // maxStreakの計算にはdate列も要るため、別途取得(user_id, dateのみ、軽量)
+    const dateRows = (await env.DB.prepare("SELECT user_id, date FROM schedule WHERE type='work' AND site<>'' AND date LIKE ?").bind(month + '%').all()).results;
+    const datesByUser = {};
+    for (const r of dateRows) (datesByUser[r.user_id] ||= []).push(r.date);
+    let overTotal = 0, streak = 0, few = 0, samesite = 0, overtimeCnt = 0;
+    for (const [uid, a] of Object.entries(byUser)) {
+      const workDays = new Set(dateRows.filter(r => String(r.user_id) === uid).map(r => r.date)).size;
+      const ms = longestStreak(datesByUser[uid] || []);
+      let topCnt = 0; for (const c of Object.values(a.siteCounts)) if (c > topCnt) topCnt = c;
+      if (canPay && a.hours >= 100) overTotal++;
+      if (ms >= 6) streak++;
+      if (workDays > 0 && workDays <= 2) few++;
+      if (workDays >= 3 && topCnt / workDays >= 0.7) samesite++;
+      if (canPay && a.overtime >= 50) overtimeCnt++;
+    }
+    const attention = { overTotal, streak, few, samesite, overtime: overtimeCnt };
+
+    // ⑤ 昇格予定(今月・来月)、研修待ち人数
+    const nextMonthEnd = (() => { const d = new Date(Date.now() + 9 * 3600e3); d.setUTCMonth(d.getUTCMonth() + 2, 0); return d.toISOString().slice(0, 10); })();
+    const users = usersRes.results;
+    const upcoming = users
+      .filter(u => u.promotion_pending_date && u.promotion_pending_date <= nextMonthEnd)
+      .sort((a, b) => a.promotion_pending_date.localeCompare(b.promotion_pending_date))
+      .slice(0, 10)
+      .map(u => ({ name: u.name, from: rankLetter(u.rank) || '?', to: u.promotion_pending_rank, date: u.promotion_pending_date }));
+    const waitingTeam2Only = users.filter(u => rankLetter(u.rank) === 'D' && u.team2_done && !u.su_done).length;
+    const waitingSuOnly = users.filter(u => rankLetter(u.rank) === 'D' && u.su_done && !u.team2_done).length;
+    const promotions = { upcoming, waitingTeam2Only, waitingSuOnly };
+
+    // ⑥ データの不備
+    const noRank = users.filter(u => !u.suspended && !String(u.rank || '').trim()).length;
+    const noManager = users.filter(u => !u.suspended && !u.manager_id).length; // チーフ手配として意図的に空の場合も含む参考値
+    const suspendedIds = users.filter(u => u.suspended).map(u => u.id);
+    let suspendedButScheduled = 0;
+    if (suspendedIds.length) {
+      const ph = suspendedIds.map(() => '?').join(',');
+      const r = await env.DB.prepare(`SELECT COUNT(DISTINCT user_id) AS c FROM schedule WHERE type='work' AND date>=? AND user_id IN (${ph})`).bind(today, ...suspendedIds).first();
+      suspendedButScheduled = r ? r.c : 0;
+    }
+    const dataIssues = { noRank, noManager, suspendedButScheduled };
+
+    // ⑦ 給与の確定状況
+    const lockedUntil = payLockDate(lockDays);
+    const unlockedDays = Math.max(0, Math.floor((Date.parse(today) - Date.parse(lockedUntil)) / 86400000));
+    const payLock = { lockedUntil, unlockedDays };
+
+    return J({ systemStatus, todo, monthly, attention, promotions, dataIssues, payLock, canPay });
   }
 
   // ---- 稼働サマリー(チーフ以上)。月間の出勤日数・現場数・最長連勤・手配偏りを集計 ----

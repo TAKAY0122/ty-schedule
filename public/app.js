@@ -67,6 +67,9 @@ const ICONS = {
   bell:'<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
   construction:'<rect x="2" y="6" width="20" height="8" rx="1"/><path d="M17 14v7M7 14v7M17 3v3M7 3v3M4 14v-6M20 14v-6"/>',
   eye:'<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>',
+  gauge:'<path d="M12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/><path d="M13.4 10.6L19 5"/><path d="M20.5 15a9 9 0 1 0-17 0"/>',
+  alertTriangle:'<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/>',
+  inbox:'<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
 };
 // icon('home')のように呼び、絵文字の代わりに使える線画SVGを返す。sizeとcolorは省略可(currentColorを継承)
 function icon(name, opt={}){
@@ -90,7 +93,7 @@ const ROLE_JP = { admin:'チーフ(管理者)', handler:'チーフ(手配者)', 
 function roleLabel(u){ if(u && u.suspended) return (u.role==='member'?'メンツ':'チーフ')+'(アカウント停止)'; return ROLE_JP[u.role]||u.role; }
 const LV = { member:0, chief:1, handler:2, admin:3 };
 // 個別追加権限の基準レベル(バックエンドのPERMSと対応)
-const PERM_BASE_LV = { report_check:1, blacklist_manage:1, summary_view:1, day_schedule_view:1, member_stats_view:1, sites_view:1, members_view:1, site_pay:2, site_manage:2, import_data:2, handler_tools:2, wage_settings:3, account_manage:3, daicho_manage:3 };
+const PERM_BASE_LV = { report_check:1, blacklist_manage:1, summary_view:1, day_schedule_view:1, member_stats_view:1, sites_view:1, members_view:1, site_pay:2, site_manage:2, import_data:2, handler_tools:2, wage_settings:3, account_manage:3, daicho_manage:3, dashboard_view:3 };
 // has(key): MEがその機能を使えるか(基本権限を満たす、または個別に追加権限がある)
 function has(key){
   if(!ME) return false;
@@ -126,6 +129,7 @@ const UPDATE_ITEMS = [
 // 機能公開設定の対象画面。バックエンドのFEATURE_KEYSと必ず一致させる。
 // 新しい画面を追加したら、ここと src/index.js の FEATURE_KEYS の両方に追記する。
 const FEATURE_LABELS = {
+  'dashboard': { icon:'gauge', label:'ダッシュボード' },
   'edit': { icon:'edit', label:'スケジュール入力' },
   'self-reports': { icon:'mail', label:'現場変更報告の承認' },
   'availability': { icon:'handRaise', label:'休み希望・稼働時間の提出' },
@@ -960,6 +964,7 @@ async function render(){
 
   try{
     if(hash === '#/home') await pageHome(app);
+    else if(hash === '#/dashboard') await pageDashboard(app);
     else if(hash === '#/availability') await pageAvailability(app);
     else if(hash === '#/availability-team') await pageAvailabilityTeam(app);
     else if(hash === '#/nominate') await pageNominate(app);
@@ -1092,6 +1097,7 @@ function renderShell(hash){
   const canMemberStatsView = has('member_stats_view');
   const canSitesView = has('sites_view');
   const canMembersView = has('members_view');
+  const canDashboardView = has('dashboard_view');
   const showMemberGroup = isChief || canSummaryView || canDayScheduleView || canMemberStatsView || canMembersView;
 
   // ナビゲーション構造。children を持つ項目はグループ(タップでサブメニューに切り替わる)、
@@ -1099,6 +1105,7 @@ function renderShell(hash){
   // (グループ自体も、中身が1つも無ければ表示されない)。
   const nav = [
     { path:'#/home', icon:'home', label:'ホーム', show:true },
+    { path:'#/dashboard', icon:'gauge', label:'ダッシュボード', show:canDashboardView },
     { icon:'calendar', label:'スケジュール', show:true, children:[
       { path:'#/schedule', icon:'calendar', label:'マイスケジュール' },
       ...(canEdit ? [{ path:'#/edit', icon:'edit', label:'スケジュール入力' }] : []),
@@ -1543,11 +1550,13 @@ async function pageNominate(app){
     if(siteIdx===''){ popup('現場を選んでください','error'); return; }
     if(!targetId){ popup('希望する人を選んでください','error'); return; }
     const s = mySites[Number(siteIdx)];
-    try{
-      await api('/site-nominations', { method:'POST', body:{ date:s.date, site:s.site, venue:s.venue, targetId:Number(targetId) } });
-      popup('希望を送りました。手配担当者に通知が届きます');
-      $('#nm-site').value=''; $('#nm-target').value='';
-    }catch(e){ popup(e.message,'error'); }
+    await withLoading(sv, async () => {
+      try{
+        await api('/site-nominations', { method:'POST', body:{ date:s.date, site:s.site, venue:s.venue, targetId:Number(targetId) } });
+        popup('希望を送りました。手配担当者に通知が届きます');
+        $('#nm-site').value=''; $('#nm-target').value='';
+      }catch(e){ popup(e.message,'error'); }
+    });
   };
 }
 
@@ -1724,6 +1733,117 @@ async function pageCalendarGuide(app){
   wireCopy();
 }
 
+// 管理者ダッシュボード。自動処理の稼働状況、承認待ち、月次サマリー、
+// 気になる人、昇格予定、データ不備、給与ロック状況を1画面に集約する。
+async function pageDashboard(app){
+  if(!has('dashboard_view')){ notFound(app); return; }
+  app.innerHTML = `<div class="loading-box"><span class="spinner"></span>読み込み中…</div>`;
+  let data;
+  try{ data = await api('/dashboard'); }
+  catch(e){ app.innerHTML = `<div class="msg err">${h(e.message)}</div>`; return; }
+
+  const jobLabel = (key, pcLabel, spLabel) => `<span class="dash-pc-only">${pcLabel}</span><span class="dash-sp-only">${spLabel}</span>`;
+  const jobShort = { daicho:'台帳取込', schedSources:'予定表取込', rankPromotion:'ランク昇格', notify:'リマインド' };
+  const diffStr = (n) => n == null ? '' : (n > 0 ? `+${n}` : (n < 0 ? `${n}` : '±0'));
+  const diffCls = (n) => n > 0 ? 'dash-up' : (n < 0 ? 'dash-down' : '');
+
+  app.innerHTML = `
+  <div class="dash-wrap">
+    <h2 style="display:flex;align-items:center;gap:8px;margin-bottom:3px">${icon('gauge')} ダッシュボード</h2>
+    <div class="dash-sub">${jstToday()} 時点</div>
+
+    <div class="dash-card dash-status ${data.systemStatus.hasIssue?'bad':''}">
+      <div class="dash-status-badge">${icon(data.systemStatus.hasIssue?'alertTriangle':'checkCircle',{size:'18px'})} ${data.systemStatus.hasIssue?'1件以上の異常':'すべて正常'}</div>
+      <div class="dash-status-sub">${data.systemStatus.hasIssue?'自動処理のうち一部が24時間以上動いていません':'自動処理はすべて正常に動作しています'}</div>
+      <div class="dash-jobs">
+        ${data.systemStatus.jobs.map(j=>`<div class="dash-job ${j.bad?'bad':''}">
+          <span class="dash-dot"></span>
+          <span class="dash-nm">${jobLabel(j.key, j.label, jobShort[j.key]||j.label)}</span>
+          <span class="dash-tm">${h(j.lastRun||'未実行')}</span>
+          <span class="dash-rs">${j.bad?(j.lastRun?'実行が滞っています':'未実行です'):'正常'}</span>
+        </div>`).join('')}
+      </div>
+    </div>
+
+    <div class="dash-card">
+      <div class="dash-card-h"><div class="dash-card-t">${icon('inbox')} 対応が必要</div><span></span></div>
+      <div class="dash-todo">
+        ${data.todo.selfReports.count?`<a href="#/self-reports" class="dash-todo-row ${data.todo.selfReports.maxDays>=3?'urgent':''}">
+          <div class="dash-todo-ic">${icon('mail',{size:'15px'})}</div>
+          <div><div class="dash-todo-l">${jobLabel('sr','現場変更報告の承認','現場変更の承認')}</div><div class="dash-todo-s">最長${data.todo.selfReports.maxDays}日待ち</div></div>
+          <div class="dash-todo-n">${data.todo.selfReports.count}</div>
+          ${icon('arrowRight',{size:'14px'})}
+        </a>`:''}
+        ${data.todo.nominations.count?`<a href="#/nominations" class="dash-todo-row ${data.todo.nominations.maxDays>=3?'urgent':''}">
+          <div class="dash-todo-ic">${icon('user',{size:'15px'})}</div>
+          <div><div class="dash-todo-l">${jobLabel('nm','メンバー指名の承認','指名の承認')}</div><div class="dash-todo-s">最長${data.todo.nominations.maxDays}日待ち</div></div>
+          <div class="dash-todo-n">${data.todo.nominations.count}</div>
+          ${icon('arrowRight',{size:'14px'})}
+        </a>`:''}
+        ${data.todo.reportChecks.count?`<a href="#/reports" class="dash-todo-row">
+          <div class="dash-todo-ic">${icon('fileText',{size:'15px'})}</div>
+          <div><div class="dash-todo-l">${jobLabel('rc','新人報告の2次チェック','2次チェック')}</div><div class="dash-todo-s">未チェック</div></div>
+          <div class="dash-todo-n">${data.todo.reportChecks.count}</div>
+          ${icon('arrowRight',{size:'14px'})}
+        </a>`:''}
+        ${(!data.todo.selfReports.count && !data.todo.nominations.count && !data.todo.reportChecks.count)?'<div class="dash-todo-empty">対応が必要なものはありません</div>':''}
+      </div>
+    </div>
+
+    <div class="dash-card">
+      <div class="dash-card-h"><div class="dash-card-t">${icon('barChart')} 今月の状況(${data.monthly.month.slice(5)}月)</div><span class="dash-card-more">前月比</span></div>
+      <div class="dash-kpis">
+        <div class="dash-kpi"><div class="dash-kpi-n" data-count="${data.monthly.sites}">0</div><div class="dash-kpi-l">現場数</div><div class="dash-kpi-d ${diffCls(data.monthly.diffSites)}">${diffStr(data.monthly.diffSites)}</div></div>
+        <div class="dash-kpi"><div class="dash-kpi-n" data-count="${data.monthly.headcount}">0</div><div class="dash-kpi-l">のべ人数</div><div class="dash-kpi-d ${diffCls(data.monthly.diffHeadcount)}">${diffStr(data.monthly.diffHeadcount)}</div></div>
+        <div class="dash-kpi"><div class="dash-kpi-n" data-count="${data.monthly.hours}">0</div><div class="dash-kpi-l">総稼働時間(h)</div><div class="dash-kpi-d ${diffCls(data.monthly.diffHours)}">${diffStr(data.monthly.diffHours)}</div></div>
+        ${data.canPay?`<div class="dash-kpi"><div class="dash-kpi-n" data-count="${Math.round(data.monthly.pay/10000)}">0<span class="dash-kpi-u">万</span></div><div class="dash-kpi-l">給与見込み</div><div class="dash-kpi-d ${diffCls(data.monthly.diffPay)}">${data.monthly.diffPay==null?'':diffStr(Math.round(data.monthly.diffPay/10000))+'万'}</div></div>`:''}
+      </div>
+    </div>
+
+    <div class="dash-cols">
+      <div>
+        <div class="dash-card">
+          <div class="dash-card-h"><div class="dash-card-t">${icon('alertTriangle')} 気になる人</div><a href="#/summary" class="dash-card-more">稼働サマリーへ ${icon('arrowRight',{size:'12px'})}</a></div>
+          <div class="dash-chips">
+            <a href="#/summary" class="dash-chip ${data.attention.overTotal?'hot':''}"><span class="el">月100h超</span><span class="dash-c">${data.attention.overTotal}</span></a>
+            <a href="#/summary" class="dash-chip ${data.attention.streak?'hot':''}"><span class="el">6連勤以上</span><span class="dash-c">${data.attention.streak}</span></a>
+            <a href="#/summary" class="dash-chip"><span class="el">稼働少なめ</span><span class="dash-c">${data.attention.few}</span></a>
+            <a href="#/summary" class="dash-chip"><span class="el">同じ現場ばかり</span><span class="dash-c">${data.attention.samesite}</span></a>
+            <a href="#/summary" class="dash-chip"><span class="el">残業50h+</span><span class="dash-c">${data.attention.overtime}</span></a>
+          </div>
+        </div>
+
+        <div class="dash-card">
+          <div class="dash-card-h"><div class="dash-card-t">${icon('wrench')} データの不備</div><span></span></div>
+          <div class="dash-warns">
+            <a href="#/members" class="dash-warn-row">${icon('user',{size:'13px'})}<span class="dash-lbl">ランク未設定</span><span class="dash-c">${data.dataIssues.noRank}人</span></a>
+            <a href="#/members" class="dash-warn-row">${icon('user',{size:'13px'})}<span class="dash-lbl">手配担当が未設定</span><span class="dash-c">${data.dataIssues.noManager}人</span></a>
+            <a href="#/admin" class="dash-warn-row">${icon('clock',{size:'13px'})}<span class="dash-lbl">停止中だが予定あり</span><span class="dash-c">${data.dataIssues.suspendedButScheduled}人</span></a>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="dash-card">
+          <div class="dash-card-h"><div class="dash-card-t">${icon('star')} 昇格予定</div><span class="dash-card-more">今月・来月</span></div>
+          <div class="dash-plist">
+            ${data.promotions.upcoming.map(p=>`<div class="dash-prow"><span class="dash-nm">${h(p.name)}</span><span class="dash-rankbadge">${h(p.from)} → ${h(p.to)}</span><span class="dash-dt">${h(p.date.slice(5).replace('-','/'))}</span></div>`).join('') || '<div class="dash-todo-empty">昇格予定はいません</div>'}
+          </div>
+          <div class="dash-pfoot">研修待ち:2部のみ ${data.promotions.waitingTeam2Only}人 / SUのみ ${data.promotions.waitingSuOnly}人</div>
+        </div>
+
+        <div class="dash-card">
+          <div class="dash-card-h"><div class="dash-card-t">${icon('lock')} 給与の確定状況</div><span></span></div>
+          <div class="dash-lockrow"><span class="el">確定済み</span><span class="dash-v">${h(data.payLock.lockedUntil)}まで</span></div>
+          <div class="dash-lock-sub">未確定:${data.payLock.unlockedDays}日分</div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+
+  animateCounts(app);
+}
+
 async function pageHome(app){
   app.innerHTML = '<div class="card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>';
   const homeEditing = !!(PAGE_STATE.home && PAGE_STATE.home.editing);
@@ -1763,6 +1883,7 @@ async function pageHome(app){
   const pendingCount = selfReports.length;
 
   const allMenuItems = [
+    ['#/dashboard','gauge','ダッシュボード', has('dashboard_view')],
     ['#/schedule','calendar','マイスケジュール', true],
     ['#/availability','handRaise','休み希望', true],
     ['#/edit','edit','スケジュール入力', ME.handler===1],
@@ -2263,12 +2384,14 @@ async function openScheduleSelfReport(date){
       if(!date2){ popup('現場日を入力してください','error'); return; }
       if(!toldBy){ popup('誰から言われたかを入力してください','error'); return; }
       if(type==='work' && !site && !venue){ popup('現場名か会場名を入力してください','error'); return; }
-      try{
-        const r = await api('/schedule-self-report', { method:'POST', body:{ date:date2, toldBy, type, site, venue } });
-        closeModal();
-        popup(r.needsApproval ? '報告しました。手配担当者の承認後にスケジュールへ反映されます' : '報告しました。手配担当者に通知が届きます');
-        render();
-      }catch(e){ popup(e.message,'error'); }
+      await withLoading($('#sr-save'), async () => {
+        try{
+          const r = await api('/schedule-self-report', { method:'POST', body:{ date:date2, toldBy, type, site, venue } });
+          closeModal();
+          popup(r.needsApproval ? '報告しました。手配担当者の承認後にスケジュールへ反映されます' : '報告しました。手配担当者に通知が届きます');
+          render();
+        }catch(e){ popup(e.message,'error'); }
+      });
     };
   };
 
@@ -3559,11 +3682,13 @@ function pageReportForm(app){
       first_chief: $('#r-fchief').value, first_note: $('#r-fnote').value
     };
     if(isChief) Object.assign(body, { s_motivation:$('#r-mot').value, s_response:$('#r-res').value, s_total:$('#r-tot').value, draft:$('#r-draft').value, plan:$('#r-plan').value });
-    try{
-      await api('/reports', { method:'POST', body });
-      $('#r-cand').value=''; $('#r-fnote').value='';
-      popup('新人報告を提出しました。チーフ全員に通知されます。');
-    }catch(e){ popup(e.message, 'error'); }
+    await withLoading($('#r-submit'), async () => {
+      try{
+        await api('/reports', { method:'POST', body });
+        $('#r-cand').value=''; $('#r-fnote').value='';
+        popup('新人報告を提出しました。チーフ全員に通知されます。');
+      }catch(e){ popup(e.message, 'error'); }
+    });
   };
 }
 
@@ -3732,15 +3857,17 @@ async function pageBlacklist(app){
   $('#b-add').onclick = async () => {
     const name = $('#b-name').value.trim();
     if(!name){ popup('名前は必須です', 'error'); return; }
-    try{
-      await api('/blacklist',{method:'POST',body:{
-        date:$('#b-date').value, reporter:$('#b-reporter').value.trim(), name,
-        s_talk:$('#b-talk').value, s_dress:$('#b-dress').value, s_groom:$('#b-groom').value,
-        s_late:$('#b-late').value, s_work:$('#b-work').value, reason:$('#b-reason').value
-      }});
-      render();
-      popup('ブラックリストに登録しました。');
-    }catch(e){ popup(e.message, 'error'); }
+    await withLoading($('#b-add'), async () => {
+      try{
+        await api('/blacklist',{method:'POST',body:{
+          date:$('#b-date').value, reporter:$('#b-reporter').value.trim(), name,
+          s_talk:$('#b-talk').value, s_dress:$('#b-dress').value, s_groom:$('#b-groom').value,
+          s_late:$('#b-late').value, s_work:$('#b-work').value, reason:$('#b-reason').value
+        }});
+        render();
+        popup('ブラックリストに登録しました。');
+      }catch(e){ popup(e.message, 'error'); }
+    });
   };
 }
 

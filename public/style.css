@@ -8,7 +8,7 @@
   --cell-site:#ffe94d;    /* 現場名(黄)*/
   --cell-off:#d93636;     /* 休暇・×(赤)*/
   --sat:#1f5fd6; --sun:#d93636;
-  --ok:#2e7d32; --warn:#b26a00;
+  --ok:#2e7d32; --warn:#b26a00; --danger:#c0392b; --muted:#6b7089;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",Meiryo,sans-serif;background:var(--paper);color:#222;font-size:14px;line-height:1.55}
@@ -746,7 +746,99 @@ td.sm-edit-cell{text-align:center;color:var(--gold);font-size:15px}
 .cg-ol{margin:0;padding-left:22px;font-size:13.5px;line-height:1.9}
 .cg-ol li{margin-bottom:2px}
 
-/* ===== モーション削減設定への対応。全てのアニメーション・トランジションを
+/* ===== 管理者ダッシュボード ===== */
+.dash-wrap{container-type:inline-size;container-name:dash}
+.dash-wrap .el{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.dash-sub{font-size:12.5px;color:var(--muted);margin-bottom:15px;white-space:nowrap}
+.dash-card{background:#fff;border:1px solid rgba(0,0,0,.05);border-radius:14px;padding:15px 16px;box-shadow:0 1px 4px rgba(18,23,42,.05);margin-bottom:12px;overflow:hidden}
+.dash-card-h{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;margin-bottom:11px}
+.dash-card-t{font-size:14px;font-weight:800;color:var(--ink);display:flex;align-items:center;gap:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dash-card-more{font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:3px;white-space:nowrap;background:none;border:none;cursor:pointer;font-family:inherit}
+
+.dash-status{border-left:5px solid var(--ok)}
+.dash-status.bad{border-left-color:var(--danger);background:linear-gradient(100deg,#fff,#fff6f5)}
+.dash-status-badge{display:flex;align-items:center;gap:7px;font-size:16px;font-weight:800;color:var(--ok);white-space:nowrap}
+.dash-status.bad .dash-status-badge{color:var(--danger)}
+.dash-status-sub{font-size:12px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dash-jobs{margin-top:13px;border-top:1px solid var(--line);padding-top:11px;display:flex;flex-direction:column;gap:8px}
+.dash-job{display:grid;grid-template-columns:9px minmax(0,1fr) auto auto;align-items:center;gap:9px;font-size:12.5px}
+.dash-job .dash-dot{width:9px;height:9px;border-radius:50%;background:var(--ok)}
+.dash-job.bad .dash-dot{background:var(--danger)}
+.dash-job .dash-nm{font-weight:700}
+.dash-job .dash-tm{color:var(--muted);font-variant-numeric:tabular-nums;font-size:11.5px;white-space:nowrap}
+.dash-job .dash-rs{color:var(--muted);font-size:11.5px;white-space:nowrap}
+.dash-job.bad .dash-rs{color:var(--danger);font-weight:700}
+
+.dash-todo{display:flex;flex-direction:column;gap:8px}
+.dash-todo-row{display:grid;grid-template-columns:32px minmax(0,1fr) auto 14px;align-items:center;gap:11px;padding:10px 12px;border-radius:10px;background:#faf9f6;border:1px solid var(--line);cursor:pointer;text-decoration:none;color:inherit}
+.dash-todo-row:hover{background:#f3f1ea}
+.dash-todo-row.urgent{background:#fff5f4;border-color:#f0cfcb}
+.dash-todo-ic{width:32px;height:32px;border-radius:9px;background:var(--ink);color:#fff;display:flex;align-items:center;justify-content:center;font-size:15px}
+.dash-todo-row.urgent .dash-todo-ic{background:var(--danger)}
+.dash-todo-l{font-size:13px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dash-todo-s{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dash-todo-row.urgent .dash-todo-s{color:var(--danger);font-weight:700}
+.dash-todo-n{font-size:20px;font-weight:800;font-variant-numeric:tabular-nums;white-space:nowrap}
+.dash-todo-arrow{color:#bbb}
+.dash-todo-empty{text-align:center;color:var(--muted);font-size:13px;padding:14px 0}
+
+.dash-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px}
+.dash-kpi{background:#faf9f6;border:1px solid var(--line);border-radius:11px;padding:11px 6px;text-align:center;overflow:hidden}
+.dash-kpi-n{font-size:20px;font-weight:800;letter-spacing:-.02em;color:var(--ink);font-variant-numeric:tabular-nums;white-space:nowrap}
+.dash-kpi-u{font-size:11px;color:var(--muted);font-weight:400}
+.dash-kpi-l{font-size:10.5px;color:var(--muted);margin-top:2px;white-space:nowrap}
+.dash-kpi-d{font-size:10.5px;margin-top:2px;font-weight:700;white-space:nowrap}
+.dash-up{color:var(--ok)} .dash-down{color:var(--danger)}
+
+.dash-chips{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.dash-chip{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:6px;padding:9px 13px;border-radius:10px;font-size:12.5px;font-weight:700;border:1px solid var(--line);background:#faf9f6;cursor:pointer;white-space:nowrap;overflow:hidden;text-decoration:none;color:inherit}
+.dash-chip.hot{background:#fff2e8;border-color:#f0d6bd;color:#a85a12}
+.dash-chip .dash-c{font-size:15px;font-variant-numeric:tabular-nums}
+
+.dash-plist{display:flex;flex-direction:column;gap:7px}
+.dash-prow{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:9px;font-size:12.5px;padding:8px 11px;background:#faf9f6;border-radius:9px;border:1px solid var(--line);overflow:hidden}
+.dash-prow .dash-nm{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dash-rankbadge{padding:2px 9px;border-radius:999px;font-size:11px;font-weight:800;background:#e7f6ec;color:#1f7a3d;white-space:nowrap}
+.dash-prow .dash-dt{color:var(--muted);font-size:11.5px;white-space:nowrap}
+.dash-pfoot{margin-top:11px;padding-top:9px;border-top:1px solid var(--line);font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+.dash-warns{display:flex;flex-direction:column;gap:7px}
+.dash-warn-row{display:grid;grid-template-columns:16px minmax(0,1fr) auto;align-items:center;gap:9px;font-size:12.5px;padding:8px 11px;background:#fffaf2;border:1px solid #f0e2c8;border-radius:9px;overflow:hidden}
+.dash-warn-row .dash-lbl{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dash-warn-row .dash-c{font-weight:800;color:var(--warn);font-variant-numeric:tabular-nums;white-space:nowrap}
+
+.dash-lockrow{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;gap:8px;font-size:13px}
+.dash-lockrow .dash-v{font-weight:700;white-space:nowrap}
+.dash-lock-sub{font-size:11.5px;color:var(--muted);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+.dash-cols{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;align-items:start}
+.dash-cols > div{min-width:0}
+
+.dash-sp-only{display:none}
+
+/* 中間幅: 2カラムのまま、chips(5個)だけ2列にする */
+@container dash (max-width: 900px) and (min-width: 620.01px){
+  .dash-chips{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+/* 620px以下は1カラム構成+短縮ラベルに切り替える */
+@container dash (max-width: 620px){
+  .dash-sp-only{display:inline}
+  .dash-pc-only{display:none}
+  .dash-cols{grid-template-columns:minmax(0,1fr)}
+  .dash-kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+  .dash-kpi-n{font-size:19px}
+  .dash-chips{grid-template-columns:minmax(0,1fr);gap:6px}
+  .dash-job{grid-template-columns:9px minmax(0,1fr) auto;gap:8px;font-size:12px}
+  .dash-job .dash-tm{display:none}
+  .dash-job .dash-rs{font-size:11px}
+  .dash-card{padding:13px 13px}
+  .dash-todo-row{grid-template-columns:30px minmax(0,1fr) auto 13px;gap:9px;padding:9px 10px}
+  .dash-todo-ic{width:30px;height:30px}
+  .dash-todo-l{font-size:12.5px}
+  .dash-todo-n{font-size:19px}
+}
+
+
    実質的に瞬時にし、揺れ・スライド等の動きで不快になる人に配慮する。 ===== */
 @media (prefers-reduced-motion: reduce){
   *, *::before, *::after{
