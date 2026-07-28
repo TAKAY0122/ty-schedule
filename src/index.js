@@ -296,8 +296,17 @@ async function importScheduleSheet(env, source, url, editorId, fromDate) {
   for (const sh of got.sheets) {
     let parsed;
     if (isArrangeSheet(sh.grid)) {
-      // 手配管理表(日付列 + 複数人分の[現場/会場/時間]列が横に何組も並ぶ形式)
-      const ym = detectYmFromGrid(sh.grid, jstDate().slice(0, 7));
+      // 手配管理表(日付列 + 複数人分の[現場/会場/時間]列が横に何組も並ぶ形式)。
+      // 年月はシート自身の記載を必須とする(fallback=実行時点の月を使わない)。
+      // 1つのスプレッドシートに複数月のタブが並ぶ運用があり、もしタブ自身から年月を
+      // 読み取れずに実行時点の月へフォールバックすると、複数の異なる月のタブが
+      // 全て同じ月として取り込まれてしまい、同じ日に複数の現場が誤って混在する事故になる。
+      // 年月不明のタブは、誤ったデータを取り込むよりスキップする方が安全。
+      const ym = detectYmFromGrid(sh.grid, null);
+      if (!ym) {
+        sheetReport.push({ name: sh.name, count: 0, note: 'シートから年月を読み取れなかったためスキップしました' });
+        continue;
+      }
       parsed = { rows: parseFormatD(sh.grid, ym, keywordMap, fromDate).rows, labelFound: true };
     } else {
       // 従来のチーフ予定表(日付列が1つ、日付はシリアル値)
@@ -788,12 +797,15 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
       const duties = [...g._duties];
       return { ...g, duty: duties.length ? duties.join('/') : g.duty };
     });
-    // 1日に対して異常に多い(5件以上の)異なる現場データが検出された場合、正常な勤務実態とは考えにくく、
-    // シート解析時に複数人・複数日のデータが誤って混入した可能性が高い。誤ったデータをそのまま
-    // DBに書き込んでしまう方が実害が大きいため、安全側に倒してこの日はスキップし、エラーとして報告する。
-    if (mergedItems.length >= 5) {
-      const preview = mergedItems.slice(0, 3).map(m => m.type === 'work' ? (m.site || '(現場名なし)') : m.type).join('/');
-      errors.push(`${name || uid}さん ${date}: 1日に${mergedItems.length}件の異なる現場データが検出されたため、データ異常の可能性があるとしてスキップしました(例: ${preview}...)`);
+    // 台帳・予定表の運用上、1人が1日に複数の異なる現場を掛け持つことは無い(現場入力は1日1件が原則)。
+    // そのため、work(現場)タイプが2件以上検出された時点で、正常な勤務実態とは考えにくく、
+    // シート解析時に複数日・複数タブのデータが誤って混入した可能性が高いと判断する。
+    // 誤ったデータをそのままDBに書き込んでしまう方が実害が大きいため、安全側に倒してこの日は
+    // 一切書き込まずスキップし、エラーとして報告する。
+    const workItems = mergedItems.filter(m => m.type === 'work');
+    if (workItems.length >= 2 || mergedItems.length >= 5) {
+      const preview = mergedItems.slice(0, 4).map(m => m.type === 'work' ? (m.site || '(現場名なし)') : m.type).join('/');
+      errors.push(`${name || uid}さん ${date}: 1日に${workItems.length}件の異なる現場データが検出されたため、データ異常の可能性があるとしてスキップしました(例: ${preview}${mergedItems.length > 4 ? '...' : ''})`);
       skipped += items.length; skippedInvalid += items.length;
       continue;
     }
@@ -3815,7 +3827,13 @@ async function runDaichoReload(env, urls, opt = {}) {
             const fmt = detectFormat(grid);
             let parsed;
             if (fmt === 'C') parsed = parseFormatC(grid, null, fileDate).rows;
-            else if (fmt === 'D') parsed = parseFormatD(grid, detectYmFromGrid(grid, jstDate().slice(0, 7)), keywordMap).rows;
+            else if (fmt === 'D') {
+              // 複数月のタブが1つのスプレッドシートに並ぶ運用があるため、実行時点の月への
+              // フォールバックは行わない(全タブが同じ月として混在してしまう事故を防ぐ)。
+              const ym = detectYmFromGrid(grid, null);
+              if (!ym) { sheetReport.push({ name: sh.name, count: 0, note: 'シートから年月を読み取れなかったためスキップしました' }); continue; }
+              parsed = parseFormatD(grid, ym, keywordMap).rows;
+            }
             else parsed = parseFormatAB(grid, jstDate().slice(0, 7), null, keywordMap).rows;
             if (parsed && parsed.length) { allRows = allRows.concat(parsed); sheetReport.push({ name: sh.name, count: parsed.length }); }
           } catch (e) {
