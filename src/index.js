@@ -788,6 +788,15 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
       const duties = [...g._duties];
       return { ...g, duty: duties.length ? duties.join('/') : g.duty };
     });
+    // 1日に対して異常に多い(5件以上の)異なる現場データが検出された場合、正常な勤務実態とは考えにくく、
+    // シート解析時に複数人・複数日のデータが誤って混入した可能性が高い。誤ったデータをそのまま
+    // DBに書き込んでしまう方が実害が大きいため、安全側に倒してこの日はスキップし、エラーとして報告する。
+    if (mergedItems.length >= 5) {
+      const preview = mergedItems.slice(0, 3).map(m => m.type === 'work' ? (m.site || '(現場名なし)') : m.type).join('/');
+      errors.push(`${name || uid}さん ${date}: 1日に${mergedItems.length}件の異なる現場データが検出されたため、データ異常の可能性があるとしてスキップしました(例: ${preview}...)`);
+      skipped += items.length; skippedInvalid += items.length;
+      continue;
+    }
     const mergeNote = mergedItems.length < items.length ? `(${items.length}行→${mergedItems.length}件に統合)` : '';
     // 取り込み行を整形
     const incoming = [];
