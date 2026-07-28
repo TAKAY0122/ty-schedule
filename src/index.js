@@ -347,7 +347,7 @@ async function importScheduleSheet(env, source, url, editorId, fromDate) {
   // 一切上書きしない。まだ何も無い日にだけ新しい予定を反映する。
   const r = rowsToApply.length
     ? await applyImportRows(env, rowsToApply, editorId, 'skip-if-exists', source)
-    : { applied: 0, skipped: 0, skippedUnregistered: 0, skippedUnchanged: 0, skippedInvalid: 0, skippedOtherOrg: 0, errors: [], changes: [] };
+    : { applied: 0, skipped: 0, skippedUnregistered: 0, skippedUnchanged: 0, skippedInvalid: 0, skippedOtherOrg: 0, errors: [], changes: [], ts: jstTs() };
 
   // スナップショットを今回の内容で更新(前回データは上書きされ消える)
   const snapBatch = regnos.map(regno =>
@@ -866,7 +866,7 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
   // 台帳(実績)取込の場合のみ、研修受講(マナー/2部/SU)の自動判定を行う。
   // 予定表ソース等、まだ確定していない予定の取込では判定しない。
   if (isDaicho) { try { await processTrainingPromotions(env, rows); } catch (e) { errors.push('研修判定でエラー: ' + e.message); } }
-  return { applied, skipped, skippedUnregistered, skippedUnchanged, skippedInvalid, skippedOtherOrg, errors, changes };
+  return { applied, skipped, skippedUnregistered, skippedUnchanged, skippedInvalid, skippedOtherOrg, errors, changes, ts };
 }
 
 // 新しくアカウントが作成された時、氏名が一致する新人報告・ブラックリストのレコードに
@@ -2157,7 +2157,7 @@ async function api(req, env, url) {
     try {
       const r = await importScheduleSheet(env, 'sched_src_' + id, src.url, me.id, fromDate);
       await env.DB.prepare('UPDATE sched_sources SET last_run=?, last_result=? WHERE id=?').bind(
-        jstTs(), JSON.stringify({ ts: jstTs(), applied: r.applied, skipped: r.skipped, unchangedPeople: r.unchangedPeople, changedPeople: r.changedPeople, error: (r.errors && r.errors[0]) || '', fullRange: !!body.fullRange, changes: r.changes || [] }), id
+        jstTs(), JSON.stringify({ ts: r.ts, applied: r.applied, skipped: r.skipped, unchangedPeople: r.unchangedPeople, changedPeople: r.changedPeople, error: (r.errors && r.errors[0]) || '', fullRange: !!body.fullRange, changes: r.changes || [] }), id
       ).run();
       if (src.notify_admin && r.applied > 0) {
         const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
@@ -3447,7 +3447,7 @@ async function api(req, env, url) {
         } catch (e) { archiveError = e.message; }
       }
 
-      results.push({ url: rawUrl, ok: true, sheetsRead: sheetReport.length, sheets: sheetReport, applied: r.applied, skipped: r.skipped, skippedUnregistered: r.skippedUnregistered, skippedUnchanged: r.skippedUnchanged, skippedInvalid: r.skippedInvalid, skippedOtherOrg: r.skippedOtherOrg, errors: r.errors, mode: fellBack ? '単一シート(全タブ取得に失敗)' : '全シート', archived, archiveError });
+      results.push({ url: rawUrl, ok: true, sheetsRead: sheetReport.length, sheets: sheetReport, applied: r.applied, skipped: r.skipped, skippedUnregistered: r.skippedUnregistered, skippedUnchanged: r.skippedUnchanged, skippedInvalid: r.skippedInvalid, skippedOtherOrg: r.skippedOtherOrg, errors: r.errors, mode: fellBack ? '単一シート(全タブ取得に失敗)' : '全シート', archived, archiveError, ts: r.ts, changes: r.changes || [] });
     }
     if (body.save) {
       const savedRaw = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
@@ -3596,6 +3596,23 @@ async function api(req, env, url) {
       catch (e) { failed.push({ id, error: e.message }); }
     }
     return J({ ok: 1, okCount, failed });
+  }
+  // 1回の取り込み実行(スプレッドシート取込・台帳取込・予定表ソース取込)で発生した変更を、
+  // まとめて取り消す。取り込み実行時刻(ts)を指定すると、その時刻に記録された履歴を全て
+  // (新しいものから順に)取り消す。大量の誤ったデータが取り込まれてしまった際、
+  // 1件ずつ選んで取り消す手間を無くすための機能。
+  if (method === 'POST' && path === '/history/undo-by-ts') {
+    if (!handlerMode && !has(me, 'handler_tools')) return ERR('取り消しには手配モードが必要です', 403);
+    const ts = String(body.ts || '').trim();
+    if (!ts) return ERR('取り消し対象の取り込み実行時刻が指定されていません');
+    const rows = (await env.DB.prepare('SELECT id FROM schedule_history WHERE ts=? ORDER BY id DESC').bind(ts).all()).results;
+    if (!rows.length) return ERR(`実行時刻「${ts}」に対応する変更履歴が見つかりませんでした(既に取り消し済み、または対象外の可能性があります)`);
+    let okCount = 0; const failed = [];
+    for (const r of rows) {
+      try { await undoHistoryEntry(env, r.id, me); okCount++; }
+      catch (e) { failed.push({ id: r.id, error: e.message }); }
+    }
+    return J({ ok: 1, okCount, total: rows.length, failed });
   }
 
   // ---- 新人報告 ----
@@ -3822,7 +3839,7 @@ async function runDaichoReload(env, urls, opt = {}) {
               await env.DB.prepare('DELETE FROM daicho_archive WHERE id=?').bind(old.id).run();
             }
           }
-          results.push({ url: rawUrl, ok: true, applied: r.applied, changes: r.changes || [] });
+          results.push({ url: rawUrl, ok: true, applied: r.applied, changes: r.changes || [], ts: r.ts });
         }
       } catch (e) {
         results.push({ url: rawUrl, ok: false, error: e.message });
@@ -4053,7 +4070,7 @@ async function cronScheduleSources(env) {
       ]);
       await env.DB.prepare('UPDATE sched_sources SET last_run=?, last_result=? WHERE id=?').bind(
         jstTs(),
-        JSON.stringify({ ts: jstTs(), applied: r.applied, skipped: r.skipped, unchangedPeople: r.unchangedPeople, changedPeople: r.changedPeople, error: (r.errors && r.errors[0]) || '', changes: r.changes || [] }),
+        JSON.stringify({ ts: r.ts, applied: r.applied, skipped: r.skipped, unchangedPeople: r.unchangedPeople, changedPeople: r.changedPeople, error: (r.errors && r.errors[0]) || '', changes: r.changes || [] }),
         src.id
       ).run();
       console.log(`[cronScheduleSources] done: id=${src.id} applied=${r.applied} skipped=${r.skipped}`);

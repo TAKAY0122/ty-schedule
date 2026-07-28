@@ -4236,9 +4236,13 @@ async function pageImport(app, hash){
       };
     };
     const showDaichoChanges = (r) => {
-      const allChanges = (r.results || []).flatMap(x => (x.changes || []).map(c => ({ ...c, _url: x.url })));
+      const withChanges = (r.results || []).filter(x => x.changes && x.changes.length);
+      const allChanges = withChanges.flatMap(x => x.changes.map(c => ({ ...c, _url: x.url, _ts: x.ts })));
       modal(`<h3>台帳再取り込みの変更内容</h3>
         <div class="muted" style="font-size:12px;margin-bottom:10px">最終実行: ${h(r.ts)} 時点の反映内容(${allChanges.length}件)</div>
+        ${withChanges.length?`<div style="margin-bottom:10px;display:flex;flex-direction:column;gap:6px">
+          ${withChanges.map(x=>`<button class="btn danger xs daicho-undo-one" data-ts="${h(x.ts)}">${icon('undo',{size:'12px'})} 「${h((x.url||'').slice(0,40))}…」の反映(${x.changes.length}件)を取り消す</button>`).join('')}
+        </div>`:''}
         <div style="max-height:60vh;overflow-y:auto">
           <table class="list" style="font-size:12.5px">
             <tr><th>氏名</th><th>日付</th><th>変更前</th><th></th><th>変更後</th></tr>
@@ -4251,6 +4255,18 @@ async function pageImport(app, hash){
             </tr>`).join('') || '<tr><td colspan="5" class="muted">詳細データがありません</td></tr>'}
           </table>
         </div>`);
+      document.querySelectorAll('.daicho-undo-one').forEach(btn => btn.onclick = async () => {
+        const undoTs = btn.dataset.ts;
+        if(!confirm('この分の反映を全て取り消し、取り込み前の状態に戻します。よろしいですか？\n\n※手配者モードが必要です。')) return;
+        await withLoading(btn, async () => {
+          try{
+            const res = await api('/history/undo-by-ts', { method:'POST', body:{ ts: undoTs } });
+            closeModal();
+            popup(`${res.okCount}件を取り消しました${res.failed.length?`(${res.failed.length}件は失敗)`:''}`);
+            loadStatus();
+          }catch(e){ popup(e.message, 'error'); }
+        });
+      });
     };
     const loadStatus = (skipUrlsRerender) => {
       api('/import-urls').then(d => {
@@ -4897,8 +4913,10 @@ async function pageSchedSources(app, hash){
   // 変更内容の詳細表示(誰の・どの日が・どう変わったか)
   const showChanges = (s) => {
     const changes = (s.lastResult && s.lastResult.changes) || [];
+    const ts = s.lastResult && s.lastResult.ts;
     modal(`<h3>${h(s.label)} の変更内容</h3>
       <div class="muted" style="font-size:12px;margin-bottom:10px">最終実行: ${h(s.lastRun)} 時点の反映内容(${changes.length}件)</div>
+      ${ts?`<div style="margin-bottom:10px"><button class="btn danger sm" id="ss-undo-all">${icon('undo',{size:'13px'})} この取り込みで反映した内容を全て取り消す</button></div>`:''}
       <div style="max-height:60vh;overflow-y:auto">
         <table class="list" style="font-size:12.5px">
           <tr><th>氏名</th><th>日付</th><th>変更前</th><th></th><th>変更後</th></tr>
@@ -4911,6 +4929,18 @@ async function pageSchedSources(app, hash){
           </tr>`).join('') || '<tr><td colspan="5" class="muted">詳細データがありません</td></tr>'}
         </table>
       </div>`);
+    const undoBtn = $('#ss-undo-all');
+    if(undoBtn) undoBtn.onclick = async () => {
+      if(!confirm(`この取り込み(${changes.length}件の変更)を全て取り消し、取り込み前の状態に戻します。よろしいですか？\n\n※手配者モードが必要です。`)) return;
+      await withLoading(undoBtn, async () => {
+        try{
+          const r = await api('/history/undo-by-ts', { method:'POST', body:{ ts } });
+          closeModal();
+          popup(`${r.okCount}件を取り消しました${r.failed.length?`(${r.failed.length}件は失敗)`:''}`);
+          pageSchedSources(app, hash);
+        }catch(e){ popup(e.message, 'error'); }
+      });
+    };
   };
   document.querySelectorAll('.ss-show-changes').forEach(btn => btn.onclick = () => {
     const s = sources.find(x => String(x.id) === String(btn.dataset.id));
