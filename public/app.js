@@ -988,13 +988,13 @@ async function render(){
     else if(hash === '#/draft') await pageDraft(app);
     else if(hash === '#/blacklist') await pageBlacklist(app);
     else if(hash === '#/report-export') await pageReportExport(app);
-    else if(hash === '#/import') await pageImport(app);
+    else if(hash.startsWith('#/import')) await pageImport(app, hash);
     else if(hash === '#/handler-status') await pageHandlerStatus(app);
     else if(hash === '#/self-reports') await pageSelfReports(app);
     else if(hash === '#/admin') await pageAdmin(app);
     else if(hash === '#/admin-settings') await pageAdminSettings(app);
     else if(hash === '#/daicho') await pageDaicho(app);
-    else if(hash === '#/sched-sources') await pageSchedSources(app);
+    else if(hash.startsWith('#/sched-sources')) await pageSchedSources(app, hash);
     else if(hash.startsWith('#/permissions/')) await pagePermissions(app, hash);
     else if(hash === '#/role-permissions') await pageRolePermissions(app);
     else if(hash === '#/password') pagePassword(app);
@@ -3998,7 +3998,7 @@ async function pageReportExport(app){
 
 /* ===== 手配者専用ページ ===== */
 /* ===== スプレッドシート取り込み(import_data権限・専用ページ) ===== */
-async function pageImport(app){
+async function pageImport(app, hash){
   if(!has('import_data')){ notFound(app); return; }
   const canReloadSettings = has('wage_settings');
   const daichoReloadSettings = canReloadSettings ? await api('/daicho-reload-settings').catch(()=>null) : null;
@@ -4213,8 +4213,11 @@ async function pageImport(app){
         await withLoading(runBtn, async () => {
           try{
             const r = await api('/daicho-reload-run-now', { method:'POST', body:{ urls: selected, checkAbsent } });
-            msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${r.checkedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''} / 残りの保存済みURL ${r.remainingCount}件<br>`
+            const hasChanges = (r.results||[]).some(x => x.changes && x.changes.length);
+            msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${r.checkedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''} / 残りの保存済みURL ${r.remainingCount}件${hasChanges?` <button class="btn ghost xs" id="dr-run-show-changes">変更内容を見る</button>`:''}<br>`
               + r.results.map(x=>`${x.ok?icon('checkCircle',{size:'12px'}):icon('xCircle',{size:'12px'})} ${h((x.url||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>');
+            const showBtn2 = $('#dr-run-show-changes');
+            if(showBtn2) showBtn2.onclick = () => showDaichoChanges({ ts: '今回の実行結果', results: r.results });
             popup(`取り込みが完了しました(${r.okCount}件成功)`);
             // 実行したURLは保存済みリストから削除済みのため、一覧からも取り除く(チェック状態を保つため
             // 一覧全体は再構築せず、対象の行だけをDOM上から削除する)
@@ -4232,6 +4235,23 @@ async function pageImport(app){
         });
       };
     };
+    const showDaichoChanges = (r) => {
+      const allChanges = (r.results || []).flatMap(x => (x.changes || []).map(c => ({ ...c, _url: x.url })));
+      modal(`<h3>台帳再取り込みの変更内容</h3>
+        <div class="muted" style="font-size:12px;margin-bottom:10px">最終実行: ${h(r.ts)} 時点の反映内容(${allChanges.length}件)</div>
+        <div style="max-height:60vh;overflow-y:auto">
+          <table class="list" style="font-size:12.5px">
+            <tr><th>氏名</th><th>日付</th><th>変更前</th><th></th><th>変更後</th></tr>
+            ${allChanges.map(c=>`<tr>
+              <td class="nowrap">${h(c.name||'(氏名不明)')}</td>
+              <td class="nowrap">${h(c.date)}</td>
+              <td>${h(c.before)}</td>
+              <td class="nowrap">${icon('arrowRight',{size:'11px'})}</td>
+              <td><b>${h(c.after)}</b></td>
+            </tr>`).join('') || '<tr><td colspan="5" class="muted">詳細データがありません</td></tr>'}
+          </table>
+        </div>`);
+    };
     const loadStatus = (skipUrlsRerender) => {
       api('/import-urls').then(d => {
         const el = $('#daicho-reload-status'); if(!el) return;
@@ -4239,8 +4259,14 @@ async function pageImport(app){
         api('/settings/daicho-reload-result').then(res => {
           const savedCount = d.urls.length;
           const r = res && res.result;
+          const hasChanges = r && (r.results||[]).some(x => x.changes && x.changes.length);
           el.innerHTML = `<div style="margin-bottom:6px">現在の保存済みURL: <b>${savedCount}件</b>${savedCount?` <span class="muted">(次回0:00に自動再取り込み後、削除されます)</span>`:' <span class="muted">(再取り込み対象なし)</span>'}</div>`
-            + (r ? `<div class="muted" style="word-break:break-all">最終実行: ${h(r.ts)} / ${r.count}件のURLを再取り込み${r.clearedAbsent?` / ${icon('sun',{size:'12px'})} どのファイルにも登場しなかった人の現場を${r.clearedAbsent}件、休暇に変更`:''}<br>${r.results.map(x=>`${x.ok?icon('checkCircle',{size:'12px'}):icon('xCircle',{size:'12px'})} ${h((x.url||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>')}</div>` : '<div class="muted">まだ自動実行されていません</div>');
+            + (r ? `<div class="muted" style="word-break:break-all">最終実行: ${h(r.ts)} / ${r.count}件のURLを再取り込み${r.clearedAbsent?` / ${icon('sun',{size:'12px'})} どのファイルにも登場しなかった人の現場を${r.clearedAbsent}件、休暇に変更`:''}${hasChanges?` <button class="btn ghost xs" id="daicho-show-changes">変更内容を見る</button>`:''}<br>${r.results.map(x=>`${x.ok?icon('checkCircle',{size:'12px'}):icon('xCircle',{size:'12px'})} ${h((x.url||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>')}</div>` : '<div class="muted">まだ自動実行されていません</div>');
+          const showBtn = $('#daicho-show-changes');
+          if(showBtn) showBtn.onclick = () => showDaichoChanges(r);
+          // 通知から「#/import?result=daicho」で遷移してきた場合、変更内容を自動で開く
+          const resultParam = new URLSearchParams((hash||'').split('?')[1] || '').get('result');
+          if(resultParam === 'daicho' && hasChanges) showDaichoChanges(r);
         }).catch(()=>{ el.textContent='設定を取得できませんでした'; });
       }).catch(()=>{});
     };
@@ -4681,7 +4707,7 @@ async function pagePermissions(app, hash){
 
 /* ===== 台帳保管(管理者のみ) ===== */
 /* ===== 予定表ソース管理(管理者・wage_settings権限のみ) ===== */
-async function pageSchedSources(app){
+async function pageSchedSources(app, hash){
   if(!has('wage_settings')){ notFound(app); return; }
   app.innerHTML = `<h2>${icon('download')} 予定表ソース管理</h2><div class="card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>`;
   let data;
@@ -4740,9 +4766,12 @@ async function pageSchedSources(app){
       </div>
     </div>
     <div class="muted" style="margin-top:8px">頻度: ${freqLabel(s)} / 通知: ${s.notifyAdmin?'する':'しない'}</div>
+    <label class="muted" style="margin-top:6px;display:flex;align-items:center;gap:6px;font-size:12px">
+      <input type="checkbox" class="ss-fullrange" data-id="${s.id}"> 「今すぐ取り込む」実行時、期間制限なしでシートの内容を全て反映する(過去日を含む)
+    </label>
     <div class="muted" style="margin-top:4px">
       ${s.lastRun ? `最終実行: ${h(s.lastRun)}` : 'まだ実行されていません'}
-      ${s.lastResult ? `<br>結果: 反映 ${s.lastResult.applied}件 / スキップ ${s.lastResult.skipped}件${s.lastResult.changedPeople!=null?` / 変更あり ${s.lastResult.changedPeople}人・変更なし ${s.lastResult.unchangedPeople}人`:''}${s.lastResult.error?` <span style="color:#b85042">エラー: ${h(s.lastResult.error)}</span>`:''}` : ''}
+      ${s.lastResult ? `<br>結果: 反映 ${s.lastResult.applied}件 / スキップ ${s.lastResult.skipped}件${s.lastResult.changedPeople!=null?` / 変更あり ${s.lastResult.changedPeople}人・変更なし ${s.lastResult.unchangedPeople}人`:''}${s.lastResult.error?` <span style="color:#b85042">エラー: ${h(s.lastResult.error)}</span>`:''}${s.lastResult.changes&&s.lastResult.changes.length?` <button class="btn ghost xs ss-show-changes" data-id="${s.id}" style="margin-left:6px">変更内容を見る</button>`:''}` : ''}
     </div>
     <span class="ss-msg muted" data-id="${s.id}" style="display:block;margin-top:6px"></span>
 
@@ -4842,10 +4871,13 @@ async function pageSchedSources(app){
   document.querySelectorAll('.ss-run').forEach(btn => btn.onclick = async () => {
     const id = btn.dataset.id;
     const msgEl = document.querySelector(`.ss-msg[data-id="${id}"]`);
+    const fullRangeChk = document.querySelector(`.ss-fullrange[data-id="${id}"]`);
+    const fullRange = fullRangeChk ? fullRangeChk.checked : false;
+    if(fullRange && !confirm('期間制限なしで取り込みます。シートに含まれる過去の日付も含めて、まだ何も予定が入っていない日には反映されます(既に予定がある日は上書きしません)。よろしいですか？')) return;
     btn.disabled = true; if(msgEl) msgEl.textContent='取り込み中…（少し時間がかかります）';
     try{
-      const r = await api(`/sched-sources/${id}/run`,{method:'POST'});
-      if(msgEl) msgEl.textContent = `対象日 ${r.fromDate} 以降: 反映 ${r.applied}件 / スキップ ${r.skipped}件`;
+      const r = await api(`/sched-sources/${id}/run`,{method:'POST', body:{ fullRange }});
+      if(msgEl) msgEl.textContent = fullRange ? `期間制限なし: 反映 ${r.applied}件 / スキップ ${r.skipped}件` : `対象日 ${r.fromDate} 以降: 反映 ${r.applied}件 / スキップ ${r.skipped}件`;
       popup(`取り込みました(反映${r.applied}件)`);
       pageSchedSources(app);
     }catch(e){ if(msgEl) msgEl.textContent = e.message; }
@@ -4861,6 +4893,36 @@ async function pageSchedSources(app){
       catch(e){ popup(e.message,'error'); }
     });
   });
+
+  // 変更内容の詳細表示(誰の・どの日が・どう変わったか)
+  const showChanges = (s) => {
+    const changes = (s.lastResult && s.lastResult.changes) || [];
+    modal(`<h3>${h(s.label)} の変更内容</h3>
+      <div class="muted" style="font-size:12px;margin-bottom:10px">最終実行: ${h(s.lastRun)} 時点の反映内容(${changes.length}件)</div>
+      <div style="max-height:60vh;overflow-y:auto">
+        <table class="list" style="font-size:12.5px">
+          <tr><th>氏名</th><th>日付</th><th>変更前</th><th></th><th>変更後</th></tr>
+          ${changes.map(c=>`<tr>
+            <td class="nowrap">${h(c.name||'(氏名不明)')}</td>
+            <td class="nowrap">${h(c.date)}</td>
+            <td>${h(c.before)}</td>
+            <td class="nowrap">${icon('arrowRight',{size:'11px'})}</td>
+            <td><b>${h(c.after)}</b></td>
+          </tr>`).join('') || '<tr><td colspan="5" class="muted">詳細データがありません</td></tr>'}
+        </table>
+      </div>`);
+  };
+  document.querySelectorAll('.ss-show-changes').forEach(btn => btn.onclick = () => {
+    const s = sources.find(x => String(x.id) === String(btn.dataset.id));
+    if(s) showChanges(s);
+  });
+
+  // 通知から「#/sched-sources?result=ID」で遷移してきた場合、該当ソースの変更内容を自動で開く
+  const resultId = new URLSearchParams((hash||'').split('?')[1] || '').get('result');
+  if(resultId){
+    const target = sources.find(s => String(s.id) === String(resultId));
+    if(target && target.lastResult && target.lastResult.changes && target.lastResult.changes.length) showChanges(target);
+  }
 }
 
 async function pageDaicho(app){

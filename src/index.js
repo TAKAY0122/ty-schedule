@@ -347,7 +347,7 @@ async function importScheduleSheet(env, source, url, editorId, fromDate) {
   // 一切上書きしない。まだ何も無い日にだけ新しい予定を反映する。
   const r = rowsToApply.length
     ? await applyImportRows(env, rowsToApply, editorId, 'skip-if-exists', source)
-    : { applied: 0, skipped: 0, skippedUnregistered: 0, skippedUnchanged: 0, skippedInvalid: 0, skippedOtherOrg: 0, errors: [] };
+    : { applied: 0, skipped: 0, skippedUnregistered: 0, skippedUnchanged: 0, skippedInvalid: 0, skippedOtherOrg: 0, errors: [], changes: [] };
 
   // スナップショットを今回の内容で更新(前回データは上書きされ消える)
   const snapBatch = regnos.map(regno =>
@@ -707,6 +707,7 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
   const resolve = await loadWageResolver(env);
   const dutyMap = await loadDutyMap(env);
   let applied = 0, skipped = 0, skippedUnregistered = 0, skippedUnchanged = 0, skippedInvalid = 0, skippedOtherOrg = 0; const errors = [];
+  const changes = []; // 今回の取込で実際に変更された内容(誰の・どの日の・現場が何になったか)。通知の詳細表示用
   // 登録番号→ユーザーの対応を1回のクエリで取得しておく(行ごとにSELECTするとAPIリクエスト数上限に達するため)
   const allUsers = (await env.DB.prepare('SELECT id, regno, rank, name FROM users').all()).results;
   const userByRegno = {}; for (const u of allUsers) userByRegno[normRegno(u.regno)] = u;
@@ -827,6 +828,9 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
       batch.push(env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
         .bind(ts, editorId, uid, date, beforeJson, afterJsonForHist));
     }
+    // 通知の詳細表示用に、変更内容を簡潔な文字列で記録する(現場名の要約。何百件にもなりうるため軽量に保つ)
+    const summarize = (slots) => slots.length ? slots.map(s => s.type === 'work' ? (s.site || '(現場名なし)') : ({ off: '休暇', paid: '有給', x: 'NG', ok: '1日OK' }[s.type] || s.type)).join('/') : '(空欄)';
+    changes.push({ uid, name: name || '', date, before: summarize(before), after: summarize(finalSlots) });
     applied += items.length;
     if (mergeNote) errors.push(`${name || uid}さん ${date}: 同一現場の重複行を統合しました ${mergeNote}`);
   }
@@ -853,7 +857,7 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
   // 台帳(実績)取込の場合のみ、研修受講(マナー/2部/SU)の自動判定を行う。
   // 予定表ソース等、まだ確定していない予定の取込では判定しない。
   if (isDaicho) { try { await processTrainingPromotions(env, rows); } catch (e) { errors.push('研修判定でエラー: ' + e.message); } }
-  return { applied, skipped, skippedUnregistered, skippedUnchanged, skippedInvalid, skippedOtherOrg, errors };
+  return { applied, skipped, skippedUnregistered, skippedUnchanged, skippedInvalid, skippedOtherOrg, errors, changes };
 }
 
 // 新しくアカウントが作成された時、氏名が一致する新人報告・ブラックリストのレコードに
@@ -1648,9 +1652,9 @@ async function notify(env, userIds, type, message, link = '') {
   if (newlyNotified.length) sendPushToUsers(env, newlyNotified, 'RB事業2課', message, link).catch(() => {});
 }
 
-async function notifyChiefs(env, type, message) {
+async function notifyChiefs(env, type, message, link = '') {
   const rows = (await env.DB.prepare("SELECT id FROM users WHERE role!='member'").all()).results;
-  await notify(env, rows.map(r => r.id), type, message);
+  await notify(env, rows.map(r => r.id), type, message, link);
 }
 
 // 新人の次回現場と一致するスケジュールを持つ人へ通知
@@ -2130,26 +2134,30 @@ async function api(req, env, url) {
     await env.DB.prepare("DELETE FROM import_snapshots WHERE source=?").bind('sched_src_' + id).run();
     return J({ ok: 1 });
   }
-  // 今すぐ手動実行(対象日=今日+2日以降、固定)
+  // 今すぐ手動実行(既定は対象日=今日+2日以降のみ。body.fullRange=trueで期間制限なしの全件取込)
   if (method === 'POST' && (scm = path.match(/^\/sched-sources\/(\d+)\/run$/))) {
     if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
     const id = Number(scm[1]);
     const src = await env.DB.prepare('SELECT * FROM sched_sources WHERE id=?').bind(id).first();
     if (!src) return ERR('見つかりません', 404);
-    const d = new Date(Date.now() + 9 * 3600e3); d.setDate(d.getDate() + 2);
-    const fromDate = d.toISOString().slice(0, 10);
+    let fromDate = null;
+    if (!body.fullRange) {
+      const d = new Date(Date.now() + 9 * 3600e3); d.setDate(d.getDate() + 2);
+      fromDate = d.toISOString().slice(0, 10);
+    }
     try {
       const r = await importScheduleSheet(env, 'sched_src_' + id, src.url, me.id, fromDate);
       await env.DB.prepare('UPDATE sched_sources SET last_run=?, last_result=? WHERE id=?').bind(
-        jstTs(), JSON.stringify({ ts: jstTs(), applied: r.applied, skipped: r.skipped, unchangedPeople: r.unchangedPeople, changedPeople: r.changedPeople, error: (r.errors && r.errors[0]) || '' }), id
+        jstTs(), JSON.stringify({ ts: jstTs(), applied: r.applied, skipped: r.skipped, unchangedPeople: r.unchangedPeople, changedPeople: r.changedPeople, error: (r.errors && r.errors[0]) || '', fullRange: !!body.fullRange, changes: r.changes || [] }), id
       ).run();
       if (src.notify_admin && r.applied > 0) {
         const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
-        if (admins.length) await notify(env, admins.map(a => a.id), 'sched_import', `📅【${src.label}】からスケジュールを取り込みました(${jstTs()})。反映${r.applied}件・変更あり${r.changedPeople ?? '-'}人`);
+        if (admins.length) await notify(env, admins.map(a => a.id), 'sched_import', `📅【${src.label}】からスケジュールを取り込みました(${jstTs()})。反映${r.applied}件・変更あり${r.changedPeople ?? '-'}人`, `#/sched-sources?result=${id}`);
       }
       return J({ ok: 1, fromDate, ...r });
     } catch (e) {
       await env.DB.prepare('UPDATE sched_sources SET last_run=?, last_result=? WHERE id=?').bind(
+
         jstTs(), JSON.stringify({ ts: jstTs(), applied: 0, skipped: 0, error: e.message }), id
       ).run();
       return ERR('取り込みエラー: ' + e.message);
@@ -3598,10 +3606,11 @@ async function api(req, env, url) {
       status: isChief ? 'checked' : 'pending'
     };
     if (!r.candidate_name) return ERR('獲得候補者名は必須です');
-    await env.DB.prepare(
+    const ins = await env.DB.prepare(
       'INSERT INTO reports(ts,reporter_id,reporter_name,candidate_name,candidate_grade,first_chief,first_note,s_motivation,s_response,s_total,draft,plan,checker,next_site,next_date,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'
     ).bind(r.ts, r.reporter_id, r.reporter_name, r.candidate_name, r.candidate_grade, r.first_chief, r.first_note, r.s_motivation, r.s_response, r.s_total, r.draft, r.plan, r.checker, r.next_site, r.next_date, r.status).run();
-    await notifyChiefs(env, 'report', `📝 新人報告:${r.candidate_name}(報告者:${me.name})${r.status === 'pending' ? ' — 2次チェックをお願いします' : ''}`);
+    const newReportId = ins.meta && ins.meta.last_row_id;
+    await notifyChiefs(env, 'report', `📝 新人報告:${r.candidate_name}(報告者:${me.name})${r.status === 'pending' ? ' — 2次チェックをお願いします' : ''}`, newReportId ? `#/reports?open=${newReportId}` : '');
     await rookieNotify(env, r);
     return J({ ok: 1 });
   }
@@ -3804,7 +3813,7 @@ async function runDaichoReload(env, urls, opt = {}) {
               await env.DB.prepare('DELETE FROM daicho_archive WHERE id=?').bind(old.id).run();
             }
           }
-          results.push({ url: rawUrl, ok: true, applied: r.applied });
+          results.push({ url: rawUrl, ok: true, applied: r.applied, changes: r.changes || [] });
         }
       } catch (e) {
         results.push({ url: rawUrl, ok: false, error: e.message });
@@ -3865,7 +3874,8 @@ async function cronDaichoReload(env) {
     const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
     if (admins.length) {
       await notify(env, admins.map(a => a.id), 'sched_import',
-        `🌙 台帳の深夜自動再取り込みが完了しました(${jstTs()})。${r.okCount}件成功(反映${r.totalApplied}件)${r.ngCount ? ` / ${r.ngCount}件失敗` : ''}`);
+        `🌙 台帳の深夜自動再取り込みが完了しました(${jstTs()})。${r.okCount}件成功(反映${r.totalApplied}件)${r.ngCount ? ` / ${r.ngCount}件失敗` : ''}`,
+        '#/import?result=daicho');
       if (r.absentResult.clearedPeople) {
         await notify(env, admins.map(a => a.id), 'sched_import', `🌙 台帳自動再取り込みに伴い、不在者の休暇化を${r.absentResult.clearedPeople}件行いました。`);
       }
@@ -4034,7 +4044,7 @@ async function cronScheduleSources(env) {
       ]);
       await env.DB.prepare('UPDATE sched_sources SET last_run=?, last_result=? WHERE id=?').bind(
         jstTs(),
-        JSON.stringify({ ts: jstTs(), applied: r.applied, skipped: r.skipped, unchangedPeople: r.unchangedPeople, changedPeople: r.changedPeople, error: (r.errors && r.errors[0]) || '' }),
+        JSON.stringify({ ts: jstTs(), applied: r.applied, skipped: r.skipped, unchangedPeople: r.unchangedPeople, changedPeople: r.changedPeople, error: (r.errors && r.errors[0]) || '', changes: r.changes || [] }),
         src.id
       ).run();
       console.log(`[cronScheduleSources] done: id=${src.id} applied=${r.applied} skipped=${r.skipped}`);
@@ -4043,7 +4053,8 @@ async function cronScheduleSources(env) {
         const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
         if (admins.length) {
           await notify(env, admins.map(a => a.id), 'sched_import',
-            `📅【${src.label}】からスケジュールを取り込みました(${jstTs()})。反映${r.applied}件・変更あり${r.changedPeople ?? '-'}人`);
+            `📅【${src.label}】からスケジュールを取り込みました(${jstTs()})。反映${r.applied}件・変更あり${r.changedPeople ?? '-'}人`,
+            `#/sched-sources?result=${src.id}`);
         }
       }
     } catch (e) {
