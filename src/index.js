@@ -1089,9 +1089,18 @@ function colToIdx(ref) { // "B12" → 1
 
 function parseSheetXml(xml, sst) {
   const grid = [];
-  for (const rowm of xml.matchAll(/<row\b[^>]*>([\s\S]*?)<\/row>/g)) {
+  for (const rowm of xml.matchAll(/<row\b([^>]*)>([\s\S]*?)<\/row>/g)) {
+    const rowAttrs = rowm[1] || '';
+    const rowContent = rowm[2] || '';
+    // Excelは完全に空の行のXMLタグ自体を省略することがある。単純に<row>の出現順で
+    // grid配列に詰めると、その分だけ以降の全ての行が1行以上ズレてしまう
+    // (=年月・ヘッダー行の位置がタブごとに不揃いになり、正しく取り込めない原因になっていた)。
+    // 必ずrow自身のr属性(実際の行番号、1始まり)を読み、その位置に配置する。
+    const rNum = (rowAttrs.match(/r="(\d+)"/) || [])[1];
+    const ri = rNum ? (parseInt(rNum, 10) - 1) : grid.length;
+
     const cells = [];
-    for (const cm of rowm[1].matchAll(/<c\b([^>]*?)\/>|<c\b([^>]*)>([\s\S]*?)<\/c>/g)) {
+    for (const cm of rowContent.matchAll(/<c\b([^>]*?)\/>|<c\b([^>]*)>([\s\S]*?)<\/c>/g)) {
       const attrs = cm[1] || cm[2] || '';
       const inner = cm[3] || '';
       const rref = (attrs.match(/r="([A-Z]+\d+)"/) || [])[1] || '';
@@ -1106,7 +1115,8 @@ function parseSheetXml(xml, sst) {
       while (cells.length < ci) cells.push('');
       cells[ci] = val;
     }
-    grid.push(cells);
+    while (grid.length < ri) grid.push([]);
+    grid[ri] = cells;
   }
   return grid;
 }
@@ -3980,8 +3990,13 @@ async function cronNotify(env, opt = {}) {
   // ここまで来たら、今日はもう実行しない(重複送信防止のため、対象者が0人でも記録する)。強制実行時は記録しない(手動テストのため)。
   if (!opt.force) await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('notify_last_run',?)").bind(today).run();
 
-  // まず「その日、自分自身もwork予定があるチーフ」を対象にする(最も正確な絞り込み)
-  let recipients = (await env.DB.prepare(
+  // その日、実際にwork予定があるチーフ以上(または notify_rookie=1 の個人設定者)のみを対象にする。
+  // 過去には「該当者が0人なら対象ロール全員へフォールバックする」仕様だったが、これは
+  // 「チーフのスケジュールデータが未登録の環境」を救済するためのものが、実際には
+  // 「その日はたまたま誰もチーフが現場に入っていない、ごく普通の日」でも発動してしまい、
+  // 現場に入っていない人にまで新人報告リマインドが届いてしまう誤送信の原因になっていた。
+  // 対象者が実際に0人であれば、単純に「今日は送る必要が無い」として何もしないのが正しい。
+  const recipients = (await env.DB.prepare(
     `SELECT DISTINCT u.id FROM users u
      JOIN schedule s ON s.user_id = u.id AND s.date = ? AND s.type = 'work'
      WHERE COALESCE(u.suspended,0) = 0
@@ -3993,28 +4008,12 @@ async function cronNotify(env, opt = {}) {
          SELECT 1 FROM reports r WHERE r.reporter_id = u.id AND r.ts LIKE ?
        )`
   ).bind(today, ...baseRoles, today + '%').all()).results;
-  console.log('[cronNotify] recipients(primary)', recipients.length);
-
-  // 該当者が0人の場合(チーフ自身の当日予定データが無い環境)は、対象ロール全員へフォールバックする
-  if (!recipients.length) {
-    recipients = (await env.DB.prepare(
-      `SELECT id FROM users u
-       WHERE COALESCE(u.suspended,0) = 0
-         AND (
-           (u.role IN (${phRole}) AND COALESCE(u.notify_rookie, 1) != 0)
-           OR u.notify_rookie = 1
-         )
-         AND NOT EXISTS (
-           SELECT 1 FROM reports r WHERE r.reporter_id = u.id AND r.ts LIKE ?
-         )`
-    ).bind(...baseRoles, today + '%').all()).results;
-    console.log('[cronNotify] recipients(fallback)', recipients.length);
-  }
+  console.log('[cronNotify] recipients', recipients.length);
 
   const ids = recipients.map(r => r.id);
   if (ids.length) await notify(env, ids, 'remind', `⏰【リマインド】(${today}) 本日現場が稼働しています。新人の報告があれば忘れずに提出してください。`);
   console.log('[cronNotify] done, sent to', ids.length);
-  return { sent: ids.length, reason: ids.length ? '' : '対象者が0人でした(全員報告済み、または対象ロールの人が現場に入っていない可能性があります)' };
+  return { sent: ids.length, reason: ids.length ? '' : '対象者が0人でした(全員報告済み、または対象ロールの人が現場に入っていません)' };
 }
 
 // 予定表(チーフ/1課など、sched_sourcesテーブルに登録された全ソース)を自動取り込みする。
