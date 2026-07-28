@@ -1447,12 +1447,35 @@ function parseFormatAB(rows, ym, cfg, keywordMap) {
 // 取り込み実行日ではなくシート自身が持つ年月を優先して使う(翌月分を先に取り込む運用に対応)。
 function detectYmFromGrid(grid, fallbackYm) {
   let year = '', month = '';
+  // シリアル値として解釈してよい妥当範囲(実行時点の前後2年程度)。
+  // 範囲を広く取りすぎると、現場の何らかの数値(時間・金額等)を誤って日付と解釈してしまうリスクがあるため絞る。
+  const nowY = new Date(Date.now() + 9 * 3600e3).getUTCFullYear();
+  const serialMin = Math.round(Date.UTC(nowY - 1, 0, 1) / 86400000) + 25569;
+  const serialMax = Math.round(Date.UTC(nowY + 2, 11, 31) / 86400000) + 25569;
   for (let r = 0; r < Math.min(grid.length, 6); r++) {
     const line = grid[r] || [];
     for (let c = 0; c < Math.min(line.length, 8); c++) {
       const v = String(line[c] == null ? '' : line[c]).trim();
       if (!year) { const m = v.match(/^(20\d{2})年?$/); if (m) year = m[1]; }
       if (!month) { const m = v.match(/^(\d{1,2})月$/); if (m) month = String(m[1]).padStart(2, '0'); }
+      // 「6月」等をExcelに入力すると、自動的に日付として認識され、表示形式だけが「M月」等になり、
+      // 実際のセル値は日付シリアル値になっていることがある。テキストで検出できなかった場合は、
+      // シリアル値からも年・月を拾う。
+      if ((!year || !month) && v !== '') {
+        const n = Number(v);
+        if (Number.isFinite(n) && n >= serialMin && n <= serialMax) {
+          const ds = excelSerialToDate(n);
+          if (ds) {
+            const [dy, dm, dd] = ds.split('-');
+            // 「1月1日」は、年だけを入力したセルが日付化された結果である可能性が高い
+            // (例:「2026」とだけ入力→2026-01-01と解釈される)。この場合は年情報としてのみ扱い、
+            // 月情報としては採用しない(本来の月専用セルの値を上書きしてしまわないようにするため)。
+            const isYearOnlyGuess = dm === '01' && dd === '01';
+            if (!year) year = dy;
+            if (!month && !isYearOnlyGuess) month = dm;
+          }
+        }
+      }
     }
   }
   return (year && month) ? `${year}-${month}` : fallbackYm;
@@ -2159,10 +2182,12 @@ async function api(req, env, url) {
     // (一部URLのみでも、利用者が意図して選んだ場合は許可する。フロント側で警告を表示した上でのチェックを想定)
     const checkAbsent = body.checkAbsent !== undefined ? !!body.checkAbsent : isFullSet;
     try {
-      const r = await runDaichoReload(env, targetUrls, { updateRemaining: false, checkAbsent, sourceLabel: '台帳手動再取り込み' });
+      const r = await runDaichoReload(env, targetUrls, { updateRemaining: true, checkAbsent, sourceLabel: '台帳手動再取り込み' });
+      const remainRaw = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
       return J({
         ok: 1, okCount: r.okCount, ngCount: r.ngCount, totalApplied: r.totalApplied,
         results: r.results, clearedAbsent: r.absentResult.clearedPeople, checkedAbsent: checkAbsent,
+        remainingCount: remainRaw.length,
       });
     } catch (e) {
       return ERR('取り込み中にエラーが発生しました: ' + e.message);
@@ -3364,7 +3389,7 @@ async function api(req, env, url) {
           const fmt = body.format && body.format !== 'auto' ? body.format : detectFormat(grid);
           let parsed;
           if (fmt === 'C') parsed = parseFormatC(grid, body.cfg, fileDate).rows;
-          else if (fmt === 'D') parsed = parseFormatD(grid, detectYmFromGrid(grid, month), keywordMap).rows;
+          else if (fmt === 'D') parsed = parseFormatD(grid, detectYmFromGrid(grid, month), keywordMap).rows; // シートに記載の年月を優先。無ければ画面で選択した対象月を使う
           else parsed = parseFormatAB(grid, month, body.cfg, keywordMap).rows;
           if (parsed && parsed.length) { allRows = allRows.concat(parsed); sheetReport.push({ name: nm, count: parsed.length }); }
           else sheetReport.push({ name: nm, count: 0 });
@@ -3969,6 +3994,14 @@ async function cronScheduleSources(env) {
   // これにより、CPU時間制限等で全ソースを処理しきれない場合でも、
   // 最も取り込みが遅れているソースが後回しにされ続けることを防ぐ。
   const sources = (await env.DB.prepare("SELECT * FROM sched_sources WHERE enabled=1 ORDER BY last_run ASC").all()).results;
+  // ラベルに「チーフ」を含むソースは、他より必ず先に処理する。予定表ソースの反映は
+  // skip-if-exists方式(既にその日に予定があれば上書きしない)のため、先に処理された内容が
+  // 優先的に残る。同じ人が複数の予定表に載っている場合、チーフ予定表の内容を優先するための措置。
+  sources.sort((a, b) => {
+    const aChief = /チーフ/.test(a.label) ? 0 : 1;
+    const bChief = /チーフ/.test(b.label) ? 0 : 1;
+    return aChief - bChief; // 安定ソートなので、同じ優先度内ではlast_run ASCの順序が保たれる
+  });
 
   for (const src of sources) {
     try {

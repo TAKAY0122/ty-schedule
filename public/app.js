@@ -4164,7 +4164,7 @@ async function pageImport(app){
       if(!urlList.length){ box.innerHTML = ''; return; }
       box.innerHTML = `
         <div style="font-weight:700;font-size:13px;margin-bottom:6px">保存済みURLから、今すぐ手動で再取り込む</div>
-        <div class="muted" style="font-size:11.5px;margin-bottom:8px">深夜の自動実行を待たずに、選んだURLだけ今すぐ再取り込みできます。</div>
+        <div class="muted" style="font-size:11.5px;margin-bottom:8px">深夜の自動実行を待たずに、選んだURLだけ今すぐ再取り込みできます。<b>取り込んだURLは、成功・失敗にかかわらず保存済みリストから自動的に削除されます</b>(深夜の自動実行と同じ扱いです)。</div>
         <div style="max-height:220px;overflow-y:auto;border:1px solid var(--line);border-radius:8px;padding:6px 10px;margin-bottom:8px">
           ${urlList.map((u,i)=>`<label style="display:flex;align-items:flex-start;gap:7px;padding:5px 0;font-size:12.5px;border-bottom:1px solid var(--line)">
             <input type="checkbox" class="dr-url-chk" value="${h(u.url)}" checked style="margin-top:3px">
@@ -4208,15 +4208,26 @@ async function pageImport(app){
         const absentNote = checkAbsent
           ? (isAll ? '\n\n選択した全ファイルのどれにも登場しない人を休暇にします。' : '\n\n⚠ 一部のURLのみですが、休暇化を行います。選んでいない他のファイルに載っている人まで休暇にされる可能性があります。')
           : '\n\n休暇化は行いません。';
-        if(!confirm(`選択した${selected.length}件を今すぐ再取り込みします。${absentNote}\n\nシートの内容によっては時間がかかる場合があります。よろしいですか？`)) return;
+        if(!confirm(`選択した${selected.length}件を今すぐ再取り込みします。${absentNote}\n\n取り込んだURLは保存済みリストから削除されます。シートの内容によっては時間がかかる場合があります。よろしいですか？`)) return;
         msgEl.textContent = '取り込み中…(内容によっては数十秒かかります)';
         await withLoading(runBtn, async () => {
           try{
             const r = await api('/daicho-reload-run-now', { method:'POST', body:{ urls: selected, checkAbsent } });
-            msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${r.checkedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''}<br>`
+            msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${r.checkedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''} / 残りの保存済みURL ${r.remainingCount}件<br>`
               + r.results.map(x=>`${x.ok?icon('checkCircle',{size:'12px'}):icon('xCircle',{size:'12px'})} ${h((x.url||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>');
             popup(`取り込みが完了しました(${r.okCount}件成功)`);
-            loadStatus(true); // 最終実行結果のみ更新。URL一覧は再構築しない(選択・チェック状態を維持するため)
+            // 実行したURLは保存済みリストから削除済みのため、一覧からも取り除く(チェック状態を保つため
+            // 一覧全体は再構築せず、対象の行だけをDOM上から削除する)
+            box.querySelectorAll('.dr-url-chk').forEach(chk => {
+              if(selected.includes(chk.value)){
+                const label = chk.closest('label');
+                if(label) label.remove();
+              }
+            });
+            if(!box.querySelector('.dr-url-chk')){
+              box.innerHTML = '<div class="muted" style="font-size:12.5px">保存済みのURLはありません。</div>';
+            }
+            loadStatus(true); // 最終実行結果・保存済み件数のみ更新(URL一覧は上で個別に更新済み)
           }catch(e){ msgEl.innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
         });
       };
