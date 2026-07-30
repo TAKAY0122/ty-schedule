@@ -43,8 +43,11 @@ const ICONS = {
   circleFilled:'<circle cx="12" cy="12" r="8" fill="currentColor" stroke="none"/>',
   badge:'<path d="M12 2l2.4 5.5L20 8l-4 4.2L17.5 18 12 15l-5.5 3L8 12.2 4 8l5.6-.5z"/>',
   arrowLeft:'<path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/>',
+  chevronsUp:'<path d="M17 11l-5-5-5 5"/><path d="M17 18l-5-5-5 5"/>',
+  chevronsDown:'<path d="M7 13l5 5 5-5"/><path d="M7 6l5 5 5-5"/>',
   arrowRight:'<path d="M5 12h14"/><path d="M12 5l7 7-7 7"/>',
   plus:'<path d="M12 5v14M5 12h14"/>',
+  trash:'<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
   link:'<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
   flask:'<path d="M9 2v6L4.5 18a2 2 0 0 0 1.8 3h11.4a2 2 0 0 0 1.8-3L15 8V2"/><path d="M9 2h6"/><path d="M8.5 13h7"/>',
   yen:'<path d="M6 3l6 8 6-8"/><path d="M12 11v10M7 12h10M7 16h10"/>',
@@ -94,7 +97,7 @@ const ROLE_JP = { admin:'チーフ(管理者)', handler:'チーフ(手配者)', 
 function roleLabel(u){ if(u && u.suspended) return (u.role==='member'?'メンツ':'チーフ')+'(アカウント停止)'; return ROLE_JP[u.role]||u.role; }
 const LV = { member:0, chief:1, handler:2, admin:3 };
 // 個別追加権限の基準レベル(バックエンドのPERMSと対応)
-const PERM_BASE_LV = { report_check:1, blacklist_manage:1, summary_view:1, day_schedule_view:1, member_stats_view:1, sites_view:1, members_view:1, site_pay:2, site_manage:2, import_data:2, handler_tools:2, wage_settings:3, account_manage:3, daicho_manage:3, dashboard_view:3 };
+const PERM_BASE_LV = { report_check:1, blacklist_manage:1, summary_view:1, day_schedule_view:1, member_stats_view:1, sites_view:1, members_view:1, site_pay:2, site_manage:2, import_data:2, handler_tools:2, wage_settings:3, account_manage:3, daicho_manage:3, dashboard_view:3, member_summary_view:2 };
 // has(key): MEがその機能を使えるか(基本権限を満たす、または個別に追加権限がある)
 function has(key){
   if(!ME) return false;
@@ -996,6 +999,8 @@ async function render(){
     else if(hash === '#/daicho') await pageDaicho(app);
     else if(hash.startsWith('#/sched-sources')) await pageSchedSources(app, hash);
     else if(hash.startsWith('#/permissions/')) await pagePermissions(app, hash);
+    else if(hash === '#/member-summary-search') await pageMemberSummarySearch(app);
+    else if(hash.startsWith('#/member-summary/')) await pageMemberYearSummary(app, hash);
     else if(hash === '#/role-permissions') await pageRolePermissions(app);
     else if(hash === '#/password') pagePassword(app);
     else if(hash === '#/calendar-guide') await pageCalendarGuide(app);
@@ -1103,6 +1108,7 @@ function renderShell(hash){
   const canSitesView = has('sites_view');
   const canMembersView = has('members_view');
   const canDashboardView = has('dashboard_view');
+  const canMemberSummaryNav = has('member_summary_view');
   const showMemberGroup = isChief || canSummaryView || canDayScheduleView || canMemberStatsView || canMembersView;
 
   // ナビゲーション構造。children を持つ項目はグループ(タップでサブメニューに切り替わる)、
@@ -1110,43 +1116,44 @@ function renderShell(hash){
   // (グループ自体も、中身が1つも無ければ表示されない)。
   const nav = [
     { path:'#/home', icon:'home', label:'ホーム', show:true },
-    { path:'#/dashboard', icon:'gauge', label:'ダッシュボード', show:canDashboardView },
+    { path:'#/dashboard', icon:'gauge', label:'ダッシュボード', show:canDashboardView, role:'admin' },
     { icon:'calendar', label:'スケジュール', show:true, children:[
       { path:'#/schedule', icon:'calendar', label:'マイスケジュール' },
-      ...(canEdit ? [{ path:'#/edit', icon:'edit', label:'スケジュール入力' }] : []),
-      ...(isHandlerRole ? [{ path:'#/self-reports', icon:'mail', label:'現場変更報告の承認' }] : []),
+      ...(canEdit ? [{ path:'#/edit', icon:'edit', label:'スケジュール入力', role:'handler' }] : []),
+      ...(isHandlerRole ? [{ path:'#/self-reports', icon:'mail', label:'現場変更報告の承認', role:'handler' }] : []),
     ]},
     { icon:'handRaise', label:'希望', show:true, children:[
       { path:'#/availability', icon:'handRaise', label:'休み希望・稼働時間の提出' },
-      ...(isHandlerRole ? [{ path:'#/availability-team', icon:'calendarDays', label:'チームの希望一覧' }] : []),
-      ...(isChief ? [{ path:'#/nominate', icon:'user', label:'メンバーを希望する' }] : []),
-      ...(isHandlerRole ? [{ path:'#/nominations', icon:'checkCircle', label:'メンバー指名の承認' }] : []),
+      ...(isHandlerRole ? [{ path:'#/availability-team', icon:'calendarDays', label:'チームの希望一覧', role:'handler' }] : []),
+      ...(isChief ? [{ path:'#/nominate', icon:'user', label:'メンバーを希望する', role:'chief' }] : []),
+      ...(isHandlerRole ? [{ path:'#/nominations', icon:'checkCircle', label:'メンバー指名の承認', role:'handler' }] : []),
     ]},
     { path:'#/sites', icon:'stadium', label:'現場一覧', show:canSitesView },
     { icon:'users', label:'メンバー', show:showMemberGroup, children:[
-      ...(isHandlerRole ? [{ path:'#/members/mine', icon:'briefcase', label:`${ME.name}手配` }] : []),
+      ...(isHandlerRole ? [{ path:'#/members/mine', icon:'briefcase', label:`${ME.name}手配`, role:'handler' }] : []),
       ...(canMembersView ? [{ path:'#/members', icon:'users', label:'メンバー一覧' }] : []),
       ...(canSummaryView ? [{ path:'#/summary', icon:'barChart', label:'稼働サマリー' }] : []),
       ...(canMemberStatsView ? [{ path:'#/member-stats', icon:'trendingUp', label:'メンバー分析' }] : []),
       ...(canDayScheduleView ? [{ path:'#/day-schedule', icon:'layoutGrid', label:'スケジュール一覧' }] : []),
+      ...(canMemberSummaryNav ? [{ path:'#/member-summary-search', icon:'barChart', label:'個人の年間サマリー', role:'handler' }] : []),
     ]},
     { icon:'sparkles', label:'新人報告', show:true, children:[
       { path:'#/report', icon:'fileText', label:'新人報告' },
       { path:'#/reports', icon:'clipboardList', label:'報告一覧' },
-      ...(canDraft ? [{ path:'#/draft', icon:'star', label:'ドラフト' }] : []),
-      ...(canBlacklist ? [{ path:'#/blacklist', icon:'ban', label:'ブラックリスト' }] : []),
-      ...(ME.role==='admin' ? [{ path:'#/report-export', icon:'paperclip', label:'スプレッドシート貼り付け用コピー' }] : []),
+      ...(canDraft ? [{ path:'#/draft', icon:'star', label:'ドラフト', role:'handler' }] : []),
+      ...(canBlacklist ? [{ path:'#/blacklist', icon:'ban', label:'ブラックリスト', role:'handler' }] : []),
+      ...(ME.role==='admin' ? [{ path:'#/report-export', icon:'paperclip', label:'スプレッドシート貼り付け用コピー', role:'admin' }] : []),
     ]},
     { icon:'settings', label:'システム管理', show: showSystemGroup, children:[
-      ...(canAccountAdmin ? [{ path:'#/admin', icon:'shieldCheck', label:'アカウント管理' }] : []),
-      ...(canSystemSettings ? [{ path:'#/admin-settings', icon:'wrench', label:'システム設定' }] : []),
-      ...(canRolePerm ? [{ path:'#/role-permissions', icon:'shield', label:'権限の一括設定' }] : []),
-      ...(canHandlerStatus ? [{ path:'#/handler-status', icon:'circleFilled', label:'ログイン中・編集履歴' }] : []),
+      ...(canAccountAdmin ? [{ path:'#/admin', icon:'shieldCheck', label:'アカウント管理', role:'admin' }] : []),
+      ...(canSystemSettings ? [{ path:'#/admin-settings', icon:'wrench', label:'システム設定', role:'admin' }] : []),
+      ...(canRolePerm ? [{ path:'#/role-permissions', icon:'shield', label:'権限の一括設定', role:'admin' }] : []),
+      ...(canHandlerStatus ? [{ path:'#/handler-status', icon:'circleFilled', label:'ログイン中・編集履歴', role:'handler' }] : []),
     ]},
     { icon:'upload', label:'スプレッド読み込み', show: showSpreadGroup, children:[
-      ...(canImport ? [{ path:'#/import', icon:'download', label:'スプレッドシート取り込み' }] : []),
-      ...(canSchedSrc ? [{ path:'#/sched-sources', icon:'rss', label:'予定表ソース管理' }] : []),
-      ...(canDaicho ? [{ path:'#/daicho', icon:'package', label:'台帳保管' }] : []),
+      ...(canImport ? [{ path:'#/import', icon:'download', label:'スプレッドシート取り込み', role:'handler' }] : []),
+      ...(canSchedSrc ? [{ path:'#/sched-sources', icon:'rss', label:'予定表ソース管理', role:'admin' }] : []),
+      ...(canDaicho ? [{ path:'#/daicho', icon:'package', label:'台帳保管', role:'admin' }] : []),
     ]},
   ].filter(n => n.show);
 
@@ -1161,7 +1168,7 @@ function renderShell(hash){
   document.getElementById('root').innerHTML = `
   <header>
     <button class="menu-btn" id="menu-btn" aria-label="メニュー">${icon('menu',{size:'12px'})}</button>
-    <div class="brand">RB事業2課<small>SCHEDULE</small></div>
+    <a href="#/home" class="brand" id="brand-home">RB事業2課<small>SCHEDULE</small></a>
     <div class="cur-page">${h(curName)}</div>
     <div class="hright">
       <button class="pin-btn ${ME.handler===1?'active':''}" id="pin-btn" title="${ME.handler===1?'手配者モードを終了':'手配者モードに入る'}">${ME.handler===1?icon('unlock'):icon('key')}</button>
@@ -1218,12 +1225,12 @@ function renderShell(hash){
         <div class="drawer-head">メニュー</div>
         ${nav.map((item,i) => {
           if(!item.children){
-            return `<button type="button" class="drawer-link ${hashIs(hash, item.path)?'active':''}" data-go="${item.path}"><span class="drawer-label">${icon(item.icon)} ${h(item.label)}</span></button>`;
+            return `<button type="button" class="drawer-link ${item.role?'role-'+item.role:''} ${hashIs(hash, item.path)?'active':''}" data-go="${item.path}"><span class="drawer-label">${icon(item.icon)} ${h(item.label)}</span>${item.role?`<span class="role-dot role-dot-${item.role}"></span>`:''}</button>`;
           }
           const isOpen = !!stMenu.open[i];
           return `<button type="button" class="drawer-link drawer-group" data-toggle="${i}"><span class="drawer-label">${icon(item.icon)} ${h(item.label)}</span><span class="drawer-arrow ${isOpen?'open':''}">›</span></button>
             <div class="drawer-sub ${isOpen?'':'collapsed'}">
-              ${item.children.map(c => `<button type="button" class="drawer-link drawer-sublink ${hashIs(hash,c.path)?'active':''}" data-go="${c.path}"><span class="drawer-label">${icon(c.icon)} ${h(c.label)}</span></button>`).join('')}
+              ${item.children.map(c => `<button type="button" class="drawer-link drawer-sublink ${hashIs(hash,c.path)?'active':''}" data-go="${c.path}"><span class="drawer-label">${icon(c.icon)} ${h(c.label)}</span>${c.role?`<span class="role-dot role-dot-${c.role}"></span>`:''}</button>`).join('')}
             </div>`;
         }).join('')}
         ${footerLinks}
@@ -1898,24 +1905,25 @@ async function pageHome(app){
   const pendingCount = selfReports.length;
 
   const allMenuItems = [
-    ['#/dashboard','gauge','ダッシュボード', has('dashboard_view')],
+    ['#/dashboard','gauge','ダッシュボード', has('dashboard_view'), 'admin'],
     ['#/schedule','calendar','マイスケジュール', true],
     ['#/availability','handRaise','休み希望', true],
-    ['#/edit','edit','スケジュール入力', ME.handler===1],
-    ['#/availability-team','calendarDays','チーム希望一覧', isHandlerRole],
-    ['#/nominate','user','メンバー指名', isChief],
-    ['#/nominations','checkCircle','指名の承認', isHandlerRole],
+    ['#/edit','edit','スケジュール入力', ME.handler===1, 'handler'],
+    ['#/availability-team','calendarDays','チーム希望一覧', isHandlerRole, 'handler'],
+    ['#/nominate','user','メンバー指名', isChief, 'chief'],
+    ['#/nominations','checkCircle','指名の承認', isHandlerRole, 'handler'],
     ['#/sites','stadium','現場一覧', has('sites_view')],
-    ['#/members/mine','briefcase',`${h(ME.name)}手配`, isHandlerRole],
+    ['#/members/mine','briefcase',`${h(ME.name)}手配`, isHandlerRole, 'handler'],
     ['#/members','users','メンバー一覧', has('members_view')],
     ['#/summary','barChart','稼働サマリー', has('summary_view')],
+    ['#/member-summary-search','barChart','個人の年間サマリー', has('member_summary_view'), 'handler'],
     ['#/member-stats','trendingUp','メンバー分析', has('member_stats_view')],
     ['#/day-schedule','layoutGrid','スケジュール一覧', has('day_schedule_view')],
-    ['#/self-reports','mail','変更報告承認', isHandlerRole],
+    ['#/self-reports','mail','変更報告承認', isHandlerRole, 'handler'],
     ['#/report','fileText','新人報告', true],
     ['#/reports','clipboardList','報告一覧', true],
-    ['#/import','download','スプレッド取込', has('import_data')],
-    ['#/admin','shieldCheck','アカウント管理', has('account_manage')],
+    ['#/import','download','スプレッド取込', has('import_data'), 'handler'],
+    ['#/admin','shieldCheck','アカウント管理', has('account_manage'), 'admin'],
   ].filter(m=>m[3]);
   const hidden = getHomeHidden();
   const menuItems = applyHomeOrder(allMenuItems.filter(m => !hidden.includes(m[0])));
@@ -1945,8 +1953,9 @@ async function pageHome(app){
       <button class="btn ghost sm" id="home-edit-toggle">${homeEditing?'完了':icon('edit',{size:'13px'})+' 編集'}</button>
     </div>
     <div class="home-menu" id="home-menu-grid">
-      ${menuItems.map(([hash,iconName,label])=>`<a href="${homeEditing?'javascript:void(0)':hash}" class="home-menu-btn ${homeEditing?'editing':''}" data-hash="${hash}">
+      ${menuItems.map(([hash,iconName,label,,role])=>`<a href="${homeEditing?'javascript:void(0)':hash}" class="home-menu-btn ${homeEditing?'editing':''}" data-hash="${hash}">
         ${homeEditing?`<button class="home-menu-remove" data-hash="${hash}" type="button">${icon('x',{size:'12px'})}</button>`:''}
+        ${role?`<span class="role-dot role-dot-${role}" style="position:absolute;top:8px;right:8px"></span>`:''}
         <span class="home-menu-icon">${icon(iconName,{size:'22px'})}</span><span>${h(label)}</span>
       </a>`).join('')}
       ${homeEditing?`<button class="home-menu-btn home-menu-add" id="home-menu-add-btn" type="button"><span class="home-menu-icon">${icon('plus',{size:'22px'})}</span><span>追加</span></button>`:''}
@@ -2538,7 +2547,8 @@ async function openMemberDayEdit(uid, u, date){
 /* ===== 現場一覧(チーフ以上)===== */
 async function pageSites(app){
   if(!has('sites_view')){ notFound(app); return; }
-  const stSites = PAGE_STATE.sites || (PAGE_STATE.sites = { month: MONTH });
+  const stSites = PAGE_STATE.sites || (PAGE_STATE.sites = { month: MONTH, openDates: new Set() });
+  if(!stSites.openDates) stSites.openDates = new Set(); // 古い保存状態との互換
   const month = stSites.month;
   const sites = await api(`/sites?month=${month}`);
   // 日付ごとにグループ化
@@ -2546,18 +2556,20 @@ async function pageSites(app){
   for(const s of sites){ (byDate[s.date] ||= []).push(s); }
   const dates = Object.keys(byDate).sort();
   const [y,mo] = month.split('-').map(Number);
+  const allOpen = dates.length > 0 && dates.every(d => stSites.openDates.has(d));
   app.innerHTML = `
   <h2>現場一覧</h2>
   <div class="card">
-    <div class="row" style="margin-bottom:12px;align-items:center">
+    <div class="row" style="margin-bottom:12px;align-items:center;flex-wrap:wrap;gap:8px">
       <button class="btn ghost sm" id="st-prev">◀</button>
       <b style="min-width:110px;text-align:center">${y}年 ${mo}月</b>
       <button class="btn ghost sm" id="st-next">▶</button>
+      ${dates.length ? `<button class="btn ghost sm" id="st-toggle-all">${allOpen ? icon('chevronsUp',{size:'12px'}) : icon('chevronsDown',{size:'12px'})} ${allOpen ? '全て閉じる' : '全て開く'}</button>` : ''}
       ${ME.handler===1 ? '<span class="muted" style="margin-left:auto">現場をタップ → メンバー確認・追加</span>' : '<span class="muted" style="margin-left:auto">現場をタップ → メンバー確認</span>'}
     </div>
     ${dates.length ? dates.map(date=>{
       const w = new Date(date.slice(0,4), Number(date.slice(5,7))-1, Number(date.slice(8,10))).getDay();
-      return `<details class="st-day">
+      return `<details class="st-day" data-date="${date}" ${stSites.openDates.has(date)?'open':''}>
         <summary class="st-date ${w===0?'sun':w===6?'sat':''}">${Number(date.slice(8,10))}日(${WD[w]}) <span class="muted" style="font-weight:400;font-size:12px">(${byDate[date].length}件)</span></summary>
         <div class="st-sites">
           ${byDate[date].map(s=>`<button class="st-site" data-date="${s.date}" data-site="${h(s.site)}">
@@ -2573,8 +2585,19 @@ async function pageSites(app){
       </details>`;
     }).join('') : '<div class="muted" style="padding:20px 0;text-align:center">この月に登録された現場はありません</div>'}
   </div>`;
-  $('#st-prev').onclick = () => { stSites.month = shiftMonth(month,-1); pageSites(app); };
-  $('#st-next').onclick = () => { stSites.month = shiftMonth(month, 1); pageSites(app); };
+  $('#st-prev').onclick = () => { stSites.month = shiftMonth(month,-1); stSites.openDates = new Set(); pageSites(app); };
+  $('#st-next').onclick = () => { stSites.month = shiftMonth(month, 1); stSites.openDates = new Set(); pageSites(app); };
+  const toggleAllBtn = $('#st-toggle-all');
+  if(toggleAllBtn) toggleAllBtn.onclick = () => {
+    if(allOpen) stSites.openDates = new Set();
+    else stSites.openDates = new Set(dates);
+    pageSites(app);
+  };
+  // 開閉状態を都度PAGE_STATEに記録しておく(現場編集後の再描画で復元するため)
+  app.querySelectorAll('.st-day').forEach(d => d.addEventListener('toggle', () => {
+    if(d.open) stSites.openDates.add(d.dataset.date);
+    else stSites.openDates.delete(d.dataset.date);
+  }));
   app.querySelectorAll('.st-site').forEach(b => b.onclick = () => openSiteModal(b.dataset.date, b.dataset.site));
   app.querySelectorAll('.st-rookie-item').forEach(b => b.onclick = () => {
     location.hash = b.dataset.reportId ? `#/reports?open=${b.dataset.reportId}` : '#/reports';
@@ -3042,12 +3065,14 @@ async function pageMembers(app){
   const cntX = users.filter(u=>!u.ka).length;
 
   const isHandler = has('site_manage') || has('account_manage');
-  const skillBtn = u => `<button class="btn ghost sm" data-skill="${u.id}">編集</button>`;
+  const skillBtn = u => `<button class="btn ghost sm icon-btn" data-skill="${u.id}" title="できること編集">${icon('star')}</button>`;
   const editBtn = u => isHandler
-    ? `<button class="btn ghost sm" data-edit="${u.id}">${icon('edit')} 編集</button>`
-    : `<button class="btn ghost sm" data-skill="${u.id}">できること編集</button>`;
-  const schedBtn = (u,cls='gold') => `<button class="btn ${cls} sm go-sched" data-uid="${u.id}">${icon('calendar')} スケジュール</button>`;
-  const goEditBtn = u => isHandler ? `<button class="btn ghost sm go-edit" data-uid="${u.id}">${icon('edit')} 現場入力</button>` : '';
+    ? `<button class="btn ghost sm icon-btn" data-edit="${u.id}" title="編集">${icon('edit')}</button>`
+    : `<button class="btn ghost sm icon-btn" data-skill="${u.id}" title="できること編集">${icon('star')}</button>`;
+  const schedBtn = (u,cls='gold') => `<button class="btn ${cls} sm icon-btn go-sched" data-uid="${u.id}" title="スケジュール">${icon('calendar')}</button>`;
+  const goEditBtn = u => isHandler ? `<button class="btn ghost sm icon-btn go-edit" data-uid="${u.id}" title="現場入力">${icon('edit')}</button>` : '';
+  const canMemberSummary = has('member_summary_view');
+  const goSummaryBtn = u => (canMemberSummary && u.id !== ME.id) ? `<button class="btn ghost sm icon-btn go-year-summary" data-uid="${u.id}" title="年間サマリー">${icon('barChart')}</button>` : '';
 
   // 並び替え選択肢。ランクは必ず含める(A〜Eランクの昇順)。
   const memberSortOptions = { regno:'登録番号順', rank:'ランク順', name:'氏名順(あ→ん)', han:'班順' };
@@ -3096,7 +3121,7 @@ async function pageMembers(app){
         <td><span class="tag ${u.role}">${roleLabel(u)}</span></td>
         <td>${h(u.rank)}</td><td>${h(u.han)}</td><td>${h(managerName(u,users))}</td><td>${h(u.station)}</td>
         <td class="wrapcell">${h(u.skills)}</td>
-        <td>${editBtn(u)} ${schedBtn(u,'ghost')} ${goEditBtn(u)}</td>
+        <td>${editBtn(u)} ${schedBtn(u,'ghost')} ${goEditBtn(u)} ${goSummaryBtn(u)}</td>
       </tr>`).join('') || `<tr><td colspan="${isHandler?9:8}" class="muted" style="text-align:center;padding:16px">該当するメンバーはいません</td></tr>`}
       </table>
       </div>
@@ -3112,6 +3137,7 @@ async function pageMembers(app){
           ${editBtn(u)}
           ${schedBtn(u)}
           ${goEditBtn(u)}
+          ${goSummaryBtn(u)}
         </div>
       </div>`).join('') || '<div class="muted" style="text-align:center;padding:16px">該当するメンバーはいません</div>'}
       </div>
@@ -3119,6 +3145,7 @@ async function pageMembers(app){
     wireNameLinks(area);
     const sortSel = $('#m-sort'); if(sortSel) sortSel.onchange = (e) => { st.sort = e.target.value; renderList(); };
     area.querySelectorAll('.go-sched').forEach(b=>b.onclick=()=>{ location.hash='#/schedule/'+b.dataset.uid; });
+    area.querySelectorAll('.go-year-summary').forEach(b=>b.onclick=()=>{ location.hash='#/member-summary/'+b.dataset.uid; });
     area.querySelectorAll('.go-edit').forEach(b=>b.onclick=()=>{
       const uid = b.dataset.uid;
       const proceed = () => { location.hash = '#/edit/' + uid; render(); };
@@ -3764,6 +3791,7 @@ function openReport(r){
   const pending = r.status === 'pending';
   const canCheck = has('report_check'); // 2次チェックの記入・修正
   const canBlacklist = has('blacklist_manage'); // ブラックリスト登録
+  const canDelete = has('site_manage'); // 削除(手配者以上)
   modal(`<h3>新人報告 #${r.id} ${pending?'<span class="tag pending">2次未チェック</span>':'<span class="tag checked">チェック済</span>'}</h3>
   <dl class="kv">
     <dt>タイムスタンプ</dt><dd>${h(r.ts)}</dd>
@@ -3793,7 +3821,10 @@ function openReport(r){
   </div>
   <div class="row" style="margin-top:12px"><button class="btn gold" id="c-save">${pending ? 'チェック完了' : '修正を保存'}</button>${!pending?'<span class="muted" style="font-size:12px">※ ドラフト承認を「OK」にするとドラフト一覧に表示されます</span>':''}</div>`
   : (pending ? `<div class="msg" style="background:#f0efe9;padding:12px;border-radius:8px;margin-top:14px;font-size:13px">2次チェックはまだ行われていません。</div>` : '')}
-  ${canBlacklist ? `<div class="row" style="margin-top:14px"><button class="btn danger sm" id="bl-add">ブラックリストに登録</button></div>` : ''}`);
+  <div class="row" style="margin-top:14px;gap:8px">
+    ${canBlacklist ? `<button class="btn danger sm" id="bl-add">ブラックリストに登録</button>` : ''}
+    ${canDelete ? `<button class="btn danger sm" id="report-del" style="margin-left:${canBlacklist?'0':'auto'}">${icon('trash',{size:'12px'})} この報告を削除</button>` : ''}
+  </div>`);
 
   const cs = $('#c-save');
   if(cs) cs.onclick = async () => {
@@ -3818,6 +3849,18 @@ function openReport(r){
         await api('/blacklist', { method:'POST', body:{ name:r.candidate_name, reporter:r.reporter_name, reason:'' } });
         closeModal();
         popup('ブラックリストに登録しました。');
+      }catch(e){ popup(e.message, 'error'); }
+    });
+  };
+  const delBtn = $('#report-del');
+  if(delBtn) delBtn.onclick = async () => {
+    if(!confirm(`「${r.candidate_name}」さんの新人報告(#${r.id})を削除しますか?\n\nこの操作は取り消せません。`)) return;
+    await withLoading(delBtn, async () => {
+      try{
+        await api('/reports/'+r.id, { method:'DELETE' });
+        closeModal();
+        popup('新人報告を削除しました。');
+        render();
       }catch(e){ popup(e.message, 'error'); }
     });
   };
@@ -4214,7 +4257,7 @@ async function pageImport(app, hash){
           try{
             const r = await api('/daicho-reload-run-now', { method:'POST', body:{ urls: selected, checkAbsent } });
             const hasChanges = (r.results||[]).some(x => x.changes && x.changes.length);
-            msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${r.checkedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''} / 残りの保存済みURL ${r.remainingCount}件${hasChanges?` <button class="btn ghost xs" id="dr-run-show-changes">変更内容を見る</button>`:''}<br>`
+            msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${r.checkedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''} / 残りの保存済みURL ${r.remainingCount}件${hasChanges?` <button class="btn ghost xs" id="dr-run-show-changes">変更内容を見る</button>`:''}<br><span class="muted" style="font-size:11px">今夜の深夜自動再取り込みは、今回の手動実行分としてスキップされます。</span><br>`
               + r.results.map(x=>`${x.ok?icon('checkCircle',{size:'12px'}):icon('xCircle',{size:'12px'})} ${h((x.url||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>');
             const showBtn2 = $('#dr-run-show-changes');
             if(showBtn2) showBtn2.onclick = () => showDaichoChanges({ ts: '今回の実行結果', results: r.results });
@@ -4633,6 +4676,160 @@ async function pageRolePermissions(app){
   });
 }
 
+/* ===== 個人の年間稼働サマリー・備考欄(手配者以上、本人は閲覧不可) ===== */
+/* ===== 個人の年間サマリーを、メンバーを検索して開くための入口画面(左メニュー用) ===== */
+async function pageMemberSummarySearch(app){
+  if(!has('member_summary_view')){ notFound(app); return; }
+  app.innerHTML = `<h2>${icon('barChart')} 個人の年間サマリー</h2><div class="card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>`;
+  const users = await getUsers();
+  const list = users.filter(u => u.id !== ME.id).sort((a,b) => String(a.regno||'').localeCompare(String(b.regno||''), undefined, {numeric:true}));
+  app.innerHTML = `
+  <h2>${icon('barChart')} 個人の年間サマリー</h2>
+  <div class="card">
+    <div class="muted" style="margin-bottom:10px;font-size:12.5px">対象のメンバーを選んでください(ご自身は対象外です)</div>
+    <input type="text" id="mss-q" placeholder="氏名・登録番号で検索" style="width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:8px;font-size:14px;margin-bottom:12px">
+    <div id="mss-list" style="max-height:60vh;overflow-y:auto"></div>
+  </div>`;
+  const renderList = () => {
+    const q = $('#mss-q').value.trim();
+    const filtered = !q ? list : list.filter(u => (u.name||'').includes(q) || (u.regno||'').includes(q));
+    $('#mss-list').innerHTML = filtered.map(u => `<button type="button" class="drawer-link" data-uid="${u.id}" style="border-radius:8px;margin-bottom:2px">
+        <span class="drawer-label">${h(u.name)} <span class="muted" style="font-size:11.5px">${h(u.regno)} ${u.rank?h(u.rank)+'ランク':''}</span></span>
+      </button>`).join('') || '<div class="muted" style="text-align:center;padding:16px">該当するメンバーがいません</div>';
+    $('#mss-list').querySelectorAll('[data-uid]').forEach(b => b.onclick = () => { location.hash = '#/member-summary/' + b.dataset.uid; });
+  };
+  renderList();
+  $('#mss-q').oninput = renderList;
+}
+
+async function pageMemberYearSummary(app, hash){
+  if(!has('member_summary_view')){ notFound(app); return; }
+  const uid = Number(hash.split('/')[2]);
+  if(!uid){ notFound(app); return; }
+  if(uid === ME.id){ notFound(app); return; } // 本人アクセスはバックエンドと同様、存在自体を秘匿する
+
+  const st = PAGE_STATE.memberSummary || (PAGE_STATE.memberSummary = {});
+  if(st.uid !== uid){ st.uid = uid; st.year = Number(jstToday().slice(0,4)) - (Number(jstToday().slice(5,7)) < 12 ? 1 : 0); }
+
+  app.innerHTML = `<h2>${icon('barChart')} 年間サマリー</h2><div class="card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>`;
+  let data, notesData;
+  try{
+    [data, notesData] = await Promise.all([
+      api(`/member-year-summary?uid=${uid}&year=${st.year}`),
+      api(`/member-notes?uid=${uid}`),
+    ]);
+  }catch(e){ notFound(app); return; }
+
+  const monthShort = ym => ym.slice(5,7) + '月' + (ym.slice(5,7)==='12'||ym.slice(5,7)==='01'?`(${ym.slice(0,4)})`:'');
+  const maxHours = Math.max(1, ...data.months.map(m=>m.hours));
+  const canPay = has('site_pay');
+
+  app.innerHTML = `
+  <h2 style="margin-bottom:4px">${icon('barChart')} ${h(data.target.name)} さんの年間サマリー</h2>
+  <div class="muted" style="margin-bottom:14px">${h(data.target.regno)} ${data.target.rank?`/ ${h(data.target.rank)}ランク`:''} ${data.target.han?`/ ${h(data.target.han)}`:''}</div>
+
+  <div class="card" style="margin-bottom:14px">
+    <div class="row" style="align-items:center;justify-content:center;gap:14px">
+      <button class="btn ghost sm" id="ys-prev">${icon('arrowLeft',{size:'13px'})} 前年度</button>
+      <b style="font-size:15px">${h(data.yearLabel)}</b>
+      <button class="btn ghost sm" id="ys-next">次年度 ${icon('arrowRight',{size:'13px'})}</button>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:14px">
+    <div class="card-t" style="font-weight:800;margin-bottom:10px">年間トータル</div>
+    <div class="kpis" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
+      <div class="kpi" style="background:#faf9f6;border:1px solid var(--line);border-radius:11px;padding:11px 6px;text-align:center">
+        <div style="font-size:20px;font-weight:800">${data.total.workDays}<span style="font-size:11px;color:var(--muted)">日</span></div>
+        <div style="font-size:11px;color:var(--muted)">勤務日数</div>
+      </div>
+      <div class="kpi" style="background:#faf9f6;border:1px solid var(--line);border-radius:11px;padding:11px 6px;text-align:center">
+        <div style="font-size:20px;font-weight:800">${data.total.hours}<span style="font-size:11px;color:var(--muted)">h</span></div>
+        <div style="font-size:11px;color:var(--muted)">総勤務時間</div>
+      </div>
+      <div class="kpi" style="background:#faf9f6;border:1px solid var(--line);border-radius:11px;padding:11px 6px;text-align:center">
+        <div style="font-size:20px;font-weight:800">${data.total.overtime}<span style="font-size:11px;color:var(--muted)">h</span></div>
+        <div style="font-size:11px;color:var(--muted)">総残業時間</div>
+      </div>
+      <div class="kpi" style="background:#faf9f6;border:1px solid var(--line);border-radius:11px;padding:11px 6px;text-align:center">
+        ${canPay?`<div style="font-size:20px;font-weight:800">${Math.round(data.total.pay/10000)}<span style="font-size:11px;color:var(--muted)">万円</span></div>`:'<div class="muted" style="font-size:12px">権限なし</div>'}
+        <div style="font-size:11px;color:var(--muted)">給料合計</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:14px">
+    <div class="card-t" style="font-weight:800;margin-bottom:10px">月別の内訳</div>
+    <div class="list-scroll">
+      <table class="list" style="min-width:760px">
+        <tr><th>月</th>${data.months.map(m=>`<th class="nowrap">${monthShort(m.ym)}</th>`).join('')}</tr>
+        <tr><td>勤務日数</td>${data.months.map(m=>`<td>${m.workDays}日</td>`).join('')}</tr>
+        <tr><td>勤務時間</td>${data.months.map(m=>`<td>${m.hours}h</td>`).join('')}</tr>
+        <tr><td>残業時間</td>${data.months.map(m=>`<td>${m.overtime}h</td>`).join('')}</tr>
+        <tr><td>給料</td>${data.months.map(m=>`<td>${canPay?h(m.pay.toLocaleString())+'円':'—'}</td>`).join('')}</tr>
+      </table>
+    </div>
+    <div class="muted" style="font-size:11px;margin-top:6px">${window.innerWidth<640?'横にスクロールできます':''}</div>
+    <div style="margin-top:16px;display:flex;align-items:flex-end;gap:6px;height:120px;padding:0 4px">
+      ${data.months.map(m=>`<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">
+        <div class="muted" style="font-size:10px">${m.hours}h</div>
+        <div class="ys-bar" data-h="${Math.max(2, Math.round(m.hours/maxHours*90))}" style="width:100%;max-width:28px;height:2px;background:var(--gold);border-radius:3px 3px 0 0;transition:height .5s ease"></div>
+        <div class="muted" style="font-size:10px;white-space:nowrap">${m.ym.slice(5,7)}月</div>
+      </div>`).join('')}
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-t" style="font-weight:800;margin-bottom:10px">${icon('fileText',{size:'14px'})} 備考欄</div>
+    <div class="muted" style="font-size:11.5px;margin-bottom:10px">自由に記入できます。誰が書いたかは全員に表示されます。本人は閲覧できません。</div>
+    <textarea id="ys-note-input" rows="3" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;font-size:13px" placeholder="気づいたこと・申し送り事項などを記入…"></textarea>
+    <div class="row" style="margin-top:8px"><button class="btn gold sm" id="ys-note-add">${icon('plus',{size:'13px'})} 追加する</button></div>
+    <div style="margin-top:14px;display:flex;flex-direction:column;gap:10px">
+      ${notesData.notes.map(n=>`<div style="padding:10px 12px;background:#faf9f6;border:1px solid var(--line);border-radius:9px">
+        <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:4px">
+          <b style="font-size:12.5px">${h(n.author_name||'(不明)')}</b>
+          <span class="row" style="gap:8px;align-items:center">
+            <span class="muted" style="font-size:11px">${h(n.ts)}</span>
+            ${(n.author_id===ME.id || ME.role==='admin') ? `<button class="btn ghost xs ys-note-del" data-id="${n.id}">${icon('trash',{size:'11px'})}</button>` : ''}
+          </span>
+        </div>
+        <div style="font-size:13px;white-space:pre-wrap;word-break:break-word">${h(n.content)}</div>
+      </div>`).join('') || '<div class="muted" style="text-align:center;padding:14px 0">まだ記入はありません</div>'}
+    </div>
+  </div>
+  `;
+
+  // 棒グラフを0からアニメーションさせる
+  requestAnimationFrame(() => {
+    document.querySelectorAll('.ys-bar').forEach(b => { b.style.height = b.dataset.h + 'px'; });
+  });
+
+  $('#ys-prev').onclick = () => { st.year -= 1; pageMemberYearSummary(app, hash); };
+  $('#ys-next').onclick = () => { st.year += 1; pageMemberYearSummary(app, hash); };
+
+  $('#ys-note-add').onclick = async () => {
+    const content = $('#ys-note-input').value.trim();
+    if(!content){ popup('内容を入力してください','error'); return; }
+    await withLoading($('#ys-note-add'), async () => {
+      try{
+        await api('/member-notes', { method:'POST', body:{ uid, content } });
+        popup('備考を追加しました');
+        pageMemberYearSummary(app, hash);
+      }catch(e){ popup(e.message,'error'); }
+    });
+  };
+  document.querySelectorAll('.ys-note-del').forEach(b => b.onclick = async () => {
+    if(!confirm('この備考を削除しますか？')) return;
+    await withLoading(b, async () => {
+      try{
+        await api(`/member-notes/${b.dataset.id}`, { method:'DELETE' });
+        popup('削除しました');
+        pageMemberYearSummary(app, hash);
+      }catch(e){ popup(e.message,'error'); }
+    });
+  });
+}
+
 /* ===== 個別権限の編集(管理者のみ・専用ページ) ===== */
 async function pagePermissions(app, hash){
   const canPerms = has('account_manage');
@@ -4761,6 +4958,8 @@ async function pageSchedSources(app, hash){
       <select id="ss-new-hour" class="ss-new-hour-row" style="display:none">${Array.from({length:24},(_,i)=>`<option value="${i}">${String(i).padStart(2,'0')}:00</option>`).join('')}</select>
       <label>管理者へ通知</label>
       <label style="font-weight:400;display:flex;align-items:center;gap:8px"><input type="checkbox" id="ss-new-notify" checked style="width:auto"> 反映があった時に通知する</label>
+      <label>担当手配者未設定の人</label>
+      <label style="font-weight:400;display:flex;align-items:center;gap:8px"><input type="checkbox" id="ss-new-exclude-unmanaged" checked style="width:auto"> このシートからは取り込まない(チーフ手配は別シートを優先する場合)</label>
     </div>
     <div class="row" style="margin-top:12px;gap:8px;align-items:center">
       <button class="btn gold sm" id="ss-add">追加する</button>
@@ -4812,6 +5011,8 @@ async function pageSchedSources(app, hash){
         <select class="ss-e-hour ss-e-hour-row" data-id="${s.id}" style="${s.freqType==='daily'?'':'display:none'}">${Array.from({length:24},(_,i)=>`<option value="${i}" ${s.hour===i?'selected':''}>${String(i).padStart(2,'0')}:00</option>`).join('')}</select>
         <label>管理者へ通知</label>
         <label style="font-weight:400;display:flex;align-items:center;gap:8px"><input type="checkbox" class="ss-e-notify" data-id="${s.id}" ${s.notifyAdmin?'checked':''} style="width:auto"> 反映があった時に通知する</label>
+        <label>担当手配者未設定の人</label>
+        <label style="font-weight:400;display:flex;align-items:center;gap:8px"><input type="checkbox" class="ss-e-exclude-unmanaged" data-id="${s.id}" ${s.excludeUnmanaged?'checked':''} style="width:auto"> このシートからは取り込まない(チーフ手配は別シートを優先する場合)</label>
       </div>
       <div class="row" style="margin-top:10px"><button class="btn gold sm ss-save" data-id="${s.id}">保存する</button></div>
     </div>
@@ -4835,11 +5036,12 @@ async function pageSchedSources(app, hash){
     const intervalHours = Number($('#ss-new-interval').value);
     const hour = Number($('#ss-new-hour').value);
     const notifyAdmin = $('#ss-new-notify').checked;
+    const excludeUnmanaged = $('#ss-new-exclude-unmanaged').checked;
     if(!label || !url){ $('#ss-add-msg').textContent='名前とURLを入力してください'; return; }
     $('#ss-add-msg').textContent='追加中…';
     await withLoading(addBtn, async () => {
       try{
-        await api('/sched-sources',{method:'POST',body:{label,url,freqType,intervalHours,hour,notifyAdmin}});
+        await api('/sched-sources',{method:'POST',body:{label,url,freqType,intervalHours,hour,notifyAdmin,excludeUnmanaged}});
         popup('予定表ソースを追加しました');
         pageSchedSources(app);
       }catch(e){ $('#ss-add-msg').textContent = e.message; }
@@ -4871,12 +5073,13 @@ async function pageSchedSources(app, hash){
     const intervalHours = Number(document.querySelector(`.ss-e-interval[data-id="${id}"]`).value);
     const hour = Number(document.querySelector(`.ss-e-hour[data-id="${id}"]`).value);
     const notifyAdmin = document.querySelector(`.ss-e-notify[data-id="${id}"]`).checked;
+    const excludeUnmanaged = document.querySelector(`.ss-e-exclude-unmanaged[data-id="${id}"]`).checked;
     const msgEl = document.querySelector(`.ss-msg[data-id="${id}"]`);
     if(!label || !url){ if(msgEl) msgEl.textContent='名前とURLを入力してください'; return; }
     if(msgEl) msgEl.textContent='保存中…';
     await withLoading(btn, async () => {
       try{
-        await api(`/sched-sources/${id}`,{method:'PUT',body:{label,url,enabled,freqType,intervalHours,hour,notifyAdmin}});
+        await api(`/sched-sources/${id}`,{method:'PUT',body:{label,url,enabled,freqType,intervalHours,hour,notifyAdmin,excludeUnmanaged}});
         popup('保存しました');
         pageSchedSources(app);
       }catch(e){ if(msgEl) msgEl.textContent = e.message; }

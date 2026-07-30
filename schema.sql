@@ -69,6 +69,18 @@ CREATE TABLE IF NOT EXISTS dev_plan(
   PRIMARY KEY(user_id, date)
 );
 
+-- メンバーごとの備考欄(自由記述、時系列で複数件積み重ねる。誰が書いたか分かる)
+-- 閲覧・記入は手配者以上のみ。本人は閲覧不可。
+CREATE TABLE IF NOT EXISTS member_notes(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  target_id INTEGER NOT NULL,      -- 対象メンバー
+  author_id INTEGER,               -- 記入者
+  author_name TEXT DEFAULT '',     -- 記入者名(退職等で後から参照不能にならないよう保持)
+  content TEXT NOT NULL,
+  ts TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_member_notes_target ON member_notes(target_id);
+
 CREATE TABLE IF NOT EXISTS schedule_history(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts TEXT,
@@ -233,6 +245,7 @@ CREATE TABLE IF NOT EXISTS sched_sources(
   interval_hours INTEGER DEFAULT 1,  -- freq_type='interval'の場合の間隔(時間)
   hour INTEGER DEFAULT 6,            -- freq_type='daily'の場合の実行時刻(0-23、JST)
   notify_admin INTEGER DEFAULT 1,    -- 取り込みで反映があった時に管理者へ通知するか
+  exclude_unmanaged INTEGER DEFAULT 0, -- 1の場合、担当手配者が未設定(=チーフ手配)の人のデータはこのソースから取り込まない
   last_run TEXT DEFAULT '',
   last_result TEXT DEFAULT '',       -- JSON
   created_at TEXT,

@@ -25,6 +25,7 @@ const PERMS = {
   account_manage:  { label: 'アカウントの作成・権限変更・停止', baseLv: 3 },
   daicho_manage:   { label: '台帳保管の閲覧・ダウンロード・削除', baseLv: 3 },
   dashboard_view:  { label: '管理者ダッシュボードの閲覧', baseLv: 3 },
+  member_summary_view: { label: '個人の年間稼働サマリー・備考欄の閲覧', baseLv: 2 },
 };
 function getPerms(u) { try { return JSON.parse(u.extra_perms || '[]'); } catch (e) { return []; } }
 // has: その機能を使えるか(基本権限を満たす、または個別に追加権限が付与されている)
@@ -285,7 +286,7 @@ async function getLockDays(env){ const v = parseInt(await getSetting(env, 'lock_
 //
 // 人単位の差分スキップ: 前回取り込んだ内容(import_snapshots)と人ごとに比較し、
 // 変わっていない人はスケジュールDBへの問い合わせ・書き込みを一切行わずスキップする(API呼び出し削減・前回データは今回の内容で上書きされる)。
-async function importScheduleSheet(env, source, url, editorId, fromDate) {
+async function importScheduleSheet(env, source, url, editorId, fromDate, opt = {}) {
   const meta = parseSheetUrl(url);
   if (!meta) throw new Error('スプレッドシートURLの形式が正しくありません');
   const got = await fetchXlsxSheets(meta.id);
@@ -355,8 +356,8 @@ async function importScheduleSheet(env, source, url, editorId, fromDate) {
   // 予定表ソースは「まだ確定していない予定」なので、既に何か入っている日は(手動編集・自動取込問わず)
   // 一切上書きしない。まだ何も無い日にだけ新しい予定を反映する。
   const r = rowsToApply.length
-    ? await applyImportRows(env, rowsToApply, editorId, 'skip-if-exists', source)
-    : { applied: 0, skipped: 0, skippedUnregistered: 0, skippedUnchanged: 0, skippedInvalid: 0, skippedOtherOrg: 0, errors: [], changes: [], ts: jstTs() };
+    ? await applyImportRows(env, rowsToApply, editorId, 'skip-if-exists', source, false, { skipUnassigned: opt.excludeUnmanaged !== false })
+    : { applied: 0, skipped: 0, skippedUnregistered: 0, skippedUnchanged: 0, skippedInvalid: 0, skippedOtherOrg: 0, skippedUnassigned: 0, errors: [], changes: [], ts: jstTs() };
 
   // スナップショットを今回の内容で更新(前回データは上書きされ消える)
   const snapBatch = regnos.map(regno =>
@@ -711,14 +712,14 @@ async function clearAbsentFromDaicho(env, rows, editorId) {
   return { clearedPeople, clearedDays: dates.length };
 }
 
-async function applyImportRows(env, rows, editorId, mode = 'replace-person-day', srcLabel = 'spreadsheet', isDaicho = false) {
+async function applyImportRows(env, rows, editorId, mode = 'replace-person-day', srcLabel = 'spreadsheet', isDaicho = false, opt = {}) {
   const ts = jstTs();
   const resolve = await loadWageResolver(env);
   const dutyMap = await loadDutyMap(env);
-  let applied = 0, skipped = 0, skippedUnregistered = 0, skippedUnchanged = 0, skippedInvalid = 0, skippedOtherOrg = 0; const errors = [];
+  let applied = 0, skipped = 0, skippedUnregistered = 0, skippedUnchanged = 0, skippedInvalid = 0, skippedOtherOrg = 0, skippedUnassigned = 0; const errors = [];
   const changes = []; // 今回の取込で実際に変更された内容(誰の・どの日の・現場が何になったか)。通知の詳細表示用
   // 登録番号→ユーザーの対応を1回のクエリで取得しておく(行ごとにSELECTするとAPIリクエスト数上限に達するため)
-  const allUsers = (await env.DB.prepare('SELECT id, regno, rank, name FROM users').all()).results;
+  const allUsers = (await env.DB.prepare('SELECT id, regno, rank, name, manager_id FROM users').all()).results;
   const userByRegno = {}; for (const u of allUsers) userByRegno[normRegno(u.regno)] = u;
   // (uid,date) ごとにグルーピング
   const groups = {}; const order = [];
@@ -737,6 +738,10 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
     if (!regno.startsWith('3') || (r.org !== undefined && r.org !== '' && !/^RB/i.test(r.org))) { skippedOtherOrg++; continue; }
     const u = userByRegno[regno];
     if (!u) { errors.push(`登録番号 ${regno} は未登録(${date})`); skipped++; skippedUnregistered++; continue; }
+    // 予定表ソース取込限定のオプション: 手配担当者が未設定(=チーフ手配のまま)のメンバーは、
+    // 個別の手配担当者のスプレッドシートにたまたま名前が載っていても取り込み対象から除外する。
+    // (台帳=実績の取込では、確定した勤務実態を漏らさないためこのフィルタは適用しない)
+    if (opt.skipUnassigned && !u.manager_id) { skipped++; skippedUnassigned++; continue; }
     const key = u.id + '|' + date;
     if (!groups[key]) { groups[key] = { uid: u.id, rank: u.rank, name: u.name, date, items: [] }; order.push(key); }
     groups[key].items.push(r);
@@ -872,13 +877,13 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
     }
     for (const rc of rookieCheck) {
       const matches = allReports.filter(rr => rr.next_date === rc.date && rr.next_site === rc.site);
-      for (const rr of matches) await notify(env, [rc.uid], 'rookie', `🔰 ${rr.next_date} ${rr.next_site} に新人「${rr.candidate_name}」が入る予定です`);
+      for (const rr of matches) await notify(env, [rc.uid], 'rookie', `🔰 ${rr.next_date} ${rr.next_site} に新人「${rr.candidate_name}」が入る予定です`, '#/sites');
     }
   }
   // 台帳(実績)取込の場合のみ、研修受講(マナー/2部/SU)の自動判定を行う。
   // 予定表ソース等、まだ確定していない予定の取込では判定しない。
   if (isDaicho) { try { await processTrainingPromotions(env, rows); } catch (e) { errors.push('研修判定でエラー: ' + e.message); } }
-  return { applied, skipped, skippedUnregistered, skippedUnchanged, skippedInvalid, skippedOtherOrg, errors, changes, ts };
+  return { applied, skipped, skippedUnregistered, skippedUnchanged, skippedInvalid, skippedOtherOrg, skippedUnassigned, errors, changes, ts };
 }
 
 // 新しくアカウントが作成された時、氏名が一致する新人報告・ブラックリストのレコードに
@@ -1692,7 +1697,7 @@ async function notifyChiefs(env, type, message, link = '') {
 async function rookieNotify(env, r) {
   if (!r.next_site || !r.next_date) return;
   const rows = (await env.DB.prepare("SELECT user_id FROM schedule WHERE date=? AND site=? AND type='work'").bind(r.next_date, r.next_site).all()).results;
-  await notify(env, rows.map(x => x.user_id), 'rookie', `🔰 ${r.next_date} ${r.next_site} に新人「${r.candidate_name}」が入る予定です`);
+  await notify(env, rows.map(x => x.user_id), 'rookie', `🔰 ${r.next_date} ${r.next_site} に新人「${r.candidate_name}」が入る予定です`, '#/sites');
 }
 
 async function auth(req, env) {
@@ -1796,7 +1801,7 @@ async function api(req, env, url) {
     const rows = Array.isArray(body.rows) ? body.rows : [];
     if (!rows.length) return ERR('取り込むデータがありません(rowsが空です)');
     // 台帳(実績)ではなく「予定」の連携なので、既に何か入っている日は上書きしない
-    const result = await applyImportRows(env, rows, 0, 'skip-if-exists', 'spreadsheet');
+    const result = await applyImportRows(env, rows, 0, 'skip-if-exists', 'spreadsheet', false, { skipUnassigned: true });
     return J({ ok: 1, ...result });
   }
 
@@ -1840,7 +1845,7 @@ async function api(req, env, url) {
         const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
         if (admins.length) {
           await notify(env, admins.map(a => a.id), 'security',
-            `⚠️(${jstTs()}) ${me.name}さん(${me.regno}/${me.role})が手配者パスワードを入力しましたが、権限がないためアクセスを拒否しました。`);
+            `⚠️(${jstTs()}) ${me.name}さん(${me.regno}/${me.role})が手配者パスワードを入力しましたが、権限がないためアクセスを拒否しました。`, '#/handler-status');
         }
       } catch (e) {}
       return ERR('権限がありません', 403);
@@ -2120,7 +2125,7 @@ async function api(req, env, url) {
     return J({ sources: rows.map(r => ({
       id: r.id, label: r.label, url: r.url, enabled: !!r.enabled,
       freqType: r.freq_type, intervalHours: r.interval_hours, hour: r.hour,
-      notifyAdmin: !!r.notify_admin, lastRun: r.last_run || '',
+      notifyAdmin: !!r.notify_admin, excludeUnmanaged: !!r.exclude_unmanaged, lastRun: r.last_run || '',
       lastResult: (() => { try { return JSON.parse(r.last_result || '') } catch (e) { return null } })(),
     })) });
   }
@@ -2134,9 +2139,10 @@ async function api(req, env, url) {
     let intervalHours = parseInt(body.intervalHours, 10); if (isNaN(intervalHours) || intervalHours < 1) intervalHours = 1;
     let hour = parseInt(body.hour, 10); if (isNaN(hour) || hour < 0 || hour > 23) hour = 6;
     const notifyAdmin = body.notifyAdmin === false ? 0 : 1;
+    const excludeUnmanaged = body.excludeUnmanaged === false ? 0 : 1; // 既定はON(チーフ手配の人は除外)
     const r = await env.DB.prepare(
-      'INSERT INTO sched_sources(label,url,enabled,freq_type,interval_hours,hour,notify_admin,last_run,last_result,created_at,created_by) VALUES(?,?,1,?,?,?,?,?,?,?,?)'
-    ).bind(label, url, freqType, intervalHours, hour, notifyAdmin, '', '', jstTs(), me.id).run();
+      'INSERT INTO sched_sources(label,url,enabled,freq_type,interval_hours,hour,notify_admin,exclude_unmanaged,last_run,last_result,created_at,created_by) VALUES(?,?,1,?,?,?,?,?,?,?,?,?)'
+    ).bind(label, url, freqType, intervalHours, hour, notifyAdmin, excludeUnmanaged, '', '', jstTs(), me.id).run();
     return J({ ok: 1, id: r.meta.last_row_id });
   }
   if (method === 'PUT' && (scm = path.match(/^\/sched-sources\/(\d+)$/))) {
@@ -2153,9 +2159,10 @@ async function api(req, env, url) {
     let intervalHours = parseInt(body.intervalHours, 10); if (isNaN(intervalHours) || intervalHours < 1) intervalHours = 1;
     let hour = parseInt(body.hour, 10); if (isNaN(hour) || hour < 0 || hour > 23) hour = 6;
     const notifyAdmin = body.notifyAdmin === false ? 0 : 1;
+    const excludeUnmanaged = body.excludeUnmanaged === false ? 0 : 1;
     await env.DB.prepare(
-      'UPDATE sched_sources SET label=?, url=?, enabled=?, freq_type=?, interval_hours=?, hour=?, notify_admin=? WHERE id=?'
-    ).bind(label, url, enabled, freqType, intervalHours, hour, notifyAdmin, id).run();
+      'UPDATE sched_sources SET label=?, url=?, enabled=?, freq_type=?, interval_hours=?, hour=?, notify_admin=?, exclude_unmanaged=? WHERE id=?'
+    ).bind(label, url, enabled, freqType, intervalHours, hour, notifyAdmin, excludeUnmanaged, id).run();
     return J({ ok: 1 });
   }
   if (method === 'DELETE' && (scm = path.match(/^\/sched-sources\/(\d+)$/))) {
@@ -2177,7 +2184,7 @@ async function api(req, env, url) {
       fromDate = d.toISOString().slice(0, 10);
     }
     try {
-      const r = await importScheduleSheet(env, 'sched_src_' + id, src.url, me.id, fromDate);
+      const r = await importScheduleSheet(env, 'sched_src_' + id, src.url, me.id, fromDate, { excludeUnmanaged: !!src.exclude_unmanaged });
       await env.DB.prepare('UPDATE sched_sources SET last_run=?, last_result=? WHERE id=?').bind(
         jstTs(), JSON.stringify({ ts: r.ts, applied: r.applied, skipped: r.skipped, unchangedPeople: r.unchangedPeople, changedPeople: r.changedPeople, error: (r.errors && r.errors[0]) || '', fullRange: !!body.fullRange, changes: r.changes || [] }), id
       ).run();
@@ -2223,6 +2230,10 @@ async function api(req, env, url) {
     try {
       const r = await runDaichoReload(env, targetUrls, { updateRemaining: true, checkAbsent, sourceLabel: '台帳手動再取り込み' });
       const remainRaw = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
+      // 手動で今すぐ取り込んだ場合、同じ内容がその夜また自動的に取り込まれて二重に処理される
+      // (通知が2回来る、differenceの検出が乱れる等)のを避けるため、深夜自動実行の「本日実行済み」
+      // フラグも合わせて更新しておく。これにより、その夜のcronDaichoReloadは通常通りスキップされる。
+      await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_run',?)").bind(jstDate()).run();
       return J({
         ok: 1, okCount: r.okCount, ngCount: r.ngCount, totalApplied: r.totalApplied,
         results: r.results, clearedAbsent: r.absentResult.clearedPeople, checkedAbsent: checkAbsent,
@@ -2464,7 +2475,7 @@ async function api(req, env, url) {
       .bind(uid, u.rank, target, 'assessment', me.id, jstTs()).run();
     const month = jstDate().slice(0, 7);
     try { await recalcPayForMonth(env, uid, month, target); } catch (e) { console.error('recalcPay failed:', e); }
-    await notify(env, [uid], 'rank', `🎉 査定により、ランクが ${target} に上がりました。今月分の給与も新しいランクで再計算されています。`);
+    await notify(env, [uid], 'rank', `🎉 査定により、ランクが ${target} に上がりました。今月分の給与も新しいランクで再計算されています。`, `#/schedule/${uid}?month=${month}`);
     return J({ ok: 1, rank: target });
   }
   // ランク変更履歴の取得(いつ・誰が・なぜ変更したか)
@@ -2585,7 +2596,7 @@ async function api(req, env, url) {
             .bind(ts, me.id, a.uid, date, JSON.stringify(before.map(stripRow)), afterJsonBulk).run();
         }
         const rs = (await env.DB.prepare("SELECT * FROM reports WHERE next_date=? AND next_site=?").bind(date, site).all()).results;
-        for (const r of rs) await notify(env, [a.uid], 'rookie', `🔰 ${r.next_date} ${r.next_site} に新人「${r.candidate_name}」が入る予定です`);
+        for (const r of rs) await notify(env, [a.uid], 'rookie', `🔰 ${r.next_date} ${r.next_site} に新人「${r.candidate_name}」が入る予定です`, '#/sites');
         // 手配チーム通知: 対象者の手配担当が自分以外なら、担当へ「更新しました」と知らせる(本人による自己更新は対象外)
         const managerId = nameCache[a.uid].managerId;
         if (managerId && Number(managerId) !== me.id && Number(managerId) !== Number(a.uid)) notifyTargets.add(a.uid);
@@ -2721,7 +2732,7 @@ async function api(req, env, url) {
         // 新人の次回現場と一致したら本人へ通知
         if (row.type === 'work' && row.site) {
           const rs = (await env.DB.prepare("SELECT * FROM reports WHERE next_date=? AND next_site=?").bind(date, row.site).all()).results;
-          for (const r of rs) await notify(env, [uid], 'rookie', `🔰 ${r.next_date} ${r.next_site} に新人「${r.candidate_name}」が入る予定です`);
+          for (const r of rs) await notify(env, [uid], 'rookie', `🔰 ${r.next_date} ${r.next_site} に新人「${r.candidate_name}」が入る予定です`, '#/sites');
           if (!changedSite) changedSite = row.site;
         }
       }
@@ -3378,6 +3389,81 @@ async function api(req, env, url) {
     return J({ month, items, managers });
   }
 
+  // ---- 個人の年間稼働サマリー(手配者以上、本人は閲覧不可) ----
+  // 12月始まり〜翌年11月終わりの年度で、月ごとの勤務日数・総勤務時間・総残業時間・給料を集計する。
+  // ?uid=対象者ID &year=基準年(その年の12月〜翌年11月を対象とする)
+  if (method === 'GET' && path === '/member-year-summary') {
+    if (!has(me, 'member_summary_view')) return ERR('ページが見つかりません', 404);
+    const uid = Number(url.searchParams.get('uid'));
+    if (!uid) return ERR('対象者が指定されていません');
+    if (uid === me.id) return ERR('ページが見つかりません', 404); // 本人は閲覧不可(存在自体を秘匿)
+    const target = await env.DB.prepare('SELECT id,name,regno,rank,ka,han FROM users WHERE id=?').bind(uid).first();
+    if (!target) return ERR('対象者が見つかりません', 404);
+    let year = parseInt(url.searchParams.get('year'), 10);
+    if (isNaN(year)) year = Number(jstDate().slice(0, 4));
+    // year年12月〜(year+1)年11月の12ヶ月分のYYYY-MM一覧を作る
+    const yms = [];
+    for (let i = 0; i < 12; i++) {
+      const m = 12 + i; // 12,13,...,23
+      const y = year + Math.floor((m - 1) / 12);
+      const mm = ((m - 1) % 12) + 1;
+      yms.push(`${y}-${String(mm).padStart(2, '0')}`);
+    }
+    const rows = (await env.DB.prepare(
+      "SELECT date, hours, overtime, pay FROM schedule WHERE user_id=? AND type='work' AND date>=? AND date<?"
+    ).bind(uid, yms[0] + '-01', (() => { const [ly, lm] = yms[11].split('-').map(Number); const ny = lm === 12 ? ly + 1 : ly; const nm = lm === 12 ? 1 : lm + 1; return `${ny}-${String(nm).padStart(2, '0')}-01`; })()).all()).results;
+    const byMonth = {};
+    for (const ym of yms) byMonth[ym] = { ym, workDays: 0, hours: 0, overtime: 0, pay: 0, _dates: new Set() };
+    for (const r of rows) {
+      const ym = r.date.slice(0, 7);
+      const b = byMonth[ym]; if (!b) continue;
+      b._dates.add(r.date); b.hours += r.hours || 0; b.overtime += r.overtime || 0; b.pay += r.pay || 0;
+    }
+    const months = yms.map(ym => {
+      const b = byMonth[ym];
+      return { ym, workDays: b._dates.size, hours: Math.round(b.hours * 10) / 10, overtime: Math.round(b.overtime * 10) / 10, pay: Math.round(b.pay) };
+    });
+    const total = months.reduce((a, m) => ({
+      workDays: a.workDays + m.workDays, hours: Math.round((a.hours + m.hours) * 10) / 10,
+      overtime: Math.round((a.overtime + m.overtime) * 10) / 10, pay: a.pay + m.pay,
+    }), { workDays: 0, hours: 0, overtime: 0, pay: 0 });
+    return J({
+      target: { id: target.id, name: target.name, regno: target.regno, rank: target.rank, ka: target.ka, han: target.han },
+      yearLabel: `${year}年12月〜${year + 1}年11月`, year, months, total,
+    });
+  }
+
+  // ---- 個人の備考欄(手配者以上、本人は閲覧不可)。自由記述を時系列で複数件積み重ねる ----
+  if (method === 'GET' && path === '/member-notes') {
+    if (!has(me, 'member_summary_view')) return ERR('ページが見つかりません', 404);
+    const uid = Number(url.searchParams.get('uid'));
+    if (!uid) return ERR('対象者が指定されていません');
+    if (uid === me.id) return ERR('ページが見つかりません', 404);
+    const rows = (await env.DB.prepare('SELECT id, author_name, content, ts FROM member_notes WHERE target_id=? ORDER BY id DESC').bind(uid).all()).results;
+    return J({ notes: rows });
+  }
+  if (method === 'POST' && path === '/member-notes') {
+    if (!has(me, 'member_summary_view')) return ERR('ページが見つかりません', 404);
+    const uid = Number(body.uid);
+    if (!uid) return ERR('対象者が指定されていません');
+    if (uid === me.id) return ERR('ページが見つかりません', 404);
+    const content = String(body.content || '').trim();
+    if (!content) return ERR('内容を入力してください');
+    await env.DB.prepare('INSERT INTO member_notes(target_id,author_id,author_name,content,ts) VALUES(?,?,?,?,?)')
+      .bind(uid, me.id, me.name, content, jstTs()).run();
+    return J({ ok: 1 });
+  }
+  if (method === 'DELETE' && (scm = path.match(/^\/member-notes\/(\d+)$/))) {
+    if (!has(me, 'member_summary_view')) return ERR('ページが見つかりません', 404);
+    const noteId = Number(scm[1]);
+    const note = await env.DB.prepare('SELECT target_id, author_id FROM member_notes WHERE id=?').bind(noteId).first();
+    if (!note) return ERR('見つかりません', 404);
+    // 本人が書いたメモか、管理者のみ削除可(誤記入の訂正手段は必要だが、他人のメモを誰でも消せると荒らされる恐れがあるため)
+    if (note.author_id !== me.id && me.role !== 'admin') return ERR('削除できるのは記入者本人か管理者のみです', 403);
+    await env.DB.prepare('DELETE FROM member_notes WHERE id=?').bind(noteId).run();
+    return J({ ok: 1 });
+  }
+
   // ---- スプレッドシートURLから取り込み(手配担当以上)----
   // body: { urls:[...], format:'auto'|'C'|'AB', month:'2026-06'(AB用), add:bool, save:bool }
   if (method === 'POST' && path === '/import-from-url') {
@@ -3680,6 +3766,15 @@ async function api(req, env, url) {
     await rookieNotify(env, { ...r, ...body });
     return J({ ok: 1 });
   }
+  if ((mm = path.match(/^\/reports\/(\d+)$/)) && method === 'DELETE') {
+    if (!has(me, 'site_manage')) return ERR('削除には手配者以上の権限が必要です', 403);
+    const id = Number(mm[1]);
+    const r = await env.DB.prepare('SELECT id FROM reports WHERE id=?').bind(id).first();
+    if (!r) return ERR('報告が見つかりません', 404);
+    await env.DB.prepare('DELETE FROM rookie_site_matches WHERE kind=? AND report_id=?').bind('report', id).run();
+    await env.DB.prepare('DELETE FROM reports WHERE id=?').bind(id).run();
+    return J({ ok: 1 });
+  }
 
   // ---- ブラックリスト(提出・閲覧ともチーフ以上、または個別権限)----
   if (method === 'GET' && path === '/blacklist') {
@@ -3931,7 +4026,7 @@ async function cronDaichoReload(env) {
         `🌙 台帳の深夜自動再取り込みが完了しました(${jstTs()})。${r.okCount}件成功(反映${r.totalApplied}件)${r.ngCount ? ` / ${r.ngCount}件失敗` : ''}`,
         '#/import?result=daicho');
       if (r.absentResult.clearedPeople) {
-        await notify(env, admins.map(a => a.id), 'sched_import', `🌙 台帳自動再取り込みに伴い、不在者の休暇化を${r.absentResult.clearedPeople}件行いました。`);
+        await notify(env, admins.map(a => a.id), 'sched_import', `🌙 台帳自動再取り込みに伴い、不在者の休暇化を${r.absentResult.clearedPeople}件行いました。`, '#/import?result=daicho');
       }
     }
   } catch (e) {}
@@ -3972,7 +4067,7 @@ async function cronRankPromotion(env) {
       .bind(u.id, u.rank, newRank, reason, null, ts).run();
     // 昇格した月は、月初から新ランクで給与を計算し直す
     try { await recalcPayForMonth(env, u.id, today.slice(0, 7), newRank); } catch (e) { console.error('recalcPay failed for user', u.id, e); }
-    await notify(env, [u.id], 'rank', `🎉 ランクが ${newRank} に上がりました。今月分の給与も新しいランクで再計算されています。`);
+    await notify(env, [u.id], 'rank', `🎉 ランクが ${newRank} に上がりました。今月分の給与も新しいランクで再計算されています。`, `#/schedule/${u.id}?month=${today.slice(0, 7)}`);
     promoted++;
   }
   console.log('[cronRankPromotion] promoted', promoted);
@@ -4029,7 +4124,7 @@ async function cronNotify(env, opt = {}) {
   console.log('[cronNotify] recipients', recipients.length);
 
   const ids = recipients.map(r => r.id);
-  if (ids.length) await notify(env, ids, 'remind', `⏰【リマインド】(${today}) 本日現場が稼働しています。新人の報告があれば忘れずに提出してください。`);
+  if (ids.length) await notify(env, ids, 'remind', `⏰【リマインド】(${today}) 本日現場が稼働しています。新人の報告があれば忘れずに提出してください。`, '#/report');
   console.log('[cronNotify] done, sent to', ids.length);
   return { sent: ids.length, reason: ids.length ? '' : '対象者が0人でした(全員報告済み、または対象ロールの人が現場に入っていません)' };
 }
@@ -4082,7 +4177,7 @@ async function cronScheduleSources(env) {
       // 1ソースが極端に重くても、cron全体・他のソースの処理を巻き込んで止めないようにするため。
       const timeoutMs = 28000;
       const r = await Promise.race([
-        importScheduleSheet(env, 'sched_src_' + src.id, src.url, adminUser ? adminUser.id : 0, fromDate),
+        importScheduleSheet(env, 'sched_src_' + src.id, src.url, adminUser ? adminUser.id : 0, fromDate, { excludeUnmanaged: !!src.exclude_unmanaged }),
         new Promise((_, rej) => setTimeout(() => rej(new Error(`処理がタイムアウトしました(${timeoutMs / 1000}秒)`)), timeoutMs)),
       ]);
       await env.DB.prepare('UPDATE sched_sources SET last_run=?, last_result=? WHERE id=?').bind(
