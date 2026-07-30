@@ -58,9 +58,11 @@ header{background:rgba(20,26,42,.96);color:#f3f1ea;display:flex;align-items:cent
 .drawer-link:active{background:#efece1;padding-left:22px}
 .drawer-link.active{background:#fdf6e0;color:var(--ink);font-weight:700;box-shadow:inset 4px 0 0 var(--gold)}
 .drawer-link.danger{color:#b23b3b}
-/* 各メニュー項目に必要な最低限の役割を、右端の色付きドットで示す
-   (管理者=赤、チーフ=青、手配者=緑。表示無し=全員向け) */
-.role-dot{width:7px;height:7px;border-radius:50%;flex:none;margin-left:8px}
+/* 各メニュー項目が実際に閲覧できる全ての役割を、右端の色付きドットで示す
+   (チーフ=青、手配者=緑、管理者=赤。例えば手配者向け項目なら緑+赤が並ぶ=手配者も管理者も見られる。
+   ドット無し=全員向け) */
+.role-dots{display:flex;align-items:center;gap:4px;flex:none;margin-left:8px}
+.role-dot{width:7px;height:7px;border-radius:50%;flex:none}
 .role-dot-admin{background:#c0392b}
 .role-dot-chief{background:#2e6da4}
 .role-dot-handler{background:#2e9c5f}
@@ -162,7 +164,12 @@ tr.slot-extra{background:#fcfcfa}
 .month-nav{display:flex;align-items:center;gap:10px;margin-bottom:10px}
 .month-nav .mtitle{font-size:17px;font-weight:700;color:var(--ink);min-width:120px;text-align:center}
 .sched-wrap{overflow-x:auto;border:1px solid #888;border-radius:4px;background:#fff;-webkit-overflow-scrolling:touch}
-.sched-wrap table{transform:translateZ(0);-webkit-transform:translateZ(0)}
+/* iOS Safari等で、border-collapse:collapseのテーブルを横スクロールコンテナ内でスクロールすると、
+   サブピクセル単位の再描画により境界線が不規則にちらつく(縦の幽霊線が出る)ことがある。
+   テーブル自体だけでなく、各セルもGPUレイヤーに昇格させ、裏面描画を無効化することで、
+   再描画のちらつきを防ぐ(テーブル全体への適用だけでは不十分なケースがあるため)。 */
+.sched-wrap table{transform:translateZ(0);-webkit-transform:translateZ(0);-webkit-backface-visibility:hidden;backface-visibility:hidden}
+.sched-wrap table th,.sched-wrap table td{-webkit-backface-visibility:hidden;backface-visibility:hidden}
 table.sched{border-collapse:collapse;width:100%;min-width:780px;font-size:12.5px}
 table.sched th{background:var(--ink);color:#fff;border:1px solid #555;padding:6px 4px;font-size:12px;white-space:nowrap}
 table.sched td{border:1px solid #999;padding:4px 6px;height:30px;background:#fff}
@@ -670,7 +677,8 @@ td.note-cell.text-long,td.plan-cell.text-long{font-size:10px}
 /* iOS Safari等で、border-collapse:collapseのテーブルを横スクロールコンテナ内でスクロールすると、
    サブピクセル単位の再描画により境界線が不規則にちらつく(縦の幽霊線が出る)ことがある。
    テーブル自体をGPUレイヤーに昇格させることで、この再描画のちらつきを防ぐ。 */
-.list-scroll table{transform:translateZ(0);-webkit-transform:translateZ(0)}
+.list-scroll table{transform:translateZ(0);-webkit-transform:translateZ(0);-webkit-backface-visibility:hidden;backface-visibility:hidden}
+.list-scroll table th,.list-scroll table td{-webkit-backface-visibility:hidden;backface-visibility:hidden}
 table.list.ka-table td{white-space:nowrap}
 table.list.ka-table td.wrapcell{white-space:normal;min-width:150px}
 

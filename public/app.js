@@ -82,6 +82,16 @@ function icon(name, opt={}){
   if(!path) return '';
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${opt.strokeWidth||2}" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-.15em;flex:none" aria-hidden="true">${path}</svg>`;
 }
+// メニュー項目に付与された「最低権限」から、実際にその項目を見られる全ロールのドットを並べて生成する。
+// 例: minRole='handler' なら「これ以上の全て」= 手配者(緑)・管理者(赤) の2つが並ぶ。
+//     minRole='chief' なら チーフ(青)・手配者(緑)・管理者(赤) の3つ全て並ぶ。
+const ROLE_DOT_LV = { chief: 1, handler: 2, admin: 3 };
+function roleDots(minRole){
+  if(!minRole) return '';
+  const minLv = ROLE_DOT_LV[minRole];
+  return ['chief','handler','admin'].filter(r => ROLE_DOT_LV[r] >= minLv)
+    .map(r => `<span class="role-dot role-dot-${r}"></span>`).join('');
+}
 // <input type="time">はHH:MM(2桁ゼロ埋め)でないと値を認識しないため、DBの値をこの形式に正規化する
 const timeInputVal = t => { const m = String(t||'').match(/^(\d{1,2}):(\d{2})$/); return m ? `${m[1].padStart(2,'0')}:${m[2]}` : ''; };
 const pad = n => String(n).padStart(2, '0');
@@ -334,7 +344,7 @@ async function api(path, opt = {}) {
     if(_apiInFlight === 0) _hideProgressBar();
   }
 }
-function logoutLocal(){ TOKEN=''; ME=null; localStorage.removeItem('tk'); location.hash='#/login'; render(); }
+function logoutLocal(){ TOKEN=''; ME=null; localStorage.removeItem('tk'); goTo('#/login'); }
 function clearTimers(){ timers.forEach(clearInterval); timers=[]; }
 function shiftMonth(m, d){ const [y,mm]=m.split('-').map(Number); const dt=new Date(y, mm-1+d, 1); return dt.getFullYear()+'-'+pad(dt.getMonth()+1); }
 async function getUsers(force){ if(!USERS_CACHE||force) USERS_CACHE = await api('/users'); return USERS_CACHE; }
@@ -920,11 +930,14 @@ window.addEventListener('hashchange', () => {
 });
 window.addEventListener('load', render);
 // 通知ドロップダウンは、開いた状態で他の場所をタップ/クリックしたら閉じる
-// (ベル・ドロップダウン自体の内側クリックは、それぞれ個別のonclickで処理されるので対象外)
+// (ベル・ドロップダウン自体の内側クリック、およびホーム画面の「未読の通知」ボタン経由での
+//  開閉は、それぞれ個別のonclickで処理されるので対象外)
 document.addEventListener('click', (e) => {
   const dd = document.getElementById('dd');
   const bell = document.getElementById('bell');
-  if(dd && dd.innerHTML && bell && !dd.contains(e.target) && !bell.contains(e.target)){
+  const homeNotifBtn = document.getElementById('home-notif-btn');
+  if(dd && dd.innerHTML && bell && !dd.contains(e.target) && !bell.contains(e.target)
+     && !(homeNotifBtn && homeNotifBtn.contains(e.target))){
     dd.innerHTML = '';
   }
 });
@@ -1108,7 +1121,7 @@ function renderShell(hash){
   const canSitesView = has('sites_view');
   const canMembersView = has('members_view');
   const canDashboardView = has('dashboard_view');
-  const canMemberSummaryNav = has('member_summary_view');
+  const canMemberSummaryNav = (LV[ME.role] >= 2);
   const showMemberGroup = isChief || canSummaryView || canDayScheduleView || canMemberStatsView || canMembersView;
 
   // ナビゲーション構造。children を持つ項目はグループ(タップでサブメニューに切り替わる)、
@@ -1225,12 +1238,12 @@ function renderShell(hash){
         <div class="drawer-head">メニュー</div>
         ${nav.map((item,i) => {
           if(!item.children){
-            return `<button type="button" class="drawer-link ${item.role?'role-'+item.role:''} ${hashIs(hash, item.path)?'active':''}" data-go="${item.path}"><span class="drawer-label">${icon(item.icon)} ${h(item.label)}</span>${item.role?`<span class="role-dot role-dot-${item.role}"></span>`:''}</button>`;
+            return `<button type="button" class="drawer-link ${item.role?'role-'+item.role:''} ${hashIs(hash, item.path)?'active':''}" data-go="${item.path}"><span class="drawer-label">${icon(item.icon)} ${h(item.label)}</span><span class="role-dots">${roleDots(item.role)}</span></button>`;
           }
           const isOpen = !!stMenu.open[i];
           return `<button type="button" class="drawer-link drawer-group" data-toggle="${i}"><span class="drawer-label">${icon(item.icon)} ${h(item.label)}</span><span class="drawer-arrow ${isOpen?'open':''}">›</span></button>
             <div class="drawer-sub ${isOpen?'':'collapsed'}">
-              ${item.children.map(c => `<button type="button" class="drawer-link drawer-sublink ${hashIs(hash,c.path)?'active':''}" data-go="${c.path}"><span class="drawer-label">${icon(c.icon)} ${h(c.label)}</span>${c.role?`<span class="role-dot role-dot-${c.role}"></span>`:''}</button>`).join('')}
+              ${item.children.map(c => `<button type="button" class="drawer-link drawer-sublink ${hashIs(hash,c.path)?'active':''}" data-go="${c.path}"><span class="drawer-label">${icon(c.icon)} ${h(c.label)}</span><span class="role-dots">${roleDots(c.role)}</span></button>`).join('')}
             </div>`;
         }).join('')}
         ${footerLinks}
@@ -1256,26 +1269,30 @@ function renderShell(hash){
     renderDrawer();
   };
 
-  $('#bell').onclick = async () => {
-    if($('#dd').innerHTML){ $('#dd').innerHTML=''; return; }
-    const d = await api('/notifications');
-    $('#dd').innerHTML = `<div class="dropdown" style="min-width:300px">
-      <div class="notif-list">${d.items.length ? d.items.map(n=>`
-        <div class="notif-item ${n.read?'':'unread'} ${n.link?'notif-clickable':''}" data-id="${n.id}" ${n.link?`data-link="${h(n.link)}"`:''}><time>${h(n.ts)}</time>${h(n.message)}</div>`).join('') : '<div class="notif-item muted">通知はありません</div>'}</div>
-      ${d.unread ? '<button id="dd-read" class="sep">すべて既読にする</button>' : ''}
-    </div>`;
-    const dr2 = $('#dd-read');
-    if(dr2) dr2.onclick = async () => { await api('/notifications/read',{method:'POST'}); $('#dd').innerHTML=''; pollBell(); };
-    $('#dd').querySelectorAll('.notif-clickable').forEach(el => el.onclick = async () => {
-      const link = el.dataset.link;
-      if(!link) return;
-      try{ await api(`/notifications/${el.dataset.id}/read`,{method:'POST'}); }catch(_){}
-      $('#dd').innerHTML = ''; pollBell();
-      const [hashPart, query] = link.split('?');
-      if(query){ const m = new URLSearchParams(query).get('month'); if(m) MONTH = m; }
-      if(location.hash === hashPart){ render(); } else { location.hash = hashPart; }
-    });
-  };
+  $('#bell').onclick = openNotifDropdown;
+}
+
+// 通知パネル(ベルのドロップダウン)を開く。ヘッダーのベルアイコン、ホーム画面の
+// 「未読の通知」カード、両方から共通で呼ばれる。
+async function openNotifDropdown(){
+  if($('#dd').innerHTML){ $('#dd').innerHTML=''; return; }
+  const d = await api('/notifications');
+  $('#dd').innerHTML = `<div class="dropdown" style="min-width:300px">
+    <div class="notif-list">${d.items.length ? d.items.map(n=>`
+      <div class="notif-item ${n.read?'':'unread'} ${n.link?'notif-clickable':''}" data-id="${n.id}" ${n.link?`data-link="${h(n.link)}"`:''}><time>${h(n.ts)}</time>${h(n.message)}</div>`).join('') : '<div class="notif-item muted">通知はありません</div>'}</div>
+    ${d.unread ? '<button id="dd-read" class="sep">すべて既読にする</button>' : ''}
+  </div>`;
+  const dr2 = $('#dd-read');
+  if(dr2) dr2.onclick = async () => { await api('/notifications/read',{method:'POST'}); $('#dd').innerHTML=''; pollBell(); };
+  $('#dd').querySelectorAll('.notif-clickable').forEach(el => el.onclick = async () => {
+    const link = el.dataset.link;
+    if(!link) return;
+    try{ await api(`/notifications/${el.dataset.id}/read`,{method:'POST'}); }catch(_){}
+    $('#dd').innerHTML = ''; pollBell();
+    const [hashPart, query] = link.split('?');
+    if(query){ const m = new URLSearchParams(query).get('month'); if(m) MONTH = m; }
+    if(location.hash === hashPart){ render(); } else { location.hash = hashPart; }
+  });
 }
 
 async function pollBell(){
@@ -1916,7 +1933,7 @@ async function pageHome(app){
     ['#/members/mine','briefcase',`${h(ME.name)}手配`, isHandlerRole, 'handler'],
     ['#/members','users','メンバー一覧', has('members_view')],
     ['#/summary','barChart','稼働サマリー', has('summary_view')],
-    ['#/member-summary-search','barChart','個人の年間サマリー', has('member_summary_view'), 'handler'],
+    ['#/member-summary-search','barChart','個人の年間サマリー', (LV[ME.role] >= 2), 'handler'],
     ['#/member-stats','trendingUp','メンバー分析', has('member_stats_view')],
     ['#/day-schedule','layoutGrid','スケジュール一覧', has('day_schedule_view')],
     ['#/self-reports','mail','変更報告承認', isHandlerRole, 'handler'],
@@ -1939,9 +1956,9 @@ async function pageHome(app){
         <div class="home-days">${days7}</div>
       </div>
       <div class="card home-stat-card">
-        <a href="#/schedule" class="home-stat">
+        <button type="button" id="home-notif-btn" class="home-stat" style="border:none;background:none;cursor:pointer;width:100%;text-align:left">
           <span class="home-stat-num">${unreadCount}</span><span class="home-stat-label">${icon('bell',{size:'13px'})} 未読の通知</span>
-        </a>
+        </button>
         ${isHandlerRole ? `<a href="#/self-reports" class="home-stat">
           <span class="home-stat-num">${pendingCount}</span><span class="home-stat-label">${icon('fileText',{size:'13px'})} 承認待ちの報告</span>
         </a>` : ''}
@@ -1955,11 +1972,14 @@ async function pageHome(app){
     <div class="home-menu" id="home-menu-grid">
       ${menuItems.map(([hash,iconName,label,,role])=>`<a href="${homeEditing?'javascript:void(0)':hash}" class="home-menu-btn ${homeEditing?'editing':''}" data-hash="${hash}">
         ${homeEditing?`<button class="home-menu-remove" data-hash="${hash}" type="button">${icon('x',{size:'12px'})}</button>`:''}
-        ${role?`<span class="role-dot role-dot-${role}" style="position:absolute;top:8px;right:8px"></span>`:''}
+        ${role?`<span class="role-dots" style="position:absolute;top:8px;right:8px">${roleDots(role)}</span>`:''}
         <span class="home-menu-icon">${icon(iconName,{size:'22px'})}</span><span>${h(label)}</span>
       </a>`).join('')}
       ${homeEditing?`<button class="home-menu-btn home-menu-add" id="home-menu-add-btn" type="button"><span class="home-menu-icon">${icon('plus',{size:'22px'})}</span><span>追加</span></button>`:''}
     </div>`;
+
+  const notifBtn = $('#home-notif-btn');
+  if(notifBtn) notifBtn.onclick = () => openNotifDropdown();
 
   const editToggle = $('#home-edit-toggle');
   editToggle.onclick = () => { PAGE_STATE.home = PAGE_STATE.home||{}; PAGE_STATE.home.editing = !homeEditing; pageHome(app); };
@@ -3071,7 +3091,7 @@ async function pageMembers(app){
     : `<button class="btn ghost sm icon-btn" data-skill="${u.id}" title="できること編集">${icon('star')}</button>`;
   const schedBtn = (u,cls='gold') => `<button class="btn ${cls} sm icon-btn go-sched" data-uid="${u.id}" title="スケジュール">${icon('calendar')}</button>`;
   const goEditBtn = u => isHandler ? `<button class="btn ghost sm icon-btn go-edit" data-uid="${u.id}" title="現場入力">${icon('edit')}</button>` : '';
-  const canMemberSummary = has('member_summary_view');
+  const canMemberSummary = (LV[ME.role] >= 2);
   const goSummaryBtn = u => (canMemberSummary && u.id !== ME.id) ? `<button class="btn ghost sm icon-btn go-year-summary" data-uid="${u.id}" title="年間サマリー">${icon('barChart')}</button>` : '';
 
   // 並び替え選択肢。ランクは必ず含める(A〜Eランクの昇順)。
@@ -3148,7 +3168,7 @@ async function pageMembers(app){
     area.querySelectorAll('.go-year-summary').forEach(b=>b.onclick=()=>{ location.hash='#/member-summary/'+b.dataset.uid; });
     area.querySelectorAll('.go-edit').forEach(b=>b.onclick=()=>{
       const uid = b.dataset.uid;
-      const proceed = () => { location.hash = '#/edit/' + uid; render(); };
+      const proceed = () => goTo('#/edit/' + uid);
       if(ME.handler !== 1 && ME.role !== 'admin'){ openHandlerPin(proceed); return; }
       proceed();
     });
@@ -4094,6 +4114,19 @@ async function pageImport(app, hash){
     <div id="daicho-reload-status" class="muted" style="margin-top:16px"><span class="spinner" style="width:13px;height:13px;border-width:2px;margin-right:5px"></span>読み込み中…</div>
     <div id="daicho-reload-urls" style="margin-top:12px"></div>
     <div id="dr-run-msg" class="muted" style="margin-top:8px"></div>
+  </div>` : ''}
+  ${canReloadSettings ? `
+  <div class="card" style="margin-top:16px">
+    <h3 style="margin-bottom:8px">${icon('fileText')} 台帳Excelファイルの取り込み</h3>
+    <div class="muted" style="margin-bottom:12px">PCに保存してあるExcelファイル(手配管理表と同じ形式)を、直接アップロードして取り込みます。複数ファイルをまとめて選び、ファイルごとに対象日を指定できます(月をまたいだ一括取込も可能)。<b>この機能は深夜の自動再取り込みには含まれません。常に手動での実行です。</b></div>
+    <input type="file" id="xl-file-input" multiple accept=".xlsx" style="margin-bottom:12px">
+    <div id="xl-file-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px"></div>
+    <label style="display:flex;align-items:flex-start;gap:7px;font-size:12.5px;margin-bottom:10px;padding:8px 10px;background:#faf9f6;border-radius:8px;border:1px solid var(--line)">
+      <input type="checkbox" id="xl-check-absent" style="margin-top:2px">
+      <span>選択した全ファイルのどれにも登場しない人を、休暇に変更する<br><span class="muted" style="font-size:11px">複数の日付をまたぐため、既定ではオフです。日ごとに対象者が異なる場合、意図せず休暇化されることがあります。</span></span>
+    </label>
+    <button class="btn gold sm" id="xl-import-btn" disabled>${icon('play',{size:'13px'})} 選択したファイルを取り込む</button>
+    <div id="xl-import-msg" class="muted" style="margin-top:10px"></div>
   </div>` : ''}`;
 
   const renderNsk = (list) => {
@@ -4330,6 +4363,87 @@ async function pageImport(app, hash){
       }).catch(()=>{});
     };
     loadStatus();
+
+    // ---- 台帳Excelファイル取り込み(新規機能、深夜自動実行には含まれない) ----
+    const xlState = { files: [] }; // { file: File, dateStr: string }[]
+    const fileInput = $('#xl-file-input');
+    const fileListEl = $('#xl-file-list');
+    const importBtn = $('#xl-import-btn');
+
+    // ファイル名から日付を推測する(例:「7月15日_台帳」「2026-07-15」「0715」等、よくある命名パターンに対応)
+    const guessDateFromName = (name) => {
+      const today = jstToday();
+      const [ty] = today.split('-');
+      let m = name.match(/(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})/);
+      if (m) return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
+      m = name.match(/(\d{1,2})月(\d{1,2})日/);
+      if (m) return `${ty}-${String(m[1]).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`;
+      m = name.match(/(\d{1,2})[-/](\d{1,2})(?!\d)/);
+      if (m) return `${ty}-${String(m[1]).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`;
+      return '';
+    };
+
+    const renderXlFileList = () => {
+      fileListEl.innerHTML = xlState.files.map((f,i) => `
+        <div class="row" style="gap:8px;align-items:center;padding:8px 10px;background:#faf9f6;border:1px solid var(--line);border-radius:8px;flex-wrap:wrap">
+          <span style="flex:1;min-width:0;font-size:12.5px;word-break:break-all">${h(f.file.name)}</span>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;white-space:nowrap">対象日
+            <input type="date" class="xl-date-input" data-idx="${i}" value="${h(f.dateStr)}" style="padding:4px 6px;border:1px solid var(--line);border-radius:6px">
+          </label>
+          <button type="button" class="btn ghost xs xl-remove" data-idx="${i}">${icon('x',{size:'11px'})}</button>
+        </div>`).join('');
+      fileListEl.querySelectorAll('.xl-date-input').forEach(inp => inp.onchange = (e) => {
+        xlState.files[Number(e.target.dataset.idx)].dateStr = e.target.value;
+        updateImportBtnState();
+      });
+      fileListEl.querySelectorAll('.xl-remove').forEach(btn => btn.onclick = () => {
+        xlState.files.splice(Number(btn.dataset.idx), 1);
+        renderXlFileList();
+        updateImportBtnState();
+      });
+      updateImportBtnState();
+    };
+    const updateImportBtnState = () => { importBtn.disabled = xlState.files.length === 0; };
+
+    if(fileInput) fileInput.onchange = () => {
+      const newFiles = Array.from(fileInput.files || []);
+      for(const file of newFiles){
+        xlState.files.push({ file, dateStr: guessDateFromName(file.name) });
+      }
+      fileInput.value = ''; // 同じファイルを選び直せるようにリセット
+      renderXlFileList();
+    };
+
+    const fileToBase64 = (file) => new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.split(',')[1]); // "data:...;base64,XXXX" のXXXX部分
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+
+    if(importBtn) importBtn.onclick = async () => {
+      if(!xlState.files.length){ popup('ファイルを選択してください','error'); return; }
+      const checkAbsent = $('#xl-check-absent').checked;
+      const missingDate = xlState.files.some(f => !f.dateStr);
+      if(!confirm(`${xlState.files.length}件のExcelファイルを取り込みます。${checkAbsent?'\n\n選択した全ファイルのどれにも登場しない人を休暇にします。':''}${missingDate?'\n\n※対象日が未入力のファイルがあります。ファイル自身に年月の記載があればそちらが使われますが、無ければスキップされます。':''}\n\nファイルサイズによっては時間がかかる場合があります。よろしいですか？`)) return;
+      const msgEl = $('#xl-import-msg');
+      msgEl.textContent = '取り込み中…(ファイルサイズによっては数十秒かかります)';
+      await withLoading(importBtn, async () => {
+        try{
+          const filesPayload = await Promise.all(xlState.files.map(async f => ({
+            fileName: f.file.name,
+            targetDate: f.dateStr || '',
+            fileBase64: await fileToBase64(f.file),
+          })));
+          const r = await api('/import-excel-daicho', { method:'POST', body:{ files: filesPayload, checkAbsent } });
+          msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${checkAbsent&&r.clearedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''}<br>`
+            + r.results.map(x=>`${x.ok?icon('checkCircle',{size:'12px'}):icon('xCircle',{size:'12px'})} ${h(x.fileName)}${x.targetDate?` (${h(x.targetDate)})`:''} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>');
+          popup(`Excel取り込みが完了しました(${r.okCount}件成功)`);
+          xlState.files = [];
+          renderXlFileList();
+        }catch(e){ msgEl.innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
+      });
+    };
   }
 }
 
@@ -4679,7 +4793,7 @@ async function pageRolePermissions(app){
 /* ===== 個人の年間稼働サマリー・備考欄(手配者以上、本人は閲覧不可) ===== */
 /* ===== 個人の年間サマリーを、メンバーを検索して開くための入口画面(左メニュー用) ===== */
 async function pageMemberSummarySearch(app){
-  if(!has('member_summary_view')){ notFound(app); return; }
+  if(!(LV[ME.role] >= 2)){ notFound(app); return; }
   app.innerHTML = `<h2>${icon('barChart')} 個人の年間サマリー</h2><div class="card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>`;
   const users = await getUsers();
   const list = users.filter(u => u.id !== ME.id).sort((a,b) => String(a.regno||'').localeCompare(String(b.regno||''), undefined, {numeric:true}));
@@ -4703,7 +4817,7 @@ async function pageMemberSummarySearch(app){
 }
 
 async function pageMemberYearSummary(app, hash){
-  if(!has('member_summary_view')){ notFound(app); return; }
+  if(!(LV[ME.role] >= 2)){ notFound(app); return; }
   const uid = Number(hash.split('/')[2]);
   if(!uid){ notFound(app); return; }
   if(uid === ME.id){ notFound(app); return; } // 本人アクセスはバックエンドと同様、存在自体を秘匿する

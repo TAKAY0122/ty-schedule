@@ -1019,35 +1019,12 @@ function gvizCsvUrl(id, gid) {
 // ===== xlsx を丸ごと取得して全シートを2次元配列で返す(依存ライブラリなし) =====
 // Google Sheets の /export?format=xlsx は共有リンク権限のままファイル全体を返す。
 // xlsx は zip なので、ZIP(ストア/Deflate)を自前展開し、sheetN.xml を簡易パースする。
-async function fetchXlsxSheets(id) {
-  const url = `https://docs.google.com/spreadsheets/d/${id}/export?format=xlsx`;
-  // 応答が極端に遅い/ハングするシートがあっても、他の予定表ソースの処理をブロックしないよう
-  // 明示的にタイムアウトを設定する(cron実行1回あたりの上限を考慮し25秒)。
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), 25000);
-  let resp;
-  try {
-    resp = await fetch(url, { redirect: 'follow', headers: GSHEET_FETCH_HEADERS, signal: ac.signal });
-  } catch (e) {
-    if (e.name === 'AbortError') throw new Error('シートの取得がタイムアウトしました(25秒)。ファイルが大きすぎるか、共有設定を確認してください。');
-    throw e;
-  } finally {
-    clearTimeout(timer);
-  }
-  if (!resp.ok) throw new Error(`xlsx取得失敗(HTTP ${resp.status})`);
-  // ダウンロード時のファイル名はレスポンスヘッダーにも入っていることが多く、
-  // docProps/core.xml の dc:title より確実に取れるので優先的にこちらを使う。
-  let headerTitle = '';
-  const cd = resp.headers.get('content-disposition') || '';
-  const cdm = cd.match(/filename\*=UTF-8''([^;]+)/i) || cd.match(/filename="?([^";]+)"?/i);
-  if (cdm) {
-    try { headerTitle = decodeURIComponent(cdm[1]).replace(/\.xlsx$/i, '').trim(); } catch (e) { headerTitle = cdm[1].replace(/\.xlsx$/i, '').trim(); }
-  }
-  const buf = new Uint8Array(await resp.arrayBuffer());
+// xlsxのバイナリデータ(Uint8Array)から、シート情報を抽出する共通ロジック。
+// Googleスプレッドシートのエクスポート(fetchXlsxSheets)、ユーザーが直接アップロードした
+// Excelファイル(台帳Excel取込)の両方から共通で呼ばれる。
+async function parseXlsxBuffer(buf, headerTitle) {
   if (buf[0] !== 0x50 || buf[1] !== 0x4b) {
-    // xlsxではなくHTML等が返ってきた場合(共有設定 or bot対策ページの可能性)。先頭を少し見せてデバッグしやすくする。
-    const head = new TextDecoder().decode(buf.slice(0, 120)).replace(/\s+/g, ' ').trim();
-    throw new Error(`xlsxではない応答が返りました(共有設定を「リンクを知る全員が閲覧可」にしてください) [${head.slice(0, 60)}]`);
+    throw new Error('xlsxファイルとして認識できませんでした(拡張子やファイル形式をご確認ください)');
   }
   const files = await unzip(buf);
   // 共有文字列
@@ -1087,6 +1064,39 @@ async function fetchXlsxSheets(id) {
   const coreTitle = titleMatch ? unescapeXml(titleMatch[1]) : '';
   const fileTitle = headerTitle || coreTitle || '';
   return { sheets, raw: buf, fileTitle };   // raw = 元xlsxバイト列(R2保管用)
+}
+
+async function fetchXlsxSheets(id) {
+  const url = `https://docs.google.com/spreadsheets/d/${id}/export?format=xlsx`;
+  // 応答が極端に遅い/ハングするシートがあっても、他の予定表ソースの処理をブロックしないよう
+  // 明示的にタイムアウトを設定する(cron実行1回あたりの上限を考慮し25秒)。
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 25000);
+  let resp;
+  try {
+    resp = await fetch(url, { redirect: 'follow', headers: GSHEET_FETCH_HEADERS, signal: ac.signal });
+  } catch (e) {
+    if (e.name === 'AbortError') throw new Error('シートの取得がタイムアウトしました(25秒)。ファイルが大きすぎるか、共有設定を確認してください。');
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!resp.ok) throw new Error(`xlsx取得失敗(HTTP ${resp.status})`);
+  // ダウンロード時のファイル名はレスポンスヘッダーにも入っていることが多く、
+  // docProps/core.xml の dc:title より確実に取れるので優先的にこちらを使う。
+  let headerTitle = '';
+  const cd = resp.headers.get('content-disposition') || '';
+  const cdm = cd.match(/filename\*=UTF-8''([^;]+)/i) || cd.match(/filename="?([^";]+)"?/i);
+  if (cdm) {
+    try { headerTitle = decodeURIComponent(cdm[1]).replace(/\.xlsx$/i, '').trim(); } catch (e) { headerTitle = cdm[1].replace(/\.xlsx$/i, '').trim(); }
+  }
+  const buf = new Uint8Array(await resp.arrayBuffer());
+  if (buf[0] !== 0x50 || buf[1] !== 0x4b) {
+    // xlsxではなくHTML等が返ってきた場合(共有設定 or bot対策ページの可能性)。先頭を少し見せてデバッグしやすくする。
+    const head = new TextDecoder().decode(buf.slice(0, 120)).replace(/\s+/g, ' ').trim();
+    throw new Error(`xlsxではない応答が返りました(共有設定を「リンクを知る全員が閲覧可」にしてください) [${head.slice(0, 60)}]`);
+  }
+  return parseXlsxBuffer(buf, headerTitle);
 }
 
 function parseSharedStrings(xml) {
@@ -2244,6 +2254,91 @@ async function api(req, env, url) {
     }
   }
 
+  // ---- 台帳のExcelファイル取り込み(新規機能)。既存のスプレッドシートURL取込(台帳の深夜自動
+  // 再取り込み・手動再取り込み)とは完全に独立した、ファイルアップロードによる取込経路。
+  // フォーマットは既存の手配管理表(フォーマットC/D/AB)と共通。複数ファイルをまとめて送り、
+  // ファイルごとに「この日付として扱う」ことを指定できる(月をまたいだ一括取込を想定)。
+  // 深夜の自動実行には一切組み込まない(常に手動操作のみ)。
+  if (method === 'POST' && path === '/import-excel-daicho') {
+    if (!has(me, 'import_data')) return ERR('権限がありません', 403);
+    const files = Array.isArray(body.files) ? body.files : [];
+    if (!files.length) return ERR('取り込むファイルがありません');
+    if (files.length > 40) return ERR('一度に取り込めるファイルは40件までです(分けて実行してください)');
+
+    const keywordMap = await loadNonSiteKeywords(env);
+    const results = [];
+    const allRowsCombined = [];
+
+    for (const f of files) {
+      const fileName = String(f.fileName || '').slice(0, 200);
+      const targetDate = String(f.targetDate || '').trim(); // ユーザーがこのファイルに指定した日付(YYYY-MM-DD)。任意。
+      try {
+        if (!f.fileBase64) throw new Error('ファイルの内容が空です');
+        const bin = atob(f.fileBase64.includes(',') ? f.fileBase64.split(',')[1] : f.fileBase64);
+        const buf = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+        const got = await parseXlsxBuffer(buf, fileName.replace(/\.xlsx?$/i, ''));
+
+        let allRows = [], sheetReport = [];
+        // ファイル名・シート自身のいずれからも年月が拾えない手配管理表(フォーマットD)向けに、
+        // ユーザーが指定したtargetDateの年月をfallbackとして使う(スプレッドシート取込と違い、
+        // 台帳Excelは1ファイル=1日という運用のため、誤って別月と混同するリスクが低いため許可する)。
+        const fallbackYm = targetDate ? targetDate.slice(0, 7) : null;
+        for (const sh of got.sheets) {
+          const grid = sh.grid;
+          if (!grid || !grid.length) continue;
+          try {
+            const fmt = detectFormat(grid);
+            let parsed;
+            if (fmt === 'C') parsed = parseFormatC(grid, null, targetDate || null).rows;
+            else if (fmt === 'D') {
+              const ym = detectYmFromGrid(grid, fallbackYm);
+              if (!ym) { sheetReport.push({ name: sh.name, count: 0, note: '年月を読み取れず、対象日の指定もなかったためスキップしました' }); continue; }
+              parsed = parseFormatD(grid, ym, keywordMap).rows;
+            }
+            else parsed = parseFormatAB(grid, fallbackYm || jstDate().slice(0, 7), null, keywordMap).rows;
+            if (parsed && parsed.length) { allRows = allRows.concat(parsed); sheetReport.push({ name: sh.name, count: parsed.length }); }
+          } catch (e) {
+            sheetReport.push({ name: sh.name, count: 0, note: `解析エラー: ${e.message}` });
+          }
+        }
+        if (!allRows.length) { results.push({ fileName, targetDate, ok: false, error: 'データを読み取れませんでした' }); continue; }
+
+        const r = await applyImportRows(env, allRows, me.id, 'replace-person-day', `台帳Excel取込(${fileName})`, true);
+        allRowsCombined.push(...allRows);
+
+        // R2に保管(スプレッドシート台帳と同じ管理下に置く。file_idはファイル名ベースで代用)
+        if (env.DAICHO) {
+          const ts = jstTs();
+          const pseudoFileId = 'excel_' + fileName.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 60);
+          const r2key = `daicho/${ts.replace(/[: ]/g, '-')}_${pseudoFileId}.xlsx`;
+          await env.DAICHO.put(r2key, buf, { httpMetadata: { contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' } });
+          await env.DB.prepare(
+            'INSERT INTO daicho_archive(ts,importer_id,importer_name,source_url,file_id,r2_key,file_name,size,applied,sheets) VALUES(?,?,?,?,?,?,?,?,?,?)'
+          ).bind(ts, me.id, me.name + '(Excel手動)', '', pseudoFileId, r2key, fileName || `台帳_${ts.slice(0, 10)}.xlsx`, buf.length, r.applied, sheetReport.length).run();
+        }
+        results.push({ fileName, targetDate, ok: true, applied: r.applied, changes: r.changes || [], ts: r.ts });
+      } catch (e) {
+        results.push({ fileName, targetDate, ok: false, error: e.message });
+      }
+    }
+
+    // 不在者の休暇化は、既定オフ(複数日をまたぐ取込のため、日ごとに対象者が違うと誤爆しやすい)。
+    // 明示的にcheckAbsentが指定された場合のみ、今回アップロードした全ファイル分をまとめて判定する。
+    let absentResult = { clearedPeople: 0, clearedDays: 0 };
+    if (body.checkAbsent && allRowsCombined.length) {
+      try { absentResult = await clearAbsentFromDaicho(env, allRowsCombined, me.id); }
+      catch (e) { console.error('clearAbsentFromDaicho failed:', e); }
+      try { await matchRookieAndBlacklist(env, allRowsCombined); } catch (e) {}
+    } else if (allRowsCombined.length) {
+      try { await matchRookieAndBlacklist(env, allRowsCombined); } catch (e) {}
+    }
+
+    const okCount = results.filter(r => r.ok).length;
+    const totalApplied = results.reduce((s, r) => s + (r.ok ? (r.applied || 0) : 0), 0);
+    return J({ ok: 1, okCount, ngCount: results.length - okCount, totalApplied, results, clearedAbsent: absentResult.clearedPeople });
+  }
+
   // ---- 給与確定ロック期間の設定 ----
   if (method === 'GET' && path === '/lock-settings') {
     if (!has(me, 'wage_settings')) return ERR('ページが見つかりません', 404);
@@ -3393,7 +3488,7 @@ async function api(req, env, url) {
   // 12月始まり〜翌年11月終わりの年度で、月ごとの勤務日数・総勤務時間・総残業時間・給料を集計する。
   // ?uid=対象者ID &year=基準年(その年の12月〜翌年11月を対象とする)
   if (method === 'GET' && path === '/member-year-summary') {
-    if (!has(me, 'member_summary_view')) return ERR('ページが見つかりません', 404);
+    if (lv(me) < 2) return ERR('ページが見つかりません', 404); // 個別権限による例外は認めず、手配者以上のroleのみ許可
     const uid = Number(url.searchParams.get('uid'));
     if (!uid) return ERR('対象者が指定されていません');
     if (uid === me.id) return ERR('ページが見つかりません', 404); // 本人は閲覧不可(存在自体を秘匿)
@@ -3435,7 +3530,7 @@ async function api(req, env, url) {
 
   // ---- 個人の備考欄(手配者以上、本人は閲覧不可)。自由記述を時系列で複数件積み重ねる ----
   if (method === 'GET' && path === '/member-notes') {
-    if (!has(me, 'member_summary_view')) return ERR('ページが見つかりません', 404);
+    if (lv(me) < 2) return ERR('ページが見つかりません', 404); // 個別権限による例外は認めず、手配者以上のroleのみ許可
     const uid = Number(url.searchParams.get('uid'));
     if (!uid) return ERR('対象者が指定されていません');
     if (uid === me.id) return ERR('ページが見つかりません', 404);
@@ -3443,7 +3538,7 @@ async function api(req, env, url) {
     return J({ notes: rows });
   }
   if (method === 'POST' && path === '/member-notes') {
-    if (!has(me, 'member_summary_view')) return ERR('ページが見つかりません', 404);
+    if (lv(me) < 2) return ERR('ページが見つかりません', 404); // 個別権限による例外は認めず、手配者以上のroleのみ許可
     const uid = Number(body.uid);
     if (!uid) return ERR('対象者が指定されていません');
     if (uid === me.id) return ERR('ページが見つかりません', 404);
@@ -3454,7 +3549,7 @@ async function api(req, env, url) {
     return J({ ok: 1 });
   }
   if (method === 'DELETE' && (scm = path.match(/^\/member-notes\/(\d+)$/))) {
-    if (!has(me, 'member_summary_view')) return ERR('ページが見つかりません', 404);
+    if (lv(me) < 2) return ERR('ページが見つかりません', 404); // 個別権限による例外は認めず、手配者以上のroleのみ許可
     const noteId = Number(scm[1]);
     const note = await env.DB.prepare('SELECT target_id, author_id FROM member_notes WHERE id=?').bind(noteId).first();
     if (!note) return ERR('見つかりません', 404);
