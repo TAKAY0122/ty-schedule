@@ -295,7 +295,7 @@ table.list tr.click:hover{background:#fdf6e0;cursor:pointer}
 /* スマホ用 スケジュール入力(日選択フォーム) */
 .me-pick{display:flex;align-items:center;gap:10px;margin-bottom:12px;background:var(--ink);padding:10px 12px;border-radius:8px}
 .me-pick label{color:#fff;font-size:13px;font-weight:600}
-.me-pick select{flex:1;font-size:15px;padding:8px}
+.me-pick select{flex:1;font-size:15px;padding:8px;min-width:0}
 .me-slot{border:1px solid var(--line);border-radius:8px;padding:11px 12px;margin-bottom:10px;background:#fcfbf7}
 .me-row{display:flex;align-items:center;gap:10px;margin-bottom:8px}
 .me-row:last-child{margin-bottom:0}
