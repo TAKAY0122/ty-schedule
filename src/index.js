@@ -126,7 +126,7 @@ async function pbkdf2(pw, salt) {
 // アプリの機能アップデートのお知らせに使うバージョン番号。新しいお知らせを追加したら値を増やし、
 // updateNoticeContent()にも内容を追記する。既にパスワードを変更済み(must_change=0)の既存ユーザーが
 // ログインした際、seen_update_version がこれより小さければ「アップデートのお知らせ」を表示する。
-const CURRENT_UPDATE_VERSION = 5;
+const CURRENT_UPDATE_VERSION = 6;
 
 const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0, must_change: u.must_change ? 1 : 0, extra_perms: getPerms(u), revoked_perms: getRevokedPerms(u), notify_rookie: u.notify_rookie === null || u.notify_rookie === undefined ? null : (u.notify_rookie ? 1 : 0), manner_done: u.manner_done ? 1 : 0, team2_done: u.team2_done ? 1 : 0, su_done: u.su_done ? 1 : 0, graduate_flag: u.graduate_flag ? 1 : 0, promotion_pending_date: u.promotion_pending_date || null, promotion_pending_rank: u.promotion_pending_rank || null, needsUpdateNotice: !u.must_change && (u.seen_update_version || 0) < CURRENT_UPDATE_VERSION, seenUpdateVersion: u.seen_update_version || 0 });
 
@@ -287,10 +287,14 @@ async function getLockDays(env){ const v = parseInt(await getSetting(env, 'lock_
 
 // ===== 予定表(チーフ/手配者スケジュール表)の取り込み =====
 // 月ごとにシートが分かれた予定表を取得し、fromDate以降の予定のみ users.regno と突き合わせて反映する。
-// 実績(IN/OUT)を伴わない「予定」のみの表のため、直近(前日まで)は台帳(実績取り込み)を優先し、このシートでは上書きしない。
+// 実績(IN/OUT)を伴わない「予定」のみの表のため、直近(前日まで)は台帳(実績取り込み)を優先する
+// (fromDateの絞り込みにより、直近の日付はそもそも取込対象に含まれない)。
 //
-// 人単位の差分スキップ: 前回取り込んだ内容(import_snapshots)と人ごとに比較し、
-// 変わっていない人はスケジュールDBへの問い合わせ・書き込みを一切行わずスキップする(API呼び出し削減・前回データは今回の内容で上書きされる)。
+// 上書き判定は「日単位のスプレッドシート差分」を基準にする(アプリ側の現在の内容では判定しない):
+// 前回取り込んだ内容(import_snapshots)と、今回取り込んだ内容を人・日ごとに比較し、
+// スプレッドシート側の内容が変わっていない日はアプリ側に一切触れない(API呼び出し削減にもなる)。
+// 逆に、スプレッドシート側の内容が変わっている日は、アプリ側が手動編集されていても新しい内容で
+// 上書きする(「予定表が更新されたのに反映されない」という事故を避けるため)。
 async function importScheduleSheet(env, source, url, editorId, fromDate, opt = {}) {
   const meta = parseSheetUrl(url);
   if (!meta) throw new Error('スプレッドシートURLの形式が正しくありません');
@@ -340,6 +344,15 @@ async function importScheduleSheet(env, source, url, editorId, fromDate, opt = {
     list.map(r => ({ date: r.date, type: r.type, site: r.site || '', venue: r.venue || '' }))
       .sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0)
   );
+  // normalize()の結果(日付でソート済みの配列)を、日付ごとの正規化文字列にまとめ直す。
+  // 「その日のスプレッドシートの内容が前回取込時と変わったか」を1日単位で比較するために使う。
+  const groupByDate = normalizedArr => {
+    const byDate = {};
+    for (const r of normalizedArr) (byDate[r.date] ||= []).push({ type: r.type, site: r.site, venue: r.venue });
+    const out = {};
+    for (const d in byDate) out[d] = JSON.stringify(byDate[d].sort((a, b) => (a.type + a.site + a.venue).localeCompare(b.type + b.site + b.venue)));
+    return out;
+  };
 
   // 前回スナップショットを一括取得
   const snapMap = {};
@@ -350,18 +363,31 @@ async function importScheduleSheet(env, source, url, editorId, fromDate, opt = {
     for (const s of rs) snapMap[s.regno] = s.data;
   }
 
+  // 「前回取り込んだスプレッドシートの内容」と「今回取り込んだスプレッドシートの内容」を日単位で
+  // 比較し、変わった日だけを取り込み対象にする(アプリ上で手動編集されていても、スプレッドシート
+  // 側の内容が変わっていれば新しい内容を優先して反映する)。スプレッドシート側が前回と同じ日は、
+  // アプリ側の内容(手動編集含む)に一切触れない。
   let unchangedPeople = 0;
   const rowsToApply = [];
   for (const regno of regnos) {
-    const newData = normalize(byRegno[regno]);
-    if (snapMap[regno] === newData) { unchangedPeople++; continue; } // 前回と完全一致 → DBに一切触れずスキップ
-    rowsToApply.push(...byRegno[regno]);
+    const newList = byRegno[regno].map(r => ({ date: r.date, type: r.type, site: r.site || '', venue: r.venue || '' }));
+    const newData = JSON.stringify([...newList].sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    if (snapMap[regno] === newData) { unchangedPeople++; continue; } // 前回と完全一致 → この人はDBに一切触れずスキップ
+
+    let prevList = [];
+    if (snapMap[regno]) { try { prevList = JSON.parse(snapMap[regno]); } catch (e) {} }
+    const prevByDate = groupByDate(prevList);
+    const newByDate = groupByDate(newList);
+    for (const date in newByDate) {
+      if (newByDate[date] !== prevByDate[date]) rowsToApply.push(...byRegno[regno].filter(r => r.date === date));
+    }
   }
 
-  // 予定表ソースは「まだ確定していない予定」なので、既に何か入っている日は(手動編集・自動取込問わず)
-  // 一切上書きしない。まだ何も無い日にだけ新しい予定を反映する。
+  // 上記で「スプレッドシート側の内容が前回と変わった日」だけに絞り込み済みのため、
+  // applyImportRowsは(アプリ側の既存内容を見て遠慮する'skip-if-exists'ではなく)
+  // 通常の上書きモードで、絞り込んだ日をそのまま反映する。
   const r = rowsToApply.length
-    ? await applyImportRows(env, rowsToApply, editorId, 'skip-if-exists', source, false, { skipUnassigned: opt.excludeUnmanaged !== false })
+    ? await applyImportRows(env, rowsToApply, editorId, 'replace-person-day', source, false, { skipUnassigned: opt.excludeUnmanaged !== false })
     : { applied: 0, skipped: 0, skippedUnregistered: 0, skippedUnchanged: 0, skippedInvalid: 0, skippedOtherOrg: 0, skippedUnassigned: 0, errors: [], changes: [], ts: jstTs() };
 
   // スナップショットを今回の内容で更新(前回データは上書きされ消える)
@@ -3331,6 +3357,54 @@ async function api(req, env, url) {
       r.blacklistNames = blacklistMap[key] || [];
     }
     return J(rows);
+  }
+
+  // ---- 現場一覧: 選択した複数の現場をまとめて改名(手配者以上) ----
+  // 台帳・予定表それぞれの入力者によって、同じ現場でも現場名・会場名の書き方がバラバラになるのは
+  // 避けられない。現場一覧でチェックした(date,site,venue)の組を、まとめて統一名称に変更する。
+  // 現場名・会場名のどちらかを空欄にすると、その項目は変更しない(片方だけ直すことも可能)。
+  if (method === 'POST' && path === '/sites/bulk-rename') {
+    if (!has(me, 'site_manage')) return ERR('権限がありません', 403);
+    const items = Array.isArray(body.items) ? body.items : [];
+    const newSite = typeof body.newSite === 'string' ? body.newSite.trim() : '';
+    const newVenue = typeof body.newVenue === 'string' ? body.newVenue.trim() : '';
+    if (!items.length) return ERR('対象の現場が選択されていません');
+    if (!newSite && !newVenue) return ERR('新しい現場名または会場名のどちらかを入力してください');
+
+    const ts = jstTs();
+    const batch = [];
+    const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
+    let updatedDays = 0;
+    for (const it of items) {
+      const date = String(it.date || ''), site = String(it.site || ''), venue = String(it.venue || '');
+      if (!date || !site) continue;
+      const uidRows = (await env.DB.prepare(
+        "SELECT DISTINCT user_id FROM schedule WHERE date=? AND site=? AND venue=? AND type='work'"
+      ).bind(date, site, venue).all()).results;
+      for (const { user_id } of uidRows) {
+        // その人・その日の全スロットを取得し、対象の(site,venue)と一致するスロットだけ改名する
+        // (同じ日に他の予定が混在していても、それらは変更しない)
+        const before = (await env.DB.prepare('SELECT * FROM schedule WHERE user_id=? AND date=? ORDER BY slot').bind(user_id, date).all()).results;
+        const beforeJson = JSON.stringify(before.map(stripRow));
+        const afterRows = before.map(r => (r.type === 'work' && r.site === site && r.venue === venue)
+          ? { ...r, site: newSite || r.site, venue: newVenue || r.venue }
+          : r);
+        const afterJson = JSON.stringify(afterRows.map(stripRow));
+        if (beforeJson === afterJson) continue;
+        batch.push(env.DB.prepare('DELETE FROM schedule WHERE user_id=? AND date=?').bind(user_id, date));
+        let slot = 0;
+        for (const r of afterRows) {
+          batch.push(env.DB.prepare('INSERT INTO schedule(user_id,date,slot,type,site,venue,tin,tout,hours,overtime,pay,note,duty,load_end,show_end,multi) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+            .bind(user_id, date, slot, r.type, r.site, r.venue, r.tin, r.tout, r.hours || 0, r.overtime || 0, r.pay || 0, r.note || '', r.duty || '', r.load_end || '', r.show_end || '', r.multi ? 1 : 0));
+          slot++;
+        }
+        batch.push(env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
+          .bind(ts, me.id, user_id, date, beforeJson, JSON.stringify({ slots: afterRows.map(stripRow), _src: `現場一覧の一括変更(${site}${newSite && newSite !== site ? '→' + newSite : ''})` })));
+        updatedDays++;
+      }
+    }
+    if (batch.length) for (const part of chunk(batch, 200)) await env.DB.batch(part);
+    return J({ ok: 1, updatedDays, ts });
   }
 
   if (method === 'GET' && path === '/site-members') {

@@ -140,7 +140,7 @@ let UPDATE_NOTICE_SHOWN = false; // 1セッション中に一度だけ表示す�
 // アップデートのお知らせに表示する項目。新機能を追加したら、ここに { v: 新しいバージョン番号, ... } で
 // 追記し、CURRENT_UPDATE_VERSION(この下)をインクリメントする。過去の項目はそのまま残しておいてよい
 // (各ユーザーは自分がまだ見ていないバージョン分の項目だけを見るため、勝手に重複表示されることはない)。
-const CURRENT_UPDATE_VERSION = 5;
+const CURRENT_UPDATE_VERSION = 6;
 const UPDATE_ITEMS = [
   { v:1, icon:'home', title:'ホーム画面を追加', desc:'ログイン後、今日・明日の現場や通知が一目で見られるようになりました。', show: () => true },
   { v:1, icon:'handRaise', title:'休み希望・稼働時間の提出', desc:'マイスケジュールから、休み希望や「この時間なら動ける」を手配担当者に伝えられます。', show: () => true },
@@ -157,6 +157,7 @@ const UPDATE_ITEMS = [
   { v:4, icon:'fileText', title:'台帳Excelファイルの直接取り込みに対応', desc:'手配管理表のExcelファイルをPCから直接アップロードして取り込めるようになりました。複数ファイルの一括取込や、台帳保管に保存済みのファイルからの再取込にも対応しています(常に手動実行)。', show: () => LV[ME.role] >= 2 },
   { v:5, icon:'layoutGrid', title:'複数日の現場に「稼働表」を追加', desc:'現場一覧の現場詳細から「稼働表」を押すと、その現場が行われている期間(前後の連続した日程を自動判定)に入っている人だけを、日付×人の一覧で確認できるようになりました。現場に入っていない日も、休暇・NG・別の現場のどれかが分かります。', show: () => LV[ME.role] >= 1 },
   { v:5, icon:'clockWarn', title:'現場詳細に「過去・今後の公演」を追加', desc:'現場詳細画面に、同じ会場・同じアーティスト(現場名)の過去と今後の公演一覧を追加しました。押すとその公演の詳細(入っていた人・時間等)がすぐに確認できます。', show: () => LV[ME.role] >= 1 },
+  { v:6, icon:'edit', title:'現場一覧で現場名・会場をまとめて変更できるように', desc:'入力者によってバラバラになりがちな現場名・会場の表記を、現場一覧でチェックを入れて選び、まとめて統一名称に変更できるようになりました(手配者以上)。', show: () => LV[ME.role] >= 2 },
 ];
 // 機能公開設定の対象画面。バックエンドのFEATURE_KEYSと必ず一致させる。
 // 新しい画面を追加したら、ここと src/index.js の FEATURE_KEYS の両方に追記する。
@@ -2637,8 +2638,10 @@ async function openMemberDayEdit(uid, u, date){
 /* ===== 現場一覧(チーフ以上)===== */
 async function pageSites(app){
   if(!has('sites_view')){ notFound(app); return; }
-  const stSites = PAGE_STATE.sites || (PAGE_STATE.sites = { month: MONTH, openDates: new Set() });
+  const stSites = PAGE_STATE.sites || (PAGE_STATE.sites = { month: MONTH, openDates: new Set(), selected: new Set() });
   if(!stSites.openDates) stSites.openDates = new Set(); // 古い保存状態との互換
+  if(!stSites.selected) stSites.selected = new Set();
+  const canRename = has('site_manage'); // 現場名・会場名の一括変更(手配者以上)
   const month = stSites.month;
   const sites = await api(`/sites?month=${month}`);
   // 日付ごとにグループ化
@@ -2647,6 +2650,10 @@ async function pageSites(app){
   const dates = Object.keys(byDate).sort();
   const [y,mo] = month.split('-').map(Number);
   const allOpen = dates.length > 0 && dates.every(d => stSites.openDates.has(d));
+  const siteKey = s => `${s.date}|${s.site}|${s.venue||''}`;
+  // 前回の月から残った選択(有り得ないはずだが)を除去
+  const visibleKeys = new Set(sites.map(siteKey));
+  for(const k of [...stSites.selected]) if(!visibleKeys.has(k)) stSites.selected.delete(k);
   app.innerHTML = `
   <h2>現場一覧</h2>
   <div class="card">
@@ -2657,17 +2664,25 @@ async function pageSites(app){
       ${dates.length ? `<button class="btn ghost sm" id="st-toggle-all">${allOpen ? icon('chevronsUp',{size:'12px'}) : icon('chevronsDown',{size:'12px'})} ${allOpen ? '全て閉じる' : '全て開く'}</button>` : ''}
       ${ME.handler===1 ? '<span class="muted" style="margin-left:auto">現場をタップ → メンバー確認・追加</span>' : '<span class="muted" style="margin-left:auto">現場をタップ → メンバー確認</span>'}
     </div>
+    ${canRename && stSites.selected.size ? `<div class="row" style="margin-bottom:12px;gap:8px;align-items:center;background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:8px 10px;flex-wrap:wrap">
+      <span class="muted" style="font-weight:600">${stSites.selected.size}件選択中</span>
+      <button class="btn gold sm" id="st-bulk-rename">${icon('edit',{size:'12px'})} まとめて現場名・会場を変更</button>
+      <button class="btn ghost sm" id="st-bulk-clear">選択解除</button>
+    </div>` : ''}
     ${dates.length ? dates.map(date=>{
       const w = new Date(date.slice(0,4), Number(date.slice(5,7))-1, Number(date.slice(8,10))).getDay();
       return `<details class="st-day" data-date="${date}" ${stSites.openDates.has(date)?'open':''}>
         <summary class="st-date ${w===0?'sun':w===6?'sat':''}">${Number(date.slice(8,10))}日(${WD[w]}) <span class="muted" style="font-weight:400;font-size:12px">(${byDate[date].length}件)</span></summary>
         <div class="st-sites">
-          ${byDate[date].map(s=>`<button class="st-site" data-date="${s.date}" data-site="${h(s.site)}">
+          ${byDate[date].map(s=>`<div class="st-site-row">
+          ${canRename ? `<input type="checkbox" class="st-site-check" data-key="${h(siteKey(s))}" ${stSites.selected.has(siteKey(s))?'checked':''}>` : ''}
+          <button class="st-site" data-date="${s.date}" data-site="${h(s.site)}">
             <span class="st-site-name">${h(s.site)}</span>
             ${s.venue?`<span class="st-site-venue">${h(s.venue)}</span>`:''}
             <span class="st-site-cnt">${s.cnt}名</span>
             ${(s.blacklistNames&&s.blacklistNames.length)?`<span class="st-share blacklist" title="ブラックリスト登録あり:${s.blacklistNames.map(h).join('、')}">${icon('clockWarn')} ${s.blacklistNames.length}</span>`:''}
           </button>
+          </div>
           ${(s.rookies&&s.rookies.length)?`<div class="st-rookie-list">
             ${s.rookies.map(rk=>`<button type="button" class="st-rookie-item" data-report-id="${rk.reportId||''}">${icon('badge',{size:'11px'})} ${h(rk.name)}${rk.reporterName?`<span class="muted"> (報告:${h(rk.reporterName)})</span>`:''}</button>`).join('')}
           </div>`:''}`).join('')}
@@ -2675,8 +2690,8 @@ async function pageSites(app){
       </details>`;
     }).join('') : '<div class="muted" style="padding:20px 0;text-align:center">この月に登録された現場はありません</div>'}
   </div>`;
-  $('#st-prev').onclick = () => { stSites.month = shiftMonth(month,-1); stSites.openDates = new Set(); pageSites(app); };
-  $('#st-next').onclick = () => { stSites.month = shiftMonth(month, 1); stSites.openDates = new Set(); pageSites(app); };
+  $('#st-prev').onclick = () => { stSites.month = shiftMonth(month,-1); stSites.openDates = new Set(); stSites.selected = new Set(); pageSites(app); };
+  $('#st-next').onclick = () => { stSites.month = shiftMonth(month, 1); stSites.openDates = new Set(); stSites.selected = new Set(); pageSites(app); };
   const toggleAllBtn = $('#st-toggle-all');
   if(toggleAllBtn) toggleAllBtn.onclick = () => {
     if(allOpen) stSites.openDates = new Set();
@@ -2692,6 +2707,56 @@ async function pageSites(app){
   app.querySelectorAll('.st-rookie-item').forEach(b => b.onclick = () => {
     location.hash = b.dataset.reportId ? `#/reports?open=${b.dataset.reportId}` : '#/reports';
   });
+  if(canRename){
+    app.querySelectorAll('.st-site-check').forEach(cb => cb.onclick = (e) => {
+      e.stopPropagation(); // 親のstate-siteボタン(現場詳細を開く)を誤って発火させない
+      if(cb.checked) stSites.selected.add(cb.dataset.key); else stSites.selected.delete(cb.dataset.key);
+      pageSites(app);
+    });
+    const bulkClear = $('#st-bulk-clear');
+    if(bulkClear) bulkClear.onclick = () => { stSites.selected = new Set(); pageSites(app); };
+    const bulkRename = $('#st-bulk-rename');
+    if(bulkRename) bulkRename.onclick = () => {
+      const targets = sites.filter(s => stSites.selected.has(siteKey(s)));
+      openSiteBulkRename(targets, () => { stSites.selected = new Set(); pageSites(app); });
+    };
+  }
+}
+
+// 現場一覧でチェックした複数の(date,site,venue)を、まとめて統一の現場名・会場名に変更する。
+// 入力者によって現場名・会場名の書き方がバラバラになるのは避けられないため、後から統一するための機能。
+function openSiteBulkRename(targets, onDone){
+  if(!targets.length) return;
+  const first = targets[0];
+  modal(`<h3>${icon('edit',{size:'15px'})} 選択した${targets.length}件の現場名・会場をまとめて変更</h3>
+    <div class="muted" style="font-size:12px;margin-bottom:10px">対象(${targets.length}件):</div>
+    <div style="max-height:30vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-bottom:12px">
+      ${targets.map(s=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:#faf9f6;border:1px solid var(--line);border-radius:6px">${h(s.date)} ${h(s.site)}${s.venue?` (${h(s.venue)})`:''} ・${s.cnt}名</div>`).join('')}
+    </div>
+    <label style="display:block;margin-bottom:10px">新しい現場名<br>
+      <input type="text" id="sbr-site" value="${h(first.site)}" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;margin-top:4px">
+    </label>
+    <label style="display:block;margin-bottom:10px">新しい会場<br>
+      <input type="text" id="sbr-venue" value="${h(first.venue||'')}" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;margin-top:4px">
+    </label>
+    <div class="muted" style="font-size:11.5px;margin-bottom:12px">どちらかを空欄のままにすると、その項目は変更しません(現場名だけ・会場だけの統一も可能です)。</div>
+    <button class="btn gold" id="sbr-run">変更を適用する</button>
+    <div id="sbr-msg" class="muted" style="margin-top:10px"></div>`);
+  $('#sbr-run').onclick = async () => {
+    const newSite = $('#sbr-site').value.trim();
+    const newVenue = $('#sbr-venue').value.trim();
+    if(!newSite && !newVenue){ $('#sbr-msg').textContent = '現場名または会場のどちらかを入力してください'; return; }
+    if(!confirm(`選択した${targets.length}件を、まとめて変更します。よろしいですか?`)) return;
+    await withLoading($('#sbr-run'), async () => {
+      try{
+        const items = targets.map(s => ({ date: s.date, site: s.site, venue: s.venue || '' }));
+        const r = await api('/sites/bulk-rename', { method:'POST', body:{ items, newSite, newVenue } });
+        closeModal();
+        popup(`${r.updatedDays}件を変更しました`);
+        if(onDone) onDone();
+      }catch(e){ $('#sbr-msg').textContent = e.message; }
+    });
+  };
 }
 // 開発中の機能ページを「準備中」として表示する共通ヘルパー。
 // 管理者には、システム設定からON/OFFを切り替えられる旨のリンクも案内する。
