@@ -22,9 +22,9 @@
  *   (既存の運用と同じく、同じ人物が複数行に分かれて記録される形です)。
  */
 
-const REPORT_SHEET_ID = '1TLHCtNOY0SMSvnIBnP8_GRVBYZJo-wsZBXao9MKWIKQ';       // 例: 1TLHCtNOY0SMSvnIBnP8_GRVBYZJo-wsZBXao9MKWIKQ
+const REPORT_SHEET_ID = 'ここに新人報告シートのスプレッドシートIDを貼り付け';
 const REPORT_SHEET_NAME = '新人報告';                                // 追記先のタブ名(必要に応じて変更)
-const BLACKLIST_SHEET_ID = '18msUtthaWs0H3h31BmZF5MwBC4E4craHJE21iZhmN-M'; // 例: 18msUtthaWs0H3h31BmZF5MwBC4E4craHJE21iZhmN-M
+const BLACKLIST_SHEET_ID = 'ここにブラックリストシートのスプレッドシートIDを貼り付け';
 
 function doPost(e) {
   try {

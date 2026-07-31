@@ -4211,32 +4211,33 @@ async function pageImport(app, hash){
   $('#imp-run').onclick = async () => {
     const urls = $('#imp-urls').value.split(/\s+/).map(s=>s.trim()).filter(Boolean);
     if(!urls.length){ $('#imp-result').innerHTML='<span class="msg err">URLを入力してください</span>'; return; }
-    $('#imp-run').disabled = true; $('#imp-result').innerHTML = '<span class="spinner" style="width:13px;height:13px;border-width:2px;margin-right:5px"></span><span class="muted">取り込み中…（全シートを読み込むため少し時間がかかります）</span>';
-    try{
-      const d = await api('/import-from-url', { method:'POST', body:{
-        urls, month: $('#imp-month').value, date: $('#imp-date').value, format: $('#imp-format').value,
-        add: $('#imp-add').checked, save: $('#imp-save').checked
-      }});
-      $('#imp-result').innerHTML = d.results.map(r=>{
-        const short = r.url.length>60 ? r.url.slice(0,60)+'…' : r.url;
-        if(!r.ok) return `<div class="imp-card imp-card-err">
-          <div class="imp-card-url">${h(short)}</div>
-          <div class="msg err" style="margin-top:4px">${h(r.error)}</div>
-        </div>`;
-        const errs = r.errors&&r.errors.length ? `<div class="muted" style="margin-top:4px">注意: ${r.errors.slice(0,5).map(h).join(' / ')}${r.errors.length>5?` ほか${r.errors.length-5}件`:''}</div>` : '';
-        const arch = r.archived ? `<div class="muted" style="margin-top:4px">${icon('package')} 台帳をサーバーに保管しました</div>` : (r.archiveError?`<div class="muted" style="margin-top:4px">${icon('clockWarn')}保管失敗:${h(r.archiveError)}</div>`:'');
-        const shList = r.sheets&&r.sheets.length ? `<div class="muted" style="margin-top:4px">シート: ${r.sheets.map(s=>`${h(s.name)}(${s.count})`).join(' / ')}</div>` : '';
-        const skipDetail = (r.skippedUnregistered||r.skippedUnchanged||r.skippedInvalid) ? `<div class="muted" style="margin-top:4px">内訳: 未登録 ${r.skippedUnregistered||0}件 / 変更なし ${r.skippedUnchanged||0}件 / 不正な行 ${r.skippedInvalid||0}件</div>` : '';
-        const otherOrgDetail = r.skippedOtherOrg ? `<div class="muted" style="margin-top:4px">対象外(登録番号が3から始まらない、または所属がRB以外): ${r.skippedOtherOrg}件</div>` : '';
-        return `<div class="imp-card">
-          <div class="imp-card-url">${h(short)}</div>
-          <div class="msg ok" style="margin-top:4px">${r.sheetsRead||1}シート読込 / 反映 ${r.applied} / スキップ ${r.skipped}</div>
-          ${skipDetail}${otherOrgDetail}${shList}${errs}${arch}
-        </div>`;
-      }).join('');
-      showSaved();
-    }catch(e){ $('#imp-result').innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
-    $('#imp-run').disabled = false;
+    $('#imp-result').innerHTML = '<span class="spinner" style="width:13px;height:13px;border-width:2px;margin-right:5px"></span><span class="muted">取り込み中…（全シートを読み込むため少し時間がかかります）</span>';
+    await withLoading($('#imp-run'), async () => {
+      try{
+        const d = await api('/import-from-url', { method:'POST', body:{
+          urls, month: $('#imp-month').value, date: $('#imp-date').value, format: $('#imp-format').value,
+          add: $('#imp-add').checked, save: $('#imp-save').checked
+        }});
+        $('#imp-result').innerHTML = d.results.map(r=>{
+          const short = r.url.length>60 ? r.url.slice(0,60)+'…' : r.url;
+          if(!r.ok) return `<div class="imp-card imp-card-err">
+            <div class="imp-card-url">${h(short)}</div>
+            <div class="msg err" style="margin-top:4px">${h(r.error)}</div>
+          </div>`;
+          const errs = r.errors&&r.errors.length ? `<div class="muted" style="margin-top:4px">注意: ${r.errors.slice(0,5).map(h).join(' / ')}${r.errors.length>5?` ほか${r.errors.length-5}件`:''}</div>` : '';
+          const arch = r.archived ? `<div class="muted" style="margin-top:4px">${icon('package')} 台帳をサーバーに保管しました</div>` : (r.archiveError?`<div class="muted" style="margin-top:4px">${icon('clockWarn')}保管失敗:${h(r.archiveError)}</div>`:'');
+          const shList = r.sheets&&r.sheets.length ? `<div class="muted" style="margin-top:4px">シート: ${r.sheets.map(s=>`${h(s.name)}(${s.count})`).join(' / ')}</div>` : '';
+          const skipDetail = (r.skippedUnregistered||r.skippedUnchanged||r.skippedInvalid) ? `<div class="muted" style="margin-top:4px">内訳: 未登録 ${r.skippedUnregistered||0}件 / 変更なし ${r.skippedUnchanged||0}件 / 不正な行 ${r.skippedInvalid||0}件</div>` : '';
+          const otherOrgDetail = r.skippedOtherOrg ? `<div class="muted" style="margin-top:4px">対象外(登録番号が3から始まらない、または所属がRB以外): ${r.skippedOtherOrg}件</div>` : '';
+          return `<div class="imp-card">
+            <div class="imp-card-url">${h(short)}</div>
+            <div class="msg ok" style="margin-top:4px">${r.sheetsRead||1}シート読込 / 反映 ${r.applied} / スキップ ${r.skipped}</div>
+            ${skipDetail}${otherOrgDetail}${shList}${errs}${arch}
+          </div>`;
+        }).join('');
+        showSaved();
+      }catch(e){ $('#imp-result').innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
+    });
   };
 
   if(canReloadSettings){
@@ -5245,14 +5246,15 @@ async function pageSchedSources(app, hash){
     const fullRangeChk = document.querySelector(`.ss-fullrange[data-id="${id}"]`);
     const fullRange = fullRangeChk ? fullRangeChk.checked : false;
     if(fullRange && !confirm('期間制限なしで取り込みます。シートに含まれる過去の日付も含めて、まだ何も予定が入っていない日には反映されます(既に予定がある日は上書きしません)。よろしいですか？')) return;
-    btn.disabled = true; if(msgEl) msgEl.textContent='取り込み中…（少し時間がかかります）';
-    try{
-      const r = await api(`/sched-sources/${id}/run`,{method:'POST', body:{ fullRange }});
-      if(msgEl) msgEl.textContent = fullRange ? `期間制限なし: 反映 ${r.applied}件 / スキップ ${r.skipped}件` : `対象日 ${r.fromDate} 以降: 反映 ${r.applied}件 / スキップ ${r.skipped}件`;
-      popup(`取り込みました(反映${r.applied}件)`);
-      pageSchedSources(app);
-    }catch(e){ if(msgEl) msgEl.textContent = e.message; }
-    finally{ btn.disabled = false; }
+    if(msgEl) msgEl.textContent='取り込み中…（少し時間がかかります）';
+    await withLoading(btn, async () => {
+      try{
+        const r = await api(`/sched-sources/${id}/run`,{method:'POST', body:{ fullRange }});
+        if(msgEl) msgEl.textContent = fullRange ? `期間制限なし: 反映 ${r.applied}件 / スキップ ${r.skipped}件` : `対象日 ${r.fromDate} 以降: 反映 ${r.applied}件 / スキップ ${r.skipped}件`;
+        popup(`取り込みました(反映${r.applied}件)`);
+        pageSchedSources(app);
+      }catch(e){ if(msgEl) msgEl.textContent = e.message; }
+    });
   });
 
   // 削除
@@ -6055,10 +6057,11 @@ async function pageAdminSettings(app){
   }; }
   { const rb = $('#recalc-btn'); if(rb) rb.onclick = async () => {
       if(!confirm('取り込み済みの全現場の給与・残業を、現在の時給・新ルールで再計算します。手動入力した給与も上書きされます。よろしいですか？')) return;
-      rb.disabled=true; $('#recalc-msg').textContent='再計算中…（件数が多いと数十秒かかります）';
-      try{ const r=await api('/recalc',{method:'POST'}); $('#recalc-msg').textContent=`${r.updated}件 再計算しました`; popup(`${r.updated}件を再計算しました`); }
-      catch(e){ $('#recalc-msg').textContent=e.message; }
-      finally{ rb.disabled=false; }
+      $('#recalc-msg').textContent='再計算中…（件数が多いと数十秒かかります）';
+      await withLoading(rb, async () => {
+        try{ const r=await api('/recalc',{method:'POST'}); $('#recalc-msg').textContent=`${r.updated}件 再計算しました`; popup(`${r.updated}件を再計算しました`); }
+        catch(e){ $('#recalc-msg').textContent=e.message; }
+      });
   }; }
   app.querySelectorAll('.duty-seg-select').forEach(sel => sel.onchange = async () => {
     const duty = sel.dataset.duty;

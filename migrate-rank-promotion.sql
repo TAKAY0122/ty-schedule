@@ -1,9 +1,9 @@
 -- ランク自動昇格・査定機能(v2.2)のためのマイグレーション
 -- 実行: npx wrangler d1 execute schedule-db --remote --file=migrate-rank-promotion.sql
 --
--- 【前提】以下は migrate-rank-system.sql で適用済みのため、ここでは追加しません。
---   users: grade / base / manner_done / team2_done / su_done / promotion_pending_date / graduate_flag
---   rank_history テーブル
+-- 【前提】users の grade / base / manner_done / team2_done / su_done / promotion_pending_date /
+--   graduate_flag、および rank_history テーブルは、本番環境には別途適用済みです
+--   (schema.sqlには新規構築用として統合済みのため、まっさらなDBを作る場合は schema.sql の実行のみで足ります)。
 -- 本ファイルで追加するのは promotion_pending_rank の1列のみです。
 
 -- 昇格予約時に、切り替える先のランク(D または C)を保持する列

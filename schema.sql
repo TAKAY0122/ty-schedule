@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS users(
   notify_rookie INTEGER DEFAULT NULL,    -- 新人報告リマインドの個人設定: NULL=役割の基本ルールに従う/1=常に対象/0=常に対象外
   calendar_token TEXT DEFAULT NULL,      -- Googleカレンダー等への購読フィード用の秘密トークン(発行するまでNULL)
   seen_update_version INTEGER DEFAULT 0, -- 最後に確認した「アップデートのお知らせ」のバージョン番号
-  grade TEXT DEFAULT '',                 -- 学年(M2/M1/4/3/2/1)
+  grade TEXT DEFAULT '',                 -- (未使用。将来削除予定。新人報告の学年はreports.candidate_gradeで別途管理)
   base TEXT DEFAULT '',                  -- (未使用。拠点は登録番号から都度計算する方式に変更済み。将来削除予定)
   manner_done INTEGER DEFAULT 0,         -- マナー研修 受講済み(E→D自動昇格の条件)
   team2_done INTEGER DEFAULT 0,          -- チーム研修(2部) 受講済み(D→C自動昇格の条件の一つ)
@@ -138,6 +138,7 @@ CREATE TABLE IF NOT EXISTS notifications(
   read INTEGER DEFAULT 0,
   link TEXT DEFAULT ''                   -- クリック時の遷移先(例: '#/schedule/12?month=2026-07')
 );
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read);
 
 -- プッシュ通知用デバイストークン(アプリ版・ブラウザ版どちらも共通で管理)
 CREATE TABLE IF NOT EXISTS push_tokens(

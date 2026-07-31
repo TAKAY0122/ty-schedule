@@ -216,7 +216,7 @@ async function recalcPayForMonth(env, userId, month, newRank){
   ).bind(userId, month + '%').all()).results;
   for (const r of rows) {
     const c = calcPay({ rank: newRank, date: r.date, tin: r.tin, tout: r.tout, duty: r.duty, loadEnd: r.load_end, showEnd: r.show_end, multi: r.multi }, resolve, dutyMap);
-    if (c) await env.DB.prepare('UPDATE schedule SET hours=?, overtime=?, pay=? WHERE id=?').bind(c.hours, c.overtime, c.pay, r.id).run();
+    await env.DB.prepare('UPDATE schedule SET hours=?, overtime=?, pay=? WHERE id=?').bind(c.hours, c.overtime, c.pay, r.id).run();
   }
 }
 
@@ -1506,8 +1506,8 @@ function parseChiefScheduleSheet(grid, fromDate, keywordMap) {
 // 5行目以降(idx4+)に日付(B列)とデータ。ym='2026-06' を日付補完に使う
 function parseFormatAB(rows, ym, cfg, keywordMap) {
   keywordMap = keywordMap || {};
-  const regnoRow = (cfg && cfg.regnoRow) || 2;   // 0始まりで3行目
-  const firstDateRow = (cfg && cfg.firstDateRow) || 4;
+  const regnoRow = (cfg && cfg.regnoRow) != null ? cfg.regnoRow : 2;   // 0始まりで3行目
+  const firstDateRow = (cfg && cfg.firstDateRow) != null ? cfg.firstDateRow : 4;
   const dayCol = (cfg && cfg.dayCol) != null ? cfg.dayCol : 1; // 日付が入る列(B=1)
   // 登録番号が入っている列を検出 → そこから3列が1メンバー(現場名,会場,備考)
   const reg = rows[regnoRow] || [];
@@ -4175,15 +4175,26 @@ async function cronDaichoReload(env) {
   const today = jstDate();
   const lastRun = await getSetting(env, 'daicho_reload_last_run', '');
   if (lastRun === today) return; // 1日1回のみ
-  await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_run',?)").bind(today).run();
 
-  const urlsRaw = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
-  const urls = urlsRaw.map(x => typeof x === 'string' ? x : x.url);
-  if (!urls.length) return;
+  let urls;
+  try {
+    const urlsRaw = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
+    urls = urlsRaw.map(x => typeof x === 'string' ? x : x.url);
+  } catch (e) {
+    console.error('[cronDaichoReload] import_urls の読み込みに失敗しました。フラグは立てず、次回に再試行します:', e);
+    return; // ここでフラグを立てると、壊れたデータを直すまで毎日再取込が止まったままになる
+  }
+  if (!urls.length) {
+    await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_run',?)").bind(today).run();
+    return;
+  }
 
   const r = await runDaichoReload(env, urls, { updateRemaining: true, checkAbsent: true, sourceLabel: '台帳自動再取り込み' });
 
-  // 取り込み結果を先に確定・通知しておく(この後の不在者判定・照合処理でタイムアウトしても、
+  // 全URLの取込を終えてからフラグを立てる(途中で予期せぬ例外が起きても、その日のうちに再試行できるようにするため)
+  await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_run',?)").bind(today).run();
+
+  // 取り込み結果を確定・通知しておく(この後の不在者判定・照合処理でタイムアウトしても、
   // 取り込み自体の成否は必ず管理者に届くようにするため)
   await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_result',?)").bind(
     JSON.stringify({ ts: jstTs(), count: urls.length, results: r.results, clearedAbsent: r.absentResult.clearedPeople })
@@ -4217,7 +4228,6 @@ async function cronRankPromotion(env) {
   const today = jstDate();
   const lastRun = await getSetting(env, 'rank_promotion_last_run', '');
   if (lastRun === today) return { promoted: 0 }; // 1日1回のみ
-  await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('rank_promotion_last_run',?)").bind(today).run();
 
   const targets = (await env.DB.prepare(
     "SELECT id, rank, promotion_pending_rank FROM users WHERE promotion_pending_date IS NOT NULL AND promotion_pending_date <= ? AND COALESCE(suspended,0)=0"
@@ -4236,9 +4246,11 @@ async function cronRankPromotion(env) {
       .bind(u.id, u.rank, newRank, reason, null, ts).run();
     // 昇格した月は、月初から新ランクで給与を計算し直す
     try { await recalcPayForMonth(env, u.id, today.slice(0, 7), newRank); } catch (e) { console.error('recalcPay failed for user', u.id, e); }
-    await notify(env, [u.id], 'rank', `🎉 ランクが ${newRank} に上がりました。今月分の給与も新しいランクで再計算されています。`, `#/schedule/${u.id}?month=${today.slice(0, 7)}`);
+    try { await notify(env, [u.id], 'rank', `🎉 ランクが ${newRank} に上がりました。今月分の給与も新しいランクで再計算されています。`, `#/schedule/${u.id}?month=${today.slice(0, 7)}`); } catch (e) { console.error('notify failed for user', u.id, e); }
     promoted++;
   }
+  // 全対象者を処理し終えてからフラグを立てる(途中で例外が起きても、その日のうちに再試行できるようにするため)
+  await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('rank_promotion_last_run',?)").bind(today).run();
   console.log('[cronRankPromotion] promoted', promoted);
   return { promoted };
 }
