@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS users(
   suspended INTEGER DEFAULT 0,           -- 1 = アカウント停止(ログイン不可・一覧等には表示)
   must_change INTEGER DEFAULT 0,         -- 1 = 次回ログイン時にパスワード変更を強制
   extra_perms TEXT DEFAULT '[]',         -- 基本権限とは別に個別付与された追加権限(JSON配列)
+  revoked_perms TEXT DEFAULT '[]',       -- roleのbaseLvで本来使えるはずの権限を、個別に剥奪したもの(JSON配列)。has()判定で最優先される。
   notify_rookie INTEGER DEFAULT NULL,    -- 新人報告リマインドの個人設定: NULL=役割の基本ルールに従う/1=常に対象/0=常に対象外
   calendar_token TEXT DEFAULT NULL,      -- Googleカレンダー等への購読フィード用の秘密トークン(発行するまでNULL)
   seen_update_version INTEGER DEFAULT 0, -- 最後に確認した「アップデートのお知らせ」のバージョン番号

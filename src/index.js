@@ -28,10 +28,15 @@ const PERMS = {
   member_summary_view: { label: '個人の年間稼働サマリー・備考欄の閲覧', baseLv: 2 },
 };
 function getPerms(u) { try { return JSON.parse(u.extra_perms || '[]'); } catch (e) { return []; } }
-// has: その機能を使えるか(基本権限を満たす、または個別に追加権限が付与されている)
+function getRevokedPerms(u) { try { return JSON.parse(u.revoked_perms || '[]'); } catch (e) { return []; } }
+// has: その機能を使えるか。
+// 1. 明示的に「剥奪」されていれば、baseLvや追加権限に関わらず常に不可(最優先)。
+//    例:「チーフ以上は標準で稼働サマリーを見られるが、この人だけは見せたくない」を実現するため。
+// 2. 剥奪されていなければ、基本権限(baseLv)を満たす、または個別に追加権限が付与されていれば可。
 function has(u, key) {
   const p = PERMS[key];
   if (!p) return false;
+  if (getRevokedPerms(u).includes(key)) return false;
   if (lv(u) >= p.baseLv) return true;
   return getPerms(u).includes(key);
 }
@@ -123,7 +128,7 @@ async function pbkdf2(pw, salt) {
 // ログインした際、seen_update_version がこれより小さければ「アップデートのお知らせ」を表示する。
 const CURRENT_UPDATE_VERSION = 3;
 
-const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0, must_change: u.must_change ? 1 : 0, extra_perms: getPerms(u), notify_rookie: u.notify_rookie === null || u.notify_rookie === undefined ? null : (u.notify_rookie ? 1 : 0), manner_done: u.manner_done ? 1 : 0, team2_done: u.team2_done ? 1 : 0, su_done: u.su_done ? 1 : 0, graduate_flag: u.graduate_flag ? 1 : 0, promotion_pending_date: u.promotion_pending_date || null, promotion_pending_rank: u.promotion_pending_rank || null, needsUpdateNotice: !u.must_change && (u.seen_update_version || 0) < CURRENT_UPDATE_VERSION, seenUpdateVersion: u.seen_update_version || 0 });
+const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0, must_change: u.must_change ? 1 : 0, extra_perms: getPerms(u), revoked_perms: getRevokedPerms(u), notify_rookie: u.notify_rookie === null || u.notify_rookie === undefined ? null : (u.notify_rookie ? 1 : 0), manner_done: u.manner_done ? 1 : 0, team2_done: u.team2_done ? 1 : 0, su_done: u.su_done ? 1 : 0, graduate_flag: u.graduate_flag ? 1 : 0, promotion_pending_date: u.promotion_pending_date || null, promotion_pending_rank: u.promotion_pending_rank || null, needsUpdateNotice: !u.must_change && (u.seen_update_version || 0) < CURRENT_UPDATE_VERSION, seenUpdateVersion: u.seen_update_version || 0 });
 
 // ===== 給与計算 (RB事業2課ルール) =====
 // 業務名 → 計算区分。 g5=案内料金(最低5h) / l3=搬入出料金(最低3h) / lg,gl,lgl=時間帯分割 / skip=対象外
@@ -1099,6 +1104,40 @@ async function fetchXlsxSheets(id) {
   return parseXlsxBuffer(buf, headerTitle);
 }
 
+// 台帳Excel(xlsxバイナリ)を解析し、DBへ反映する共通処理。
+// アップロードされたファイル(POST /import-excel-daicho)、台帳保管から再取込するファイル
+// (POST /daicho/reimport-from-archive)、両方から共通で呼ばれる。
+// R2への保存や通知等、呼び出し元ごとに異なる後処理は、この関数の外側で行う。
+async function processDaichoExcelBuffer(env, buf, fileName, targetDate, editorId, keywordMap) {
+  const got = await parseXlsxBuffer(buf, fileName.replace(/\.xlsx?$/i, ''));
+  let allRows = [], sheetReport = [];
+  // ファイル名・シート自身のいずれからも年月が拾えない手配管理表(フォーマットD)向けに、
+  // ユーザーが指定したtargetDateの年月をfallbackとして使う(スプレッドシート取込と違い、
+  // 台帳Excelは1ファイル=1日という運用のため、誤って別月と混同するリスクが低いため許可する)。
+  const fallbackYm = targetDate ? targetDate.slice(0, 7) : null;
+  for (const sh of got.sheets) {
+    const grid = sh.grid;
+    if (!grid || !grid.length) continue;
+    try {
+      const fmt = detectFormat(grid);
+      let parsed;
+      if (fmt === 'C') parsed = parseFormatC(grid, null, targetDate || null).rows;
+      else if (fmt === 'D') {
+        const ym = detectYmFromGrid(grid, fallbackYm);
+        if (!ym) { sheetReport.push({ name: sh.name, count: 0, note: '年月を読み取れず、対象日の指定もなかったためスキップしました' }); continue; }
+        parsed = parseFormatD(grid, ym, keywordMap).rows;
+      }
+      else parsed = parseFormatAB(grid, fallbackYm || jstDate().slice(0, 7), null, keywordMap).rows;
+      if (parsed && parsed.length) { allRows = allRows.concat(parsed); sheetReport.push({ name: sh.name, count: parsed.length }); }
+    } catch (e) {
+      sheetReport.push({ name: sh.name, count: 0, note: `解析エラー: ${e.message}` });
+    }
+  }
+  if (!allRows.length) return { ok: false, error: 'データを読み取れませんでした', sheetReport };
+  const r = await applyImportRows(env, allRows, editorId, 'replace-person-day', `台帳Excel取込(${fileName})`, true);
+  return { ok: true, applied: r.applied, changes: r.changes || [], ts: r.ts, allRows, sheetReport };
+}
+
 function parseSharedStrings(xml) {
   const arr = [];
   for (const si of xml.matchAll(/<si>([\s\S]*?)<\/si>/g)) {
@@ -1958,42 +1997,52 @@ async function api(req, env, url) {
     if (!has(me, 'account_manage')) return ERR('ページが見つかりません', 404);
     const u = await env.DB.prepare('SELECT id,name,regno,role FROM users WHERE id=?').bind(Number(pum[1])).first();
     if (!u) return ERR('見つかりません', 404);
-    return J({ id: u.id, name: u.name, regno: u.regno, role: u.role, extraPerms: getPerms(u) });
+    return J({ id: u.id, name: u.name, regno: u.regno, role: u.role, extraPerms: getPerms(u), revokedPerms: getRevokedPerms(u) });
   }
-  // 特定ユーザーの追加権限を保存(管理者のみ)
+  // 特定ユーザーの追加権限・剥奪権限を保存(管理者のみ)
   if (method === 'PUT' && (pum = path.match(/^\/users\/(\d+)\/perms$/))) {
     if (!has(me, 'account_manage')) return ERR('権限がありません', 403);
     const uid = Number(pum[1]);
     const keys = Array.isArray(body.perms) ? body.perms.filter(k => PERMS[k]) : [];
-    await env.DB.prepare('UPDATE users SET extra_perms=? WHERE id=?').bind(JSON.stringify(keys), uid).run();
-    return J({ ok: 1, extraPerms: keys });
+    const revokedKeys = Array.isArray(body.revokedPerms) ? body.revokedPerms.filter(k => PERMS[k]) : [];
+    // 同じキーを追加かつ剥奪、という矛盾状態は作らない(剥奪を優先し、追加リストからは除く)
+    const finalKeys = keys.filter(k => !revokedKeys.includes(k));
+    await env.DB.prepare('UPDATE users SET extra_perms=?, revoked_perms=? WHERE id=?').bind(JSON.stringify(finalKeys), JSON.stringify(revokedKeys), uid).run();
+    return J({ ok: 1, extraPerms: finalKeys, revokedPerms: revokedKeys });
   }
 
-  // ロール単位の一括権限付与(メンツ全員/チーフ全員などに、まとめてチェックを入れて付与)
-  // 「全員に付与されている権限」だけをON表示する(一部の人だけ個別に持っている権限はここでは反映しない)
+  // ロール単位の一括権限設定(メンツ全員/チーフ全員などに、まとめて「使える」「使えない」を設定)
+  // 「全員に付与されている権限」だけをON表示、「全員から剥奪されている権限」だけを剥奪表示する
+  // (一部の人だけ個別設定を持つ場合は、ここでは中間状態として反映しない)
   if (method === 'GET' && (pum = path.match(/^\/role-perms\/(member|chief|handler)$/))) {
     if (!has(me, 'account_manage')) return ERR('ページが見つかりません', 404);
     const role = pum[1];
-    const rows = (await env.DB.prepare('SELECT extra_perms FROM users WHERE role=? AND COALESCE(suspended,0)=0').bind(role).all()).results;
-    let common = null;
+    const rows = (await env.DB.prepare('SELECT extra_perms, revoked_perms FROM users WHERE role=? AND COALESCE(suspended,0)=0').bind(role).all()).results;
+    let common = null, commonRevoked = null;
     for (const r of rows) {
       const ps = new Set(getPerms(r));
       common = common === null ? ps : new Set([...common].filter(k => ps.has(k)));
+      const rs = new Set(getRevokedPerms(r));
+      commonRevoked = commonRevoked === null ? rs : new Set([...commonRevoked].filter(k => rs.has(k)));
     }
-    return J({ role, count: rows.length, perms: common ? [...common] : [] });
+    return J({ role, count: rows.length, perms: common ? [...common] : [], revokedPerms: commonRevoked ? [...commonRevoked] : [] });
   }
   if (method === 'PUT' && (pum = path.match(/^\/role-perms\/(member|chief|handler)$/))) {
     if (!has(me, 'account_manage')) return ERR('権限がありません', 403);
     const role = pum[1];
     const keys = Array.isArray(body.perms) ? body.perms.filter(k => PERMS[k]) : [];
-    const rows = (await env.DB.prepare('SELECT id, extra_perms FROM users WHERE role=?').bind(role).all()).results;
+    const revokedKeys = Array.isArray(body.revokedPerms) ? body.revokedPerms.filter(k => PERMS[k]) : [];
+    const finalKeys = keys.filter(k => !revokedKeys.includes(k));
+    const rows = (await env.DB.prepare('SELECT id, extra_perms, revoked_perms FROM users WHERE role=?').bind(role).all()).results;
     for (const r of rows) {
       // 既存の個別権限のうち、定義済みキー以外(将来の拡張用)は維持しつつ、定義済みキーはチェック状態に合わせて入れ替える
       const cur = getPerms(r).filter(k => !PERMS[k]);
-      const next = [...cur, ...keys];
-      await env.DB.prepare('UPDATE users SET extra_perms=? WHERE id=?').bind(JSON.stringify(next), r.id).run();
+      const next = [...cur, ...finalKeys];
+      const curRevoked = getRevokedPerms(r).filter(k => !PERMS[k]);
+      const nextRevoked = [...curRevoked, ...revokedKeys];
+      await env.DB.prepare('UPDATE users SET extra_perms=?, revoked_perms=? WHERE id=?').bind(JSON.stringify(next), JSON.stringify(nextRevoked), r.id).run();
     }
-    return J({ ok: 1, role, updated: rows.length, perms: keys });
+    return J({ ok: 1, role, updated: rows.length, perms: finalKeys, revokedPerms: revokedKeys });
   }
 
   // 手配担当の一覧(担当グループのプルダウン用)
@@ -2277,35 +2326,10 @@ async function api(req, env, url) {
         const bin = atob(f.fileBase64.includes(',') ? f.fileBase64.split(',')[1] : f.fileBase64);
         const buf = new Uint8Array(bin.length);
         for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
-        const got = await parseXlsxBuffer(buf, fileName.replace(/\.xlsx?$/i, ''));
 
-        let allRows = [], sheetReport = [];
-        // ファイル名・シート自身のいずれからも年月が拾えない手配管理表(フォーマットD)向けに、
-        // ユーザーが指定したtargetDateの年月をfallbackとして使う(スプレッドシート取込と違い、
-        // 台帳Excelは1ファイル=1日という運用のため、誤って別月と混同するリスクが低いため許可する)。
-        const fallbackYm = targetDate ? targetDate.slice(0, 7) : null;
-        for (const sh of got.sheets) {
-          const grid = sh.grid;
-          if (!grid || !grid.length) continue;
-          try {
-            const fmt = detectFormat(grid);
-            let parsed;
-            if (fmt === 'C') parsed = parseFormatC(grid, null, targetDate || null).rows;
-            else if (fmt === 'D') {
-              const ym = detectYmFromGrid(grid, fallbackYm);
-              if (!ym) { sheetReport.push({ name: sh.name, count: 0, note: '年月を読み取れず、対象日の指定もなかったためスキップしました' }); continue; }
-              parsed = parseFormatD(grid, ym, keywordMap).rows;
-            }
-            else parsed = parseFormatAB(grid, fallbackYm || jstDate().slice(0, 7), null, keywordMap).rows;
-            if (parsed && parsed.length) { allRows = allRows.concat(parsed); sheetReport.push({ name: sh.name, count: parsed.length }); }
-          } catch (e) {
-            sheetReport.push({ name: sh.name, count: 0, note: `解析エラー: ${e.message}` });
-          }
-        }
-        if (!allRows.length) { results.push({ fileName, targetDate, ok: false, error: 'データを読み取れませんでした' }); continue; }
-
-        const r = await applyImportRows(env, allRows, me.id, 'replace-person-day', `台帳Excel取込(${fileName})`, true);
-        allRowsCombined.push(...allRows);
+        const pr = await processDaichoExcelBuffer(env, buf, fileName, targetDate, me.id, keywordMap);
+        if (!pr.ok) { results.push({ fileName, targetDate, ok: false, error: pr.error }); continue; }
+        allRowsCombined.push(...pr.allRows);
 
         // R2に保管(スプレッドシート台帳と同じ管理下に置く。file_idはファイル名ベースで代用)
         if (env.DAICHO) {
@@ -2315,9 +2339,9 @@ async function api(req, env, url) {
           await env.DAICHO.put(r2key, buf, { httpMetadata: { contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' } });
           await env.DB.prepare(
             'INSERT INTO daicho_archive(ts,importer_id,importer_name,source_url,file_id,r2_key,file_name,size,applied,sheets) VALUES(?,?,?,?,?,?,?,?,?,?)'
-          ).bind(ts, me.id, me.name + '(Excel手動)', '', pseudoFileId, r2key, fileName || `台帳_${ts.slice(0, 10)}.xlsx`, buf.length, r.applied, sheetReport.length).run();
+          ).bind(ts, me.id, me.name + '(Excel手動)', '', pseudoFileId, r2key, fileName || `台帳_${ts.slice(0, 10)}.xlsx`, buf.length, pr.applied, pr.sheetReport.length).run();
         }
-        results.push({ fileName, targetDate, ok: true, applied: r.applied, changes: r.changes || [], ts: r.ts });
+        results.push({ fileName, targetDate, ok: true, applied: pr.applied, changes: pr.changes, ts: pr.ts });
       } catch (e) {
         results.push({ fileName, targetDate, ok: false, error: e.message });
       }
@@ -2325,6 +2349,59 @@ async function api(req, env, url) {
 
     // 不在者の休暇化は、既定オフ(複数日をまたぐ取込のため、日ごとに対象者が違うと誤爆しやすい)。
     // 明示的にcheckAbsentが指定された場合のみ、今回アップロードした全ファイル分をまとめて判定する。
+    let absentResult = { clearedPeople: 0, clearedDays: 0 };
+    if (body.checkAbsent && allRowsCombined.length) {
+      try { absentResult = await clearAbsentFromDaicho(env, allRowsCombined, me.id); }
+      catch (e) { console.error('clearAbsentFromDaicho failed:', e); }
+      try { await matchRookieAndBlacklist(env, allRowsCombined); } catch (e) {}
+    } else if (allRowsCombined.length) {
+      try { await matchRookieAndBlacklist(env, allRowsCombined); } catch (e) {}
+    }
+
+    const okCount = results.filter(r => r.ok).length;
+    const totalApplied = results.reduce((s, r) => s + (r.ok ? (r.applied || 0) : 0), 0);
+    return J({ ok: 1, okCount, ngCount: results.length - okCount, totalApplied, results, clearedAbsent: absentResult.clearedPeople });
+  }
+
+  // ---- 台帳保管(R2)に既に保存済みのExcelファイルから、再度取り込む(新規機能) ----
+  // 「今アップロードし直す」のではなく、過去にアップロード・取込済みのファイルを、台帳保管の
+  // 一覧からチェックして選び、それぞれに対象日を指定して、もう一度パース→反映する。
+  // 深夜自動実行には一切組み込まない。
+  if (method === 'POST' && path === '/daicho/reimport-from-archive') {
+    if (!has(me, 'import_data')) return ERR('権限がありません', 403);
+    if (!has(me, 'daicho_manage')) return ERR('台帳保管の閲覧権限が必要です', 403);
+    const items = Array.isArray(body.items) ? body.items : [];
+    if (!items.length) return ERR('取り込むファイルを選択してください');
+    if (items.length > 40) return ERR('一度に取り込めるファイルは40件までです(分けて実行してください)');
+    if (!env.DAICHO) return ERR('R2が未設定のため、この機能は使用できません', 500);
+
+    const keywordMap = await loadNonSiteKeywords(env);
+    const results = [];
+    const allRowsCombined = [];
+
+    for (const item of items) {
+      const archiveId = Number(item.archiveId);
+      const targetDate = String(item.targetDate || '').trim();
+      const rec = await env.DB.prepare('SELECT r2_key, file_name FROM daicho_archive WHERE id=?').bind(archiveId).first();
+      if (!rec) { results.push({ archiveId, fileName: '(不明)', targetDate, ok: false, error: '台帳保管にこのファイルが見つかりません(削除された可能性)' }); continue; }
+      const fileName = rec.file_name || `台帳_${archiveId}.xlsx`;
+      try {
+        const obj = await env.DAICHO.get(rec.r2_key);
+        if (!obj) throw new Error('ファイル本体が見つかりません(削除済みの可能性)');
+        const buf = new Uint8Array(await obj.arrayBuffer());
+
+        const pr = await processDaichoExcelBuffer(env, buf, fileName, targetDate, me.id, keywordMap);
+        if (!pr.ok) { results.push({ archiveId, fileName, targetDate, ok: false, error: pr.error }); continue; }
+        allRowsCombined.push(...pr.allRows);
+        // 既にR2に保管済みのファイルなので、再アップロード(R2への再書き込み)は行わない。
+        // ただし「再取込した」という事実は、既存レコードのapplied件数を更新して残す。
+        await env.DB.prepare('UPDATE daicho_archive SET applied=? WHERE id=?').bind(pr.applied, archiveId).run();
+        results.push({ archiveId, fileName, targetDate, ok: true, applied: pr.applied, changes: pr.changes, ts: pr.ts });
+      } catch (e) {
+        results.push({ archiveId, fileName, targetDate, ok: false, error: e.message });
+      }
+    }
+
     let absentResult = { clearedPeople: 0, clearedDays: 0 };
     if (body.checkAbsent && allRowsCombined.length) {
       try { absentResult = await clearAbsentFromDaicho(env, allRowsCombined, me.id); }
@@ -3488,10 +3565,9 @@ async function api(req, env, url) {
   // 12月始まり〜翌年11月終わりの年度で、月ごとの勤務日数・総勤務時間・総残業時間・給料を集計する。
   // ?uid=対象者ID &year=基準年(その年の12月〜翌年11月を対象とする)
   if (method === 'GET' && path === '/member-year-summary') {
-    if (lv(me) < 2) return ERR('ページが見つかりません', 404); // 個別権限による例外は認めず、手配者以上のroleのみ許可
+    if (!has(me, 'member_summary_view')) return ERR('ページが見つかりません', 404);
     const uid = Number(url.searchParams.get('uid'));
     if (!uid) return ERR('対象者が指定されていません');
-    if (uid === me.id) return ERR('ページが見つかりません', 404); // 本人は閲覧不可(存在自体を秘匿)
     const target = await env.DB.prepare('SELECT id,name,regno,rank,ka,han FROM users WHERE id=?').bind(uid).first();
     if (!target) return ERR('対象者が見つかりません', 404);
     let year = parseInt(url.searchParams.get('year'), 10);
@@ -3528,20 +3604,18 @@ async function api(req, env, url) {
     });
   }
 
-  // ---- 個人の備考欄(手配者以上、本人は閲覧不可)。自由記述を時系列で複数件積み重ねる ----
+  // ---- 個人の備考欄(手配者以上)。自由記述を時系列で複数件積み重ねる ----
   if (method === 'GET' && path === '/member-notes') {
-    if (lv(me) < 2) return ERR('ページが見つかりません', 404); // 個別権限による例外は認めず、手配者以上のroleのみ許可
+    if (!has(me, 'member_summary_view')) return ERR('ページが見つかりません', 404);
     const uid = Number(url.searchParams.get('uid'));
     if (!uid) return ERR('対象者が指定されていません');
-    if (uid === me.id) return ERR('ページが見つかりません', 404);
     const rows = (await env.DB.prepare('SELECT id, author_name, content, ts FROM member_notes WHERE target_id=? ORDER BY id DESC').bind(uid).all()).results;
     return J({ notes: rows });
   }
   if (method === 'POST' && path === '/member-notes') {
-    if (lv(me) < 2) return ERR('ページが見つかりません', 404); // 個別権限による例外は認めず、手配者以上のroleのみ許可
+    if (!has(me, 'member_summary_view')) return ERR('ページが見つかりません', 404);
     const uid = Number(body.uid);
     if (!uid) return ERR('対象者が指定されていません');
-    if (uid === me.id) return ERR('ページが見つかりません', 404);
     const content = String(body.content || '').trim();
     if (!content) return ERR('内容を入力してください');
     await env.DB.prepare('INSERT INTO member_notes(target_id,author_id,author_name,content,ts) VALUES(?,?,?,?,?)')
@@ -3549,7 +3623,7 @@ async function api(req, env, url) {
     return J({ ok: 1 });
   }
   if (method === 'DELETE' && (scm = path.match(/^\/member-notes\/(\d+)$/))) {
-    if (lv(me) < 2) return ERR('ページが見つかりません', 404); // 個別権限による例外は認めず、手配者以上のroleのみ許可
+    if (!has(me, 'member_summary_view')) return ERR('ページが見つかりません', 404);
     const noteId = Number(scm[1]);
     const note = await env.DB.prepare('SELECT target_id, author_id FROM member_notes WHERE id=?').bind(noteId).first();
     if (!note) return ERR('見つかりません', 404);

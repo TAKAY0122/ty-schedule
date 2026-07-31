@@ -92,6 +92,19 @@ function roleDots(minRole){
   return ['chief','handler','admin'].filter(r => ROLE_DOT_LV[r] >= minLv)
     .map(r => `<span class="role-dot role-dot-${r}"></span>`).join('');
 }
+// ファイル名から日付を推測する(例:「7月15日_台帳」「2026-07-15」「0715」等、よくある命名パターンに対応)。
+// 台帳Excelの手動アップロード・台帳保管からの再取込、両方で使う。
+function guessDateFromName(name){
+  const today = jstToday();
+  const [ty] = today.split('-');
+  let m = name.match(/(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})/);
+  if (m) return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
+  m = name.match(/(\d{1,2})月(\d{1,2})日/);
+  if (m) return `${ty}-${String(m[1]).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`;
+  m = name.match(/(\d{1,2})[-/](\d{1,2})(?!\d)/);
+  if (m) return `${ty}-${String(m[1]).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`;
+  return '';
+}
 // <input type="time">はHH:MM(2桁ゼロ埋め)でないと値を認識しないため、DBの値をこの形式に正規化する
 const timeInputVal = t => { const m = String(t||'').match(/^(\d{1,2}):(\d{2})$/); return m ? `${m[1].padStart(2,'0')}:${m[2]}` : ''; };
 const pad = n => String(n).padStart(2, '0');
@@ -111,6 +124,7 @@ const PERM_BASE_LV = { report_check:1, blacklist_manage:1, summary_view:1, day_s
 // has(key): MEがその機能を使えるか(基本権限を満たす、または個別に追加権限がある)
 function has(key){
   if(!ME) return false;
+  if(Array.isArray(ME.revoked_perms) && ME.revoked_perms.includes(key)) return false;
   const base = PERM_BASE_LV[key] ?? 99;
   if((LV[ME.role] ?? 0) >= base) return true;
   return Array.isArray(ME.extra_perms) && ME.extra_perms.includes(key);
@@ -1121,7 +1135,7 @@ function renderShell(hash){
   const canSitesView = has('sites_view');
   const canMembersView = has('members_view');
   const canDashboardView = has('dashboard_view');
-  const canMemberSummaryNav = (LV[ME.role] >= 2);
+  const canMemberSummaryNav = has('member_summary_view');
   const showMemberGroup = isChief || canSummaryView || canDayScheduleView || canMemberStatsView || canMembersView;
 
   // ナビゲーション構造。children を持つ項目はグループ(タップでサブメニューに切り替わる)、
@@ -1207,10 +1221,10 @@ function renderShell(hash){
 
   const footerLinks = `
     <div class="drawer-sep"></div>
-    <button type="button" class="drawer-link" data-go="#/password">${icon('key')} パスワード変更</button>
-    <button type="button" class="drawer-link" data-go="#/version-history">${icon('scroll')} バージョン履歴</button>
-    <button type="button" class="drawer-link" id="dd-refresh">${icon('refresh')} 最新版に更新</button>
-    <button type="button" class="drawer-link danger" id="dd-logout">${icon('logOut')} ログアウト</button>`;
+    <button type="button" class="drawer-link" data-go="#/password"><span class="drawer-label">${icon('key')} パスワード変更</span></button>
+    <button type="button" class="drawer-link" data-go="#/version-history"><span class="drawer-label">${icon('scroll')} バージョン履歴</span></button>
+    <button type="button" class="drawer-link" id="dd-refresh"><span class="drawer-label">${icon('refresh')} 最新版に更新</span></button>
+    <button type="button" class="drawer-link danger" id="dd-logout"><span class="drawer-label">${icon('logOut')} ログアウト</span></button>`;
 
   const wireFooter = (dr, close) => {
     dr.querySelectorAll('.drawer-link[data-go]').forEach(btn => btn.onclick = () => {
@@ -1933,7 +1947,7 @@ async function pageHome(app){
     ['#/members/mine','briefcase',`${h(ME.name)}手配`, isHandlerRole, 'handler'],
     ['#/members','users','メンバー一覧', has('members_view')],
     ['#/summary','barChart','稼働サマリー', has('summary_view')],
-    ['#/member-summary-search','barChart','個人の年間サマリー', (LV[ME.role] >= 2), 'handler'],
+    ['#/member-summary-search','barChart','個人の年間サマリー', has('member_summary_view'), 'handler'],
     ['#/member-stats','trendingUp','メンバー分析', has('member_stats_view')],
     ['#/day-schedule','layoutGrid','スケジュール一覧', has('day_schedule_view')],
     ['#/self-reports','mail','変更報告承認', isHandlerRole, 'handler'],
@@ -3091,8 +3105,8 @@ async function pageMembers(app){
     : `<button class="btn ghost sm icon-btn" data-skill="${u.id}" title="できること編集">${icon('star')}</button>`;
   const schedBtn = (u,cls='gold') => `<button class="btn ${cls} sm icon-btn go-sched" data-uid="${u.id}" title="スケジュール">${icon('calendar')}</button>`;
   const goEditBtn = u => isHandler ? `<button class="btn ghost sm icon-btn go-edit" data-uid="${u.id}" title="現場入力">${icon('edit')}</button>` : '';
-  const canMemberSummary = (LV[ME.role] >= 2);
-  const goSummaryBtn = u => (canMemberSummary && u.id !== ME.id) ? `<button class="btn ghost sm icon-btn go-year-summary" data-uid="${u.id}" title="年間サマリー">${icon('barChart')}</button>` : '';
+  const canMemberSummary = has('member_summary_view');
+  const goSummaryBtn = u => canMemberSummary ? `<button class="btn ghost sm icon-btn go-year-summary" data-uid="${u.id}" title="年間サマリー">${icon('barChart')}</button>` : '';
 
   // 並び替え選択肢。ランクは必ず含める(A〜Eランクの昇順)。
   const memberSortOptions = { regno:'登録番号順', rank:'ランク順', name:'氏名順(あ→ん)', han:'班順' };
@@ -4371,17 +4385,7 @@ async function pageImport(app, hash){
     const importBtn = $('#xl-import-btn');
 
     // ファイル名から日付を推測する(例:「7月15日_台帳」「2026-07-15」「0715」等、よくある命名パターンに対応)
-    const guessDateFromName = (name) => {
-      const today = jstToday();
-      const [ty] = today.split('-');
-      let m = name.match(/(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})/);
-      if (m) return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
-      m = name.match(/(\d{1,2})月(\d{1,2})日/);
-      if (m) return `${ty}-${String(m[1]).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`;
-      m = name.match(/(\d{1,2})[-/](\d{1,2})(?!\d)/);
-      if (m) return `${ty}-${String(m[1]).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`;
-      return '';
-    };
+    // ファイル名から日付を推測する(グローバル関数guessDateFromNameを使用)
 
     const renderXlFileList = () => {
       fileListEl.innerHTML = xlState.files.map((f,i) => `
@@ -4764,25 +4768,41 @@ async function pageRolePermissions(app){
     catch(e){ $('#rlist-'+r.key).innerHTML = `<div class="msg err">${h(e.message)}</div>`; continue; }
     $('#rcount-'+r.key).textContent = `${cur.count}人`;
     const listEl = $('#rlist-'+r.key);
+    const revokedSet = new Set(cur.revokedPerms || []);
     listEl.innerHTML = defs.perms.map(p=>{
       const already = p.baseLv <= LV[r.key]; // この役割の基本権限で既に使える機能
-      const checked = already || cur.perms.includes(p.key);
-      return `<label style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line);${already?'opacity:.5':''}">
-        <input type="checkbox" class="rperm-cb-${r.key}" value="${p.key}" ${checked?'checked':''} ${already?'disabled':''} style="width:18px;height:18px">
+      const isRevoked = revokedSet.has(p.key);
+      const checked = already ? !isRevoked : cur.perms.includes(p.key);
+      return `<label class="perm-row" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)">
+        <input type="checkbox" class="rperm-cb-${r.key}" value="${p.key}" data-base="${already?'1':'0'}" ${checked?'checked':''} style="width:18px;height:18px">
         <span style="flex:1">${h(p.label)}</span>
-        ${already?'<span class="tag" style="font-size:11px">標準で利用可</span>':''}
+        <span class="perm-tag muted" style="font-size:11px;white-space:nowrap"></span>
       </label>`;
     }).join('');
+    const updateRPermTag = (cb) => {
+      const tag = cb.closest('.perm-row').querySelector('.perm-tag');
+      const isBase = cb.dataset.base === '1';
+      if(isBase && !cb.checked){ tag.textContent = 'この役割は禁止'; tag.style.color = '#b23b3b'; }
+      else if(isBase && cb.checked){ tag.textContent = '標準で利用可'; tag.style.color = ''; }
+      else if(!isBase && cb.checked){ tag.textContent = 'この役割に追加'; tag.style.color = 'var(--gold)'; }
+      else { tag.textContent = ''; tag.style.color = ''; }
+    };
+    listEl.querySelectorAll(`.rperm-cb-${r.key}`).forEach(cb => { updateRPermTag(cb); cb.onchange = () => updateRPermTag(cb); });
   }
 
   app.querySelectorAll('[data-save]').forEach(btn => btn.onclick = async () => {
     const role = btn.dataset.save;
-    const keys = [...document.querySelectorAll(`.rperm-cb-${role}:not(:disabled)`)].filter(c=>c.checked).map(c=>c.value);
+    const extraKeys = [], revokedKeys = [];
+    document.querySelectorAll(`.rperm-cb-${role}`).forEach(cb => {
+      const isBase = cb.dataset.base === '1';
+      if(isBase && !cb.checked) revokedKeys.push(cb.value);
+      if(!isBase && cb.checked) extraKeys.push(cb.value);
+    });
     const msgEl = $('#rmsg-'+role);
     msgEl.textContent = '保存中…';
     await withLoading(btn, async () => {
       try{
-        const r = await api(`/role-perms/${role}`, { method:'PUT', body:{ perms: keys } });
+        const r = await api(`/role-perms/${role}`, { method:'PUT', body:{ perms: extraKeys, revokedPerms: revokedKeys } });
         msgEl.textContent = `${r.updated}人に反映しました`;
         popup('一括で権限を反映しました');
       }catch(e){ msgEl.textContent = e.message; }
@@ -4793,14 +4813,14 @@ async function pageRolePermissions(app){
 /* ===== 個人の年間稼働サマリー・備考欄(手配者以上、本人は閲覧不可) ===== */
 /* ===== 個人の年間サマリーを、メンバーを検索して開くための入口画面(左メニュー用) ===== */
 async function pageMemberSummarySearch(app){
-  if(!(LV[ME.role] >= 2)){ notFound(app); return; }
+  if(!has('member_summary_view')){ notFound(app); return; }
   app.innerHTML = `<h2>${icon('barChart')} 個人の年間サマリー</h2><div class="card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>`;
   const users = await getUsers();
-  const list = users.filter(u => u.id !== ME.id).sort((a,b) => String(a.regno||'').localeCompare(String(b.regno||''), undefined, {numeric:true}));
+  const list = users.sort((a,b) => String(a.regno||'').localeCompare(String(b.regno||''), undefined, {numeric:true}));
   app.innerHTML = `
   <h2>${icon('barChart')} 個人の年間サマリー</h2>
   <div class="card">
-    <div class="muted" style="margin-bottom:10px;font-size:12.5px">対象のメンバーを選んでください(ご自身は対象外です)</div>
+    <div class="muted" style="margin-bottom:10px;font-size:12.5px">対象のメンバーを選んでください</div>
     <input type="text" id="mss-q" placeholder="氏名・登録番号で検索" style="width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:8px;font-size:14px;margin-bottom:12px">
     <div id="mss-list" style="max-height:60vh;overflow-y:auto"></div>
   </div>`;
@@ -4817,10 +4837,9 @@ async function pageMemberSummarySearch(app){
 }
 
 async function pageMemberYearSummary(app, hash){
-  if(!(LV[ME.role] >= 2)){ notFound(app); return; }
+  if(!has('member_summary_view')){ notFound(app); return; }
   const uid = Number(hash.split('/')[2]);
   if(!uid){ notFound(app); return; }
-  if(uid === ME.id){ notFound(app); return; } // 本人アクセスはバックエンドと同様、存在自体を秘匿する
 
   const st = PAGE_STATE.memberSummary || (PAGE_STATE.memberSummary = {});
   if(st.uid !== uid){ st.uid = uid; st.year = Number(jstToday().slice(0,4)) - (Number(jstToday().slice(5,7)) < 12 ? 1 : 0); }
@@ -4998,20 +5017,36 @@ async function pagePermissions(app, hash){
 
   if(canPerms){
     const list = $('#perm-list');
+    const revokedSet = new Set(data.revokedPerms || []);
     list.innerHTML = defs.perms.map(p => {
-      const already = baseLvOfMe >= p.baseLv; // 基本権限で既に使える
-      const checked = already || data.extraPerms.includes(p.key);
-      return `<label style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line);${already?'opacity:.5':''}">
-        <input type="checkbox" class="perm-cb" value="${p.key}" ${checked?'checked':''} ${already?'disabled':''} style="width:18px;height:18px">
+      const already = baseLvOfMe >= p.baseLv; // 基本権限で標準的に使える
+      const isRevoked = revokedSet.has(p.key);
+      const checked = already ? !isRevoked : data.extraPerms.includes(p.key);
+      return `<label class="perm-row" style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)">
+        <input type="checkbox" class="perm-cb" value="${p.key}" data-base="${already?'1':'0'}" ${checked?'checked':''} style="width:18px;height:18px">
         <span style="flex:1">${h(p.label)}</span>
-        ${already?'<span class="tag" style="font-size:11px">標準で利用可</span>':''}
+        <span class="perm-tag muted" style="font-size:11px;white-space:nowrap"></span>
       </label>`;
     }).join('');
+    const updatePermTag = (cb) => {
+      const tag = cb.closest('.perm-row').querySelector('.perm-tag');
+      const isBase = cb.dataset.base === '1';
+      if(isBase && !cb.checked){ tag.textContent = 'この人だけ禁止'; tag.style.color = '#b23b3b'; }
+      else if(isBase && cb.checked){ tag.textContent = '標準で利用可'; tag.style.color = ''; }
+      else if(!isBase && cb.checked){ tag.textContent = 'この人だけ許可'; tag.style.color = 'var(--gold)'; }
+      else { tag.textContent = ''; tag.style.color = ''; }
+    };
+    list.querySelectorAll('.perm-cb').forEach(cb => { updatePermTag(cb); cb.onchange = () => updatePermTag(cb); });
     $('#perm-save').onclick = async () => {
-      const keys = [...document.querySelectorAll('.perm-cb:not(:disabled)')].filter(c=>c.checked).map(c=>c.value);
+      const extraKeys = [], revokedKeys = [];
+      list.querySelectorAll('.perm-cb').forEach(cb => {
+        const isBase = cb.dataset.base === '1';
+        if(isBase && !cb.checked) revokedKeys.push(cb.value); // 標準で使えるはずなのにOFF→この人だけ剥奪
+        if(!isBase && cb.checked) extraKeys.push(cb.value); // 標準では使えないのにON→この人だけ追加
+      });
       $('#perm-msg').textContent = '保存中…';
       await withLoading($('#perm-save'), async () => {
-        try{ await api(`/users/${uid}/perms`, {method:'PUT', body:{perms:keys}}); $('#perm-msg').textContent='保存しました'; popup('権限を保存しました'); }
+        try{ await api(`/users/${uid}/perms`, {method:'PUT', body:{perms:extraKeys, revokedPerms:revokedKeys}}); $('#perm-msg').textContent='保存しました'; popup('権限を保存しました'); }
         catch(e){ $('#perm-msg').textContent = e.message; }
       });
     };
@@ -5317,8 +5352,9 @@ async function pageDaicho(app){
     for(const id of [...selected]) if(!visibleIds.has(id)) selected.delete(id);
     const area = $('#dc-list-area'); if(!area) return;
     const cb = $('#dc-clear'); if(cb) cb.style.display = hasFilterOn() ? '' : 'none';
-    const bulkBar = selected.size ? `<div class="row" style="margin-bottom:8px;gap:8px;align-items:center;background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:8px 10px">
+    const bulkBar = selected.size ? `<div class="row" style="margin-bottom:8px;gap:8px;align-items:center;background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:8px 10px;flex-wrap:wrap">
       <span class="muted" style="font-weight:600">${selected.size}件選択中</span>
+      <button class="btn gold sm" id="dc-bulk-reimport">${icon('play',{size:'12px'})} 選択した${selected.size}件を取り込む</button>
       <button class="btn ghost sm" id="dc-bulk-dl">${icon('download')} まとめてダウンロード</button>
       <button class="btn danger sm" id="dc-bulk-del">選択した${selected.size}件を削除</button>
       <button class="btn ghost sm" id="dc-bulk-clear">選択解除</button>
@@ -5383,6 +5419,44 @@ async function pageDaicho(app){
     };
     const bulkClear = $('#dc-bulk-clear');
     if(bulkClear) bulkClear.onclick = () => { selected.clear(); renderList(); };
+    const bulkReimport = $('#dc-bulk-reimport');
+    if(bulkReimport) bulkReimport.onclick = () => {
+      const targets = filtered.filter(it=>selected.has(it.id));
+      modal(`<h3>${icon('play',{size:'14px'})} 選択した${targets.length}件を取り込む</h3>
+        <div class="muted" style="font-size:12px;margin-bottom:10px">台帳保管に保存済みのファイルを、もう一度パースして反映します。ファイルごとに対象日を指定してください(ファイル名から推測できた場合は自動入力されています)。</div>
+        <div style="max-height:50vh;overflow-y:auto;display:flex;flex-direction:column;gap:6px;margin-bottom:10px">
+          ${targets.map(it=>`<div class="row" style="gap:8px;align-items:center;padding:7px 9px;background:#faf9f6;border:1px solid var(--line);border-radius:8px;flex-wrap:wrap">
+            <span style="flex:1;min-width:0;font-size:12.5px;word-break:break-all">${h(it.file_name||'(名称不明)')}</span>
+            <label style="display:flex;align-items:center;gap:5px;font-size:12px;white-space:nowrap">対象日
+              <input type="date" class="dcr-date-input" data-id="${it.id}" value="${h(guessDateFromName(it.file_name||''))}" style="padding:4px 6px;border:1px solid var(--line);border-radius:6px">
+            </label>
+          </div>`).join('')}
+        </div>
+        <label style="display:flex;align-items:flex-start;gap:7px;font-size:12.5px;margin-bottom:10px;padding:8px 10px;background:#faf9f6;border-radius:8px;border:1px solid var(--line)">
+          <input type="checkbox" id="dcr-check-absent" style="margin-top:2px">
+          <span>選択した全ファイルのどれにも登場しない人を、休暇に変更する<br><span class="muted" style="font-size:11px">複数の日付をまたぐため、既定ではオフです。</span></span>
+        </label>
+        <button class="btn gold sm" id="dcr-run">${icon('play',{size:'13px'})} 取り込みを実行する</button>
+        <div id="dcr-msg" class="muted" style="margin-top:10px"></div>`);
+      const runBtn = $('#dcr-run');
+      runBtn.onclick = async () => {
+        const items = [...document.querySelectorAll('.dcr-date-input')].map(inp => ({
+          archiveId: Number(inp.dataset.id), targetDate: inp.value || '',
+        }));
+        const checkAbsent = $('#dcr-check-absent').checked;
+        if(!confirm(`${items.length}件を取り込みます。よろしいですか？`)) return;
+        const msgEl = $('#dcr-msg');
+        msgEl.textContent = '取り込み中…';
+        await withLoading(runBtn, async () => {
+          try{
+            const r = await api('/daicho/reimport-from-archive', { method:'POST', body:{ items, checkAbsent } });
+            msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${checkAbsent&&r.clearedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''}<br>`
+              + r.results.map(x=>`${x.ok?icon('checkCircle',{size:'12px'}):icon('xCircle',{size:'12px'})} ${h(x.fileName)}${x.targetDate?` (${h(x.targetDate)})`:''} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>');
+            popup(`取り込みが完了しました(${r.okCount}件成功)`);
+          }catch(e){ msgEl.innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
+        });
+      };
+    };
     const bulkDl = $('#dc-bulk-dl');
     if(bulkDl) bulkDl.onclick = async () => {
       const targets = filtered.filter(it=>selected.has(it.id));
