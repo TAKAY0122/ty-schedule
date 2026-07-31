@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS dev_plan(
 );
 
 -- メンバーごとの備考欄(自由記述、時系列で複数件積み重ねる。誰が書いたか分かる)
--- 閲覧・記入は手配者以上のみ。本人は閲覧不可。
+-- 閲覧・記入は member_summary_view 権限を持つ人のみ(対象が自分自身でも、権限があれば閲覧可)。
 CREATE TABLE IF NOT EXISTS member_notes(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   target_id INTEGER NOT NULL,      -- 対象メンバー

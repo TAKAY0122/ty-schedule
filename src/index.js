@@ -126,7 +126,7 @@ async function pbkdf2(pw, salt) {
 // アプリの機能アップデートのお知らせに使うバージョン番号。新しいお知らせを追加したら値を増やし、
 // updateNoticeContent()にも内容を追記する。既にパスワードを変更済み(must_change=0)の既存ユーザーが
 // ログインした際、seen_update_version がこれより小さければ「アップデートのお知らせ」を表示する。
-const CURRENT_UPDATE_VERSION = 3;
+const CURRENT_UPDATE_VERSION = 4;
 
 const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0, must_change: u.must_change ? 1 : 0, extra_perms: getPerms(u), revoked_perms: getRevokedPerms(u), notify_rookie: u.notify_rookie === null || u.notify_rookie === undefined ? null : (u.notify_rookie ? 1 : 0), manner_done: u.manner_done ? 1 : 0, team2_done: u.team2_done ? 1 : 0, su_done: u.su_done ? 1 : 0, graduate_flag: u.graduate_flag ? 1 : 0, promotion_pending_date: u.promotion_pending_date || null, promotion_pending_rank: u.promotion_pending_rank || null, needsUpdateNotice: !u.must_change && (u.seen_update_version || 0) < CURRENT_UPDATE_VERSION, seenUpdateVersion: u.seen_update_version || 0 });
 
@@ -1956,7 +1956,7 @@ async function api(req, env, url) {
     'sites', 'members', 'summary', 'member-stats', 'day-schedule',
     'report', 'reports', 'draft', 'blacklist', 'report-export',
     'admin', 'admin-settings', 'role-permissions', 'handler-status',
-    'import', 'sched-sources', 'daicho',
+    'import', 'sched-sources', 'daicho', 'member-summary',
   ];
   if (method === 'GET' && path === '/settings/feature-status') {
     const status = {};
@@ -3561,7 +3561,7 @@ async function api(req, env, url) {
     return J({ month, items, managers });
   }
 
-  // ---- 個人の年間稼働サマリー(手配者以上、本人は閲覧不可) ----
+  // ---- 個人の年間稼働サマリー(member_summary_view権限があれば、対象が本人でも閲覧可) ----
   // 12月始まり〜翌年11月終わりの年度で、月ごとの勤務日数・総勤務時間・総残業時間・給料を集計する。
   // ?uid=対象者ID &year=基準年(その年の12月〜翌年11月を対象とする)
   if (method === 'GET' && path === '/member-year-summary') {
@@ -3604,7 +3604,7 @@ async function api(req, env, url) {
     });
   }
 
-  // ---- 個人の備考欄(手配者以上)。自由記述を時系列で複数件積み重ねる ----
+  // ---- 個人の備考欄(member_summary_view権限があれば、対象が本人でも閲覧可)。自由記述を時系列で複数件積み重ねる ----
   if (method === 'GET' && path === '/member-notes') {
     if (!has(me, 'member_summary_view')) return ERR('ページが見つかりません', 404);
     const uid = Number(url.searchParams.get('uid'));

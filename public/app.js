@@ -140,7 +140,7 @@ let UPDATE_NOTICE_SHOWN = false; // 1セッション中に一度だけ表示す�
 // アップデートのお知らせに表示する項目。新機能を追加したら、ここに { v: 新しいバージョン番号, ... } で
 // 追記し、CURRENT_UPDATE_VERSION(この下)をインクリメントする。過去の項目はそのまま残しておいてよい
 // (各ユーザーは自分がまだ見ていないバージョン分の項目だけを見るため、勝手に重複表示されることはない)。
-const CURRENT_UPDATE_VERSION = 3;
+const CURRENT_UPDATE_VERSION = 4;
 const UPDATE_ITEMS = [
   { v:1, icon:'home', title:'ホーム画面を追加', desc:'ログイン後、今日・明日の現場や通知が一目で見られるようになりました。', show: () => true },
   { v:1, icon:'handRaise', title:'休み希望・稼働時間の提出', desc:'マイスケジュールから、休み希望や「この時間なら動ける」を手配担当者に伝えられます。', show: () => true },
@@ -153,6 +153,8 @@ const UPDATE_ITEMS = [
   { v:2, icon:'home', title:'ホーム画面を自由にカスタマイズ', desc:'ホーム画面の「編集」から、ショートカットの並び替え・非表示・追加ができるようになりました(iPhoneのホーム画面のような感覚で使えます)。', show: () => true },
   { v:3, icon:'star', title:'ランクの自動昇格・査定', desc:'マナー研修を受けると翌日にDランク、チーム研修(2部)とステージアップ研修(SU)の両方を受けると翌月1日にCランクへ自動で昇格します。C→B、B→Aは査定ボタンで昇格でき、昇格した月の給与は月初に遡って新しいランクで再計算されます。', show: () => true },
   { v:3, icon:'scroll', title:'ランク変更履歴', desc:'メンバー編集画面から、いつ・誰が・どんな理由でランクを変更したかの履歴を確認できるようになりました。', show: () => LV[ME.role] >= 1 },
+  { v:4, icon:'barChart', title:'個人の年間サマリー・備考欄を追加', desc:'メンバーごとの月別稼働日数・時間・給料の年間推移や、申し送り事項を記録する備考欄を確認できるようになりました(手配担当者以上)。', show: () => LV[ME.role] >= 2 },
+  { v:4, icon:'fileText', title:'台帳Excelファイルの直接取り込みに対応', desc:'手配管理表のExcelファイルをPCから直接アップロードして取り込めるようになりました。複数ファイルの一括取込や、台帳保管に保存済みのファイルからの再取込にも対応しています(常に手動実行)。', show: () => LV[ME.role] >= 2 },
 ];
 // 機能公開設定の対象画面。バックエンドのFEATURE_KEYSと必ず一致させる。
 // 新しい画面を追加したら、ここと src/index.js の FEATURE_KEYS の両方に追記する。
@@ -181,6 +183,7 @@ const FEATURE_LABELS = {
   'import': { icon:'download', label:'スプレッドシート取り込み' },
   'sched-sources': { icon:'rss', label:'予定表ソース管理' },
   'daicho': { icon:'package', label:'台帳保管' },
+  'member-summary': { icon:'barChart', label:'個人の年間サマリー' },
 };
 const FEATURE_KEYS = Object.keys(FEATURE_LABELS);
 // 給与計算区分コード → 表示用の日本語ラベル(業務名対応表の表示に使う)
@@ -1026,7 +1029,7 @@ async function render(){
     else if(hash === '#/daicho') await pageDaicho(app);
     else if(hash.startsWith('#/sched-sources')) await pageSchedSources(app, hash);
     else if(hash.startsWith('#/permissions/')) await pagePermissions(app, hash);
-    else if(hash === '#/member-summary-search') await pageMemberSummarySearch(app);
+    else if(hash === '#/member-summary/search') await pageMemberSummarySearch(app);
     else if(hash.startsWith('#/member-summary/')) await pageMemberYearSummary(app, hash);
     else if(hash === '#/role-permissions') await pageRolePermissions(app);
     else if(hash === '#/password') pagePassword(app);
@@ -1162,7 +1165,7 @@ function renderShell(hash){
       ...(canSummaryView ? [{ path:'#/summary', icon:'barChart', label:'稼働サマリー' }] : []),
       ...(canMemberStatsView ? [{ path:'#/member-stats', icon:'trendingUp', label:'メンバー分析' }] : []),
       ...(canDayScheduleView ? [{ path:'#/day-schedule', icon:'layoutGrid', label:'スケジュール一覧' }] : []),
-      ...(canMemberSummaryNav ? [{ path:'#/member-summary-search', icon:'barChart', label:'個人の年間サマリー', role:'handler' }] : []),
+      ...(canMemberSummaryNav ? [{ path:'#/member-summary/search', icon:'barChart', label:'個人の年間サマリー', role:'handler' }] : []),
     ]},
     { icon:'sparkles', label:'新人報告', show:true, children:[
       { path:'#/report', icon:'fileText', label:'新人報告' },
@@ -1947,7 +1950,7 @@ async function pageHome(app){
     ['#/members/mine','briefcase',`${h(ME.name)}手配`, isHandlerRole, 'handler'],
     ['#/members','users','メンバー一覧', has('members_view')],
     ['#/summary','barChart','稼働サマリー', has('summary_view')],
-    ['#/member-summary-search','barChart','個人の年間サマリー', has('member_summary_view'), 'handler'],
+    ['#/member-summary/search','barChart','個人の年間サマリー', has('member_summary_view'), 'handler'],
     ['#/member-stats','trendingUp','メンバー分析', has('member_stats_view')],
     ['#/day-schedule','layoutGrid','スケジュール一覧', has('day_schedule_view')],
     ['#/self-reports','mail','変更報告承認', isHandlerRole, 'handler'],
@@ -4810,7 +4813,7 @@ async function pageRolePermissions(app){
   });
 }
 
-/* ===== 個人の年間稼働サマリー・備考欄(手配者以上、本人は閲覧不可) ===== */
+/* ===== 個人の年間稼働サマリー・備考欄(member_summary_view権限があれば、対象が本人でも閲覧可) ===== */
 /* ===== 個人の年間サマリーを、メンバーを検索して開くための入口画面(左メニュー用) ===== */
 async function pageMemberSummarySearch(app){
   if(!has('member_summary_view')){ notFound(app); return; }
@@ -4914,7 +4917,7 @@ async function pageMemberYearSummary(app, hash){
 
   <div class="card">
     <div class="card-t" style="font-weight:800;margin-bottom:10px">${icon('fileText',{size:'14px'})} 備考欄</div>
-    <div class="muted" style="font-size:11.5px;margin-bottom:10px">自由に記入できます。誰が書いたかは全員に表示されます。本人は閲覧できません。</div>
+    <div class="muted" style="font-size:11.5px;margin-bottom:10px">自由に記入できます。誰が書いたかは全員に表示されます。</div>
     <textarea id="ys-note-input" rows="3" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;font-size:13px" placeholder="気づいたこと・申し送り事項などを記入…"></textarea>
     <div class="row" style="margin-top:8px"><button class="btn gold sm" id="ys-note-add">${icon('plus',{size:'13px'})} 追加する</button></div>
     <div style="margin-top:14px;display:flex;flex-direction:column;gap:10px">
