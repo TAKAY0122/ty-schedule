@@ -126,7 +126,7 @@ async function pbkdf2(pw, salt) {
 // アプリの機能アップデートのお知らせに使うバージョン番号。新しいお知らせを追加したら値を増やし、
 // updateNoticeContent()にも内容を追記する。既にパスワードを変更済み(must_change=0)の既存ユーザーが
 // ログインした際、seen_update_version がこれより小さければ「アップデートのお知らせ」を表示する。
-const CURRENT_UPDATE_VERSION = 4;
+const CURRENT_UPDATE_VERSION = 5;
 
 const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0, must_change: u.must_change ? 1 : 0, extra_perms: getPerms(u), revoked_perms: getRevokedPerms(u), notify_rookie: u.notify_rookie === null || u.notify_rookie === undefined ? null : (u.notify_rookie ? 1 : 0), manner_done: u.manner_done ? 1 : 0, team2_done: u.team2_done ? 1 : 0, su_done: u.su_done ? 1 : 0, graduate_flag: u.graduate_flag ? 1 : 0, promotion_pending_date: u.promotion_pending_date || null, promotion_pending_rank: u.promotion_pending_rank || null, needsUpdateNotice: !u.must_change && (u.seen_update_version || 0) < CURRENT_UPDATE_VERSION, seenUpdateVersion: u.seen_update_version || 0 });
 
@@ -1774,6 +1774,85 @@ async function auth(req, env) {
   return s;
 }
 
+// ===== 日付×人のマトリックス(スケジュール一覧・現場の稼働表で共通利用) =====
+// dates: 対象日(YYYY-MM-DD)の配列。uidList: nullなら全メンバー、配列ならそのuidのみに絞る。
+async function buildScheduleMatrixRows(env, dates, uidList) {
+  const ph = dates.map(() => '?').join(',');
+  const [membersRes, scheduleRes, managersRes] = await Promise.all([
+    uidList
+      ? env.DB.prepare(`SELECT id, name, regno, rank, ka, han, manager_id, suspended FROM users WHERE id IN (${uidList.map(() => '?').join(',')}) ORDER BY regno`).bind(...uidList).all()
+      : env.DB.prepare("SELECT id, name, regno, rank, ka, han, manager_id, suspended FROM users ORDER BY regno").all(),
+    uidList
+      ? env.DB.prepare(`SELECT user_id, date, type, site, venue, note FROM schedule WHERE date IN (${ph}) AND user_id IN (${uidList.map(() => '?').join(',')}) ORDER BY user_id, date, slot`).bind(...dates, ...uidList).all()
+      : env.DB.prepare(`SELECT user_id, date, type, site, venue, note FROM schedule WHERE date IN (${ph}) ORDER BY user_id, date, slot`).bind(...dates).all(),
+    env.DB.prepare("SELECT id, name FROM users WHERE role IN ('handler','admin')").all(),
+  ]);
+  const members = membersRes.results;
+  const scheduleRows = scheduleRes.results;
+  const byUserDate = {};
+  for (const r of scheduleRows) { const key = r.user_id + '|' + r.date; (byUserDate[key] ||= []).push(r); }
+  const managers = managersRes.results;
+  const mgrName = {}; for (const m of managers) mgrName[m.id] = m.name;
+  // 担当未設定は課ごとの「チーフ手配(1課/2課)」として扱う(特定の実在アカウントには紐付けない)
+  const chiefLabel = m => m.ka === '1課' ? 'チーフ手配(1課)' : m.ka === '2課' ? 'チーフ手配(2課)' : 'チーフ手配';
+
+  const cellFor = (uid, date) => {
+    const slots = byUserDate[uid + '|' + date] || [];
+    const workSlots = slots.filter(s => s.type === 'work' && s.site);
+    const nonWork = slots.find(s => s.type && s.type !== 'work');
+    if (workSlots.length) return {
+      status: 'work',
+      detail: workSlots.map(s => [s.site, s.venue].filter(Boolean).join('／')).join('、'),
+      sites: workSlots.map(s => s.site),
+      note: '',
+    };
+    if (nonWork) return { status: nonWork.type, detail: '', sites: [], note: nonWork.note || '' };
+    return { status: 'none', detail: '', sites: [], note: '' };
+  };
+
+  return members.map(m => ({
+    id: m.id, name: m.name, regno: m.regno, rank: m.rank, ka: m.ka, han: m.han,
+    managerId: m.manager_id, managerName: m.manager_id ? ((mgrName[m.manager_id] ? mgrName[m.manager_id] + '手配' : 'チーフ手配')) : chiefLabel(m),
+    suspended: m.suspended ? 1 : 0,
+    days: dates.map(date => cellFor(m.id, date)),
+  }));
+}
+
+// 現場名(またはvenueが同じ場合はvenue)を軸に、指定日を含む「連続した日付」の範囲を求める。
+// 複数日にわたる現場(掛かり込み設営〜本番〜バラシ等)を、暦日の連続性だけで機械的に推定するための
+// ヘルパー。日をまたいだ現場名の表記ゆれに備え、現場名一致が無い日でも会場名が一致すれば範囲に含める
+// (現場名一致を優先し、会場名一致は補助的に使う)。実際の現場は長くても数日程度のため、
+// 前後3日を上限として探索する(離れた日程の別公演を誤って同一期間に取り込まないため)。
+async function findGigDateRange(env, date, site) {
+  const siteRow = await env.DB.prepare(
+    "SELECT venue FROM schedule WHERE date=? AND site=? AND type='work' LIMIT 1"
+  ).bind(date, site).first();
+  const venue = siteRow ? (siteRow.venue || '') : '';
+
+  const WINDOW = 3;
+  const addDays = (s, n) => {
+    const [y, m, d] = s.split('-').map(Number);
+    return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
+  };
+  const winFrom = addDays(date, -WINDOW), winTo = addDays(date, WINDOW);
+  const matchRows = venue
+    ? (await env.DB.prepare(
+        "SELECT DISTINCT date FROM schedule WHERE type='work' AND date>=? AND date<=? AND (site=? OR venue=?)"
+      ).bind(winFrom, winTo, site, venue).all()).results
+    : (await env.DB.prepare(
+        "SELECT DISTINCT date FROM schedule WHERE type='work' AND date>=? AND date<=? AND site=?"
+      ).bind(winFrom, winTo, site).all()).results;
+  const matchDates = new Set(matchRows.map(r => r.date));
+
+  let from = date, to = date;
+  while (matchDates.has(addDays(from, -1))) from = addDays(from, -1);
+  while (matchDates.has(addDays(to, 1))) to = addDays(to, 1);
+
+  const dates = [];
+  for (let d = from; d <= to; d = addDays(d, 1)) dates.push(d);
+  return { venue, from, to, dates };
+}
+
 async function api(req, env, url) {
   const path = url.pathname.replace(/^\/api/, '');
   const method = req.method;
@@ -3263,6 +3342,50 @@ async function api(req, env, url) {
     return J(rows);
   }
 
+  // ---- 現場の稼働表(チーフ以上)。複数日にわたる現場について、その現場が行われている
+  //      期間(findGigDateRangeで算出)を対象に、実際にその現場(または同じ会場)へ
+  //      入っている人だけを抜き出して、スケジュール一覧と同じマトリックス形式で返す。 ----
+  if (method === 'GET' && path === '/site-roster') {
+    if (!has(me, 'sites_view')) return ERR('ページが見つかりません', 404);
+    const date = url.searchParams.get('date'), site = url.searchParams.get('site');
+    if (!date || !site) return ERR('date/site が必要です');
+    const { venue, dates } = await findGigDateRange(env, date, site);
+
+    const ph = dates.map(() => '?').join(',');
+    const relevantRows = venue
+      ? (await env.DB.prepare(`SELECT DISTINCT user_id FROM schedule WHERE type='work' AND date IN (${ph}) AND (site=? OR venue=?)`).bind(...dates, site, venue).all()).results
+      : (await env.DB.prepare(`SELECT DISTINCT user_id FROM schedule WHERE type='work' AND date IN (${ph}) AND site=?`).bind(...dates, site).all()).results;
+    const uids = relevantRows.map(r => r.user_id);
+    const rows = uids.length ? await buildScheduleMatrixRows(env, dates, uids) : [];
+    return J({ site, venue, dates, rows });
+  }
+
+  // ---- 同会場・同現場名(≒同アーティスト)の過去・今後の公演一覧(チーフ以上)。
+  //      現在の現場が含まれる期間(findGigDateRangeで算出)より前/後の日付のみを対象とし、
+  //      同じ複数日公演の別の日を「別公演」として誤って拾わないようにする。 ----
+  if (method === 'GET' && path === '/site-history') {
+    if (!has(me, 'sites_view')) return ERR('ページが見つかりません', 404);
+    const date = url.searchParams.get('date'), site = url.searchParams.get('site');
+    if (!date || !site) return ERR('date/site が必要です');
+    const { venue, from, to } = await findGigDateRange(env, date, site);
+
+    const [sameVenuePastRes, sameVenueFutureRes, sameSitePastRes, sameSiteFutureRes] = await Promise.all([
+      venue
+        ? env.DB.prepare("SELECT date, site, venue, COUNT(*) AS cnt FROM schedule WHERE type='work' AND venue=? AND date<? GROUP BY date, site, venue ORDER BY date DESC LIMIT 15").bind(venue, from).all()
+        : Promise.resolve({ results: [] }),
+      venue
+        ? env.DB.prepare("SELECT date, site, venue, COUNT(*) AS cnt FROM schedule WHERE type='work' AND venue=? AND date>? GROUP BY date, site, venue ORDER BY date ASC LIMIT 15").bind(venue, to).all()
+        : Promise.resolve({ results: [] }),
+      env.DB.prepare("SELECT date, site, venue, COUNT(*) AS cnt FROM schedule WHERE type='work' AND site=? AND date<? GROUP BY date, site, venue ORDER BY date DESC LIMIT 15").bind(site, from).all(),
+      env.DB.prepare("SELECT date, site, venue, COUNT(*) AS cnt FROM schedule WHERE type='work' AND site=? AND date>? GROUP BY date, site, venue ORDER BY date ASC LIMIT 15").bind(site, to).all(),
+    ]);
+    return J({
+      site, venue, from, to,
+      sameVenuePast: sameVenuePastRes.results, sameVenueFuture: sameVenueFutureRes.results,
+      sameSitePast: sameSitePastRes.results, sameSiteFuture: sameSiteFutureRes.results,
+    });
+  }
+
   // ---- スケジュール一覧(チーフ以上)。指定期間(既定7日分)の全メンバーの予定を、
   //      日付×人のマトリックス形式で返す。現場に入っている人は現場名、休暇/NG/1日OK/有給の
   //      人はその状態、未入力の人も含める。停止中アカウントも一覧性のため含める。 ----
@@ -3277,42 +3400,7 @@ async function api(req, env, url) {
       dates.push(dt.toISOString().slice(0, 10));
     }
 
-    const ph = dates.map(() => '?').join(',');
-    // 3つのクエリは互いに依存しないため、直列実行(3回分のDB往復レイテンシが積み重なる)を避けて並列実行する
-    const [membersRes, scheduleRes, managersRes] = await Promise.all([
-      env.DB.prepare("SELECT id, name, regno, rank, ka, han, manager_id, suspended FROM users ORDER BY regno").all(),
-      env.DB.prepare(`SELECT user_id, date, type, site, venue, note FROM schedule WHERE date IN (${ph}) ORDER BY user_id, date, slot`).bind(...dates).all(),
-      env.DB.prepare("SELECT id, name FROM users WHERE role IN ('handler','admin')").all(),
-    ]);
-    const members = membersRes.results;
-    const scheduleRows = scheduleRes.results;
-    const byUserDate = {};
-    for (const r of scheduleRows) { const key = r.user_id + '|' + r.date; (byUserDate[key] ||= []).push(r); }
-    const managers = managersRes.results;
-    const mgrName = {}; for (const m of managers) mgrName[m.id] = m.name;
-    // 担当未設定は課ごとの「チーフ手配(1課/2課)」として扱う(特定の実在アカウントには紐付けない)
-    const chiefLabel = m => m.ka === '1課' ? 'チーフ手配(1課)' : m.ka === '2課' ? 'チーフ手配(2課)' : 'チーフ手配';
-
-    const cellFor = (uid, date) => {
-      const slots = byUserDate[uid + '|' + date] || [];
-      const workSlots = slots.filter(s => s.type === 'work' && s.site);
-      const nonWork = slots.find(s => s.type && s.type !== 'work');
-      if (workSlots.length) return {
-        status: 'work',
-        detail: workSlots.map(s => [s.site, s.venue].filter(Boolean).join('／')).join('、'),
-        sites: workSlots.map(s => s.site),
-        note: '',
-      };
-      if (nonWork) return { status: nonWork.type, detail: '', sites: [], note: nonWork.note || '' };
-      return { status: 'none', detail: '', sites: [], note: '' };
-    };
-
-    const rows = members.map(m => ({
-      id: m.id, name: m.name, regno: m.regno, rank: m.rank, ka: m.ka, han: m.han,
-      managerId: m.manager_id, managerName: m.manager_id ? ((mgrName[m.manager_id] ? mgrName[m.manager_id]+'手配' : 'チーフ手配')) : chiefLabel(m),
-      suspended: m.suspended ? 1 : 0,
-      days: dates.map(date => cellFor(m.id, date)),
-    }));
+    const rows = await buildScheduleMatrixRows(env, dates, null);
     return J({ dates, rows });
   }
 

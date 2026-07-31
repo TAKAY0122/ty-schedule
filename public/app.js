@@ -140,7 +140,7 @@ let UPDATE_NOTICE_SHOWN = false; // 1セッション中に一度だけ表示す�
 // アップデートのお知らせに表示する項目。新機能を追加したら、ここに { v: 新しいバージョン番号, ... } で
 // 追記し、CURRENT_UPDATE_VERSION(この下)をインクリメントする。過去の項目はそのまま残しておいてよい
 // (各ユーザーは自分がまだ見ていないバージョン分の項目だけを見るため、勝手に重複表示されることはない)。
-const CURRENT_UPDATE_VERSION = 4;
+const CURRENT_UPDATE_VERSION = 5;
 const UPDATE_ITEMS = [
   { v:1, icon:'home', title:'ホーム画面を追加', desc:'ログイン後、今日・明日の現場や通知が一目で見られるようになりました。', show: () => true },
   { v:1, icon:'handRaise', title:'休み希望・稼働時間の提出', desc:'マイスケジュールから、休み希望や「この時間なら動ける」を手配担当者に伝えられます。', show: () => true },
@@ -155,6 +155,8 @@ const UPDATE_ITEMS = [
   { v:3, icon:'scroll', title:'ランク変更履歴', desc:'メンバー編集画面から、いつ・誰が・どんな理由でランクを変更したかの履歴を確認できるようになりました。', show: () => LV[ME.role] >= 1 },
   { v:4, icon:'barChart', title:'個人の年間サマリー・備考欄を追加', desc:'メンバーごとの月別稼働日数・時間・給料の年間推移や、申し送り事項を記録する備考欄を確認できるようになりました(手配担当者以上)。', show: () => LV[ME.role] >= 2 },
   { v:4, icon:'fileText', title:'台帳Excelファイルの直接取り込みに対応', desc:'手配管理表のExcelファイルをPCから直接アップロードして取り込めるようになりました。複数ファイルの一括取込や、台帳保管に保存済みのファイルからの再取込にも対応しています(常に手動実行)。', show: () => LV[ME.role] >= 2 },
+  { v:5, icon:'layoutGrid', title:'複数日の現場に「稼働表」を追加', desc:'現場一覧の現場詳細から「稼働表」を押すと、その現場が行われている期間(前後の連続した日程を自動判定)に入っている人だけを、日付×人の一覧で確認できるようになりました。現場に入っていない日も、休暇・NG・別の現場のどれかが分かります。', show: () => LV[ME.role] >= 1 },
+  { v:5, icon:'clockWarn', title:'現場詳細に「過去・今後の公演」を追加', desc:'現場詳細画面に、同じ会場・同じアーティスト(現場名)の過去と今後の公演一覧を追加しました。押すとその公演の詳細(入っていた人・時間等)がすぐに確認できます。', show: () => LV[ME.role] >= 1 },
 ];
 // 機能公開設定の対象画面。バックエンドのFEATURE_KEYSと必ず一致させる。
 // 新しい画面を追加したら、ここと src/index.js の FEATURE_KEYS の両方に追記する。
@@ -675,9 +677,13 @@ async function openSiteModal(date, site){
   const canPay = LV[ME.role] >= 2;
   const canAdd = ME.handler === 1; // 手配者モードのときメンバー追加・編集可
   const canViewSched = LV[ME.role] >= 1; // 名前タップでスケジュールへ遷移できるか(チーフ以上)
-  const list = await api(`/site-members?date=${date}&site=${encodeURIComponent(site)}`);
+  const canRoster = has('sites_view'); // 稼働表・過去公演を見られるか(このモーダル自体を開ける権限と同じ)
+  const [list, breaksArr, history] = await Promise.all([
+    api(`/site-members?date=${date}&site=${encodeURIComponent(site)}`),
+    canViewSched ? api(`/site-record-breaks?date=${date}&site=${encodeURIComponent(site)}`).catch(()=>[]) : Promise.resolve([]),
+    canRoster ? api(`/site-history?date=${date}&site=${encodeURIComponent(site)}`).catch(()=>null) : Promise.resolve(null),
+  ]);
   // 休憩時間の合計(チーフ以上に公開。6h超45分/8h超60分の目安に届いていない場合だけ軽く表示)
-  const breaksArr = canViewSched ? await api(`/site-record-breaks?date=${date}&site=${encodeURIComponent(site)}`).catch(()=>[]) : [];
   const breakByUid = {}; breaksArr.forEach(b => breakByUid[b.uid] = b);
   const venue = (list.find(p => p.venue) || {}).venue || '';
   const loadEnd = (list.find(p => p.load_end) || {}).load_end || '';
@@ -706,6 +712,21 @@ async function openSiteModal(date, site){
   const row = p => `<tr class="ka-row-${p.ka==='1課'?'1':'2'} ${editable?'sm-edit':''}" ${editable?`data-uid="${p.uid}"`:''}><td style="white-space:nowrap">${nameHtml(p)} ${kaTag(p)}</td><td style="white-space:nowrap"><span class="tag ${p.role}">${roleLabel(p)}</span></td><td style="white-space:nowrap">${h(p.rank)}</td><td style="white-space:nowrap">${h(p.han)}</td>${canPay?`<td style="white-space:nowrap">${h(p.tin)}</td><td style="white-space:nowrap">${h(p.tout)}</td>`:''}<td style="white-space:nowrap">${breakHtml(p)||''}</td><td style="min-width:150px">${h(p.note)}</td>${editable?`<td class="sm-edit-cell">${icon('edit',{size:'12px'})}</td>`:''}</tr>`;
   const tbl = arr => `<table class="list pc-only"><tr><th>氏名</th><th>役割</th><th>ランク</th><th>班</th>${canPay?'<th>IN</th><th>OUT</th>':''}<th>休憩</th><th>備考</th>${editable?'<th></th>':''}</tr>${arr.map(row).join('')}</table>
     <div class="cards sp-only">${arr.map(card).join('')}</div>`;
+  // 過去/今後の公演1件分のボタン(押すとその日・その現場の詳細=このモーダル自体を開き直す)
+  const histItem = r => `<button type="button" class="btn ghost sm site-hist-item" data-date="${r.date}" data-site="${h(r.site)}" style="display:block;width:100%;text-align:left;margin-bottom:4px;white-space:normal">
+    ${h(r.date)} ${h(r.site)}${r.venue && r.venue!==venue ? ` <span class="muted">(${h(r.venue)})</span>` : ''} <span class="muted">${r.cnt}名</span>
+  </button>`;
+  // 過去/今後どちらの範囲かひと目でわかるよう、見出しを分けて表示する(境目=現在閲覧中の現場)
+  const histSection = (label, past, future) => {
+    if(!past.length && !future.length) return '';
+    return `<div class="section-label" style="margin-top:14px">${label}</div>
+      ${past.length ? `<div class="muted" style="font-size:11px;margin:6px 0 3px">${icon('arrowLeft',{size:'10px'})} 過去</div><div>${past.map(histItem).join('')}</div>` : ''}
+      ${future.length ? `<div class="muted" style="font-size:11px;margin:${past.length?'10':'6'}px 0 3px">今後 ${icon('arrowRight',{size:'10px'})}</div><div>${future.map(histItem).join('')}</div>` : ''}`;
+  };
+  const sameVenuePast = (history && history.sameVenuePast) || [];
+  const sameVenueFuture = (history && history.sameVenueFuture) || [];
+  const sameSitePast = (history && history.sameSitePast) || [];
+  const sameSiteFuture = (history && history.sameSiteFuture) || [];
   modal(`<h3>現場情報</h3>
     <dl class="kv">
       <dt>現場名</dt><dd><b>${h(site)}</b></dd>
@@ -715,6 +736,9 @@ async function openSiteModal(date, site){
       <dt>日付</dt><dd>${h(date)}</dd>
       <dt>人数</dt><dd>チーフ・手配 ${chiefs.length}名 / メンツ ${members.length}名(計${list.length}名)</dd>
     </dl>
+    ${canRoster ? `<div class="row" style="gap:8px;margin:2px 0 10px">
+      <button type="button" class="btn ghost sm" id="site-roster-btn">${icon('layoutGrid',{size:'13px'})} 稼働表</button>
+    </div>` : ''}
     ${list.length ? `
       <div class="section-label" style="margin-top:6px">チーフ・手配チーム</div>
       ${chiefs.length ? tbl(chiefs) : '<div class="muted" style="padding:4px 2px">登録されていません</div>'}
@@ -724,7 +748,14 @@ async function openSiteModal(date, site){
     ${canAdd ? `<div id="site-add-wrap" style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px;display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn gold" id="site-add-btn">＋ メンバーを追加</button>
       ${list.length?`<button class="btn ghost" id="site-edit-btn">${icon('edit')} 全員まとめて一括編集</button>`:''}
-    </div>` : ''}`);
+    </div>` : ''}
+    ${venue ? histSection('同会場の公演', sameVenuePast, sameVenueFuture) : ''}
+    ${histSection('同アーティストの公演', sameSitePast, sameSiteFuture)}`);
+  const rosterBtn = $('#site-roster-btn');
+  if(rosterBtn) rosterBtn.onclick = () => openSiteRoster(date, site);
+  document.querySelectorAll('#modal-layer .site-hist-item').forEach(el => {
+    el.onclick = () => openSiteModal(el.dataset.date, el.dataset.site);
+  });
   // 氏名タップ → スケジュールへ遷移(編集モーダルより優先。行/カード全体のクリックとは独立させる)
   if(canViewSched){
     document.querySelectorAll('#modal-layer .name-link[data-goto-uid]').forEach(el => {
@@ -751,6 +782,28 @@ async function openSiteModal(date, site){
       };
     });
   }
+}
+
+// 複数日にわたる現場の稼働表。現場名(会場名一致を含む)から連続した日付の範囲を自動判定し、
+// その期間にこの現場(または同じ会場)へ入っている人だけを、スケジュール一覧と同じマトリックス
+// 形式で表示する。openSiteModalの「稼働表」ボタンから呼ばれる。
+async function openSiteRoster(date, site){
+  let data;
+  try{ data = await api(`/site-roster?date=${date}&site=${encodeURIComponent(site)}`); }
+  catch(e){ popup(e.message, 'error'); return; }
+  const periodLabel = data.dates.length > 1
+    ? `${data.dates[0]} 〜 ${data.dates[data.dates.length-1]}(${data.dates.length}日間)`
+    : data.dates[0];
+  modal(`<h3>${icon('layoutGrid',{size:'15px'})} 稼働表</h3>
+    <dl class="kv">
+      <dt>現場名</dt><dd><b>${h(data.site)}</b></dd>
+      ${data.venue?`<dt>会場</dt><dd>${h(data.venue)}</dd>`:''}
+      <dt>期間</dt><dd>${h(periodLabel)}</dd>
+    </dl>
+    <div style="margin-top:10px">
+      ${data.rows.length ? renderMatrixTable(data.dates, data.rows) : '<div class="muted">この期間、この現場に入っているメンバーはいません</div>'}
+    </div>`);
+  wireMatrixCellClicks($('#modal-layer'));
 }
 
 // 現場記録(配置・休憩時間・自由記入欄)。本人と管理者のみ閲覧・編集可。育成計画・備考もあわせて表示。
@@ -2795,7 +2848,51 @@ async function pageSummary(app){
   animateBars(app);
   staggerRows(app, '.sum-row, .sum-card');
 }
-/* ===== スケジュール一覧(準備中) ===== */
+// 日付×人のマトリックス表(スケジュール一覧・現場の稼働表で共通利用)。
+// rows[].days は dates と同じ長さ・順序({status, detail, sites, note})を持つ配列。
+const MATRIX_STATUS_INFO = {
+  off:  { label:'休', cls:'cell-off' },
+  x:    { label:'NG', cls:'cell-x' },
+  ok:   { label:'OK', cls:'cell-ok' },
+  paid: { label:'有', cls:'cell-paid' },
+  none: { label:'', cls:'cell-none' },
+};
+function matrixCellHtml(cell, isToday, date){
+  const todayCls = isToday ? ' matrix-today' : '';
+  if(cell.status === 'work'){
+    const firstSite = (cell.sites && cell.sites[0]) || '';
+    return `<td class="matrix-cell cell-work${todayCls} cell-site-link" title="${h(cell.detail)}" data-date="${date}" data-site="${h(firstSite)}">${h(cell.detail)}</td>`;
+  }
+  const info = MATRIX_STATUS_INFO[cell.status] || MATRIX_STATUS_INFO.none;
+  return `<td class="matrix-cell ${info.cls}${todayCls}">${info.label}</td>`;
+}
+function renderMatrixTable(dates, rows){
+  const today = jstToday();
+  const dateHead = dates.map(d => {
+    const [,mo,da] = d.split('-').map(Number);
+    const wd = new Date(d+'T00:00:00+09:00').getDay();
+    return { d, mo, da, wd, isToday: d===today };
+  });
+  return `<div class="sched-wrap">
+    <table class="matrix-table">
+      <tr>
+        <th class="matrix-name-col">氏名</th>
+        ${dateHead.map(dh=>`<th class="${dh.isToday?'matrix-today':''}">${dh.mo}/${dh.da}<br><span class="muted" style="font-weight:400">(${WD[dh.wd]})</span></th>`).join('')}
+      </tr>
+      ${rows.map(r=>`<tr>
+        <td class="matrix-name-col"><a href="#/schedule/${r.id}">${h(r.name)}</a><br><span class="muted" style="font-size:9.5px">${h(r.regno)}${r.rank?' '+h(r.rank):''} ${h(r.managerName)}</span></td>
+        ${r.days.map((cell,i)=>matrixCellHtml(cell, dateHead[i].isToday, dateHead[i].d)).join('')}
+      </tr>`).join('') || `<tr><td colspan="${dates.length+1}" class="muted" style="text-align:center;padding:16px">該当するメンバーはいません</td></tr>`}
+    </table>
+  </div>`;
+}
+// マトリックス表内の現場セルタップで現場詳細を開く(呼び出し元のコンテナ要素に対して結線する)
+function wireMatrixCellClicks(container){
+  container.querySelectorAll('.cell-site-link').forEach(td => td.onclick = () => {
+    if(td.dataset.site) openSiteModal(td.dataset.date, td.dataset.site);
+  });
+}
+
 /* ===== スケジュール一覧(チーフ以上)。日付×人のマトリックス表(チーフ予定表のイメージ)。
    現場の人は現場名(タップで現場詳細)、休みの人は休暇/NG/1日OK/有給を表示。停止中も含む。 ===== */
 async function pageDaySchedule(app){
@@ -2807,31 +2904,11 @@ async function pageDaySchedule(app){
   try{ data = await api(`/day-schedule?from=${st.from}&days=${st.days}`); }
   catch(e){ app.innerHTML = `<div class="msg err">${h(e.message)}</div>`; return; }
 
-  const statusInfo = {
-    off:  { label:'休', cls:'cell-off' },
-    x:    { label:'NG', cls:'cell-x' },
-    ok:   { label:'OK', cls:'cell-ok' },
-    paid: { label:'有', cls:'cell-paid' },
-    none: { label:'', cls:'cell-none' },
-  };
   const today = jstToday();
   const dateHead = data.dates.map(d => {
     const [,mo,da] = d.split('-').map(Number);
-    const wd = new Date(d+'T00:00:00+09:00').getDay();
-    return { d, mo, da, wd, isToday: d===today };
+    return { mo, da };
   });
-
-  // 現場に入っている人は、そのセルをタップすると現場の詳細(メンバー一覧)を開ける。
-  // 掛け持ちで複数現場ある場合は、最初の現場を開く。
-  const cellHtml = (cell, isToday, date) => {
-    const todayCls = isToday ? ' matrix-today' : '';
-    if(cell.status === 'work'){
-      const firstSite = (cell.sites && cell.sites[0]) || '';
-      return `<td class="matrix-cell cell-work${todayCls} cell-site-link" title="${h(cell.detail)}" data-date="${date}" data-site="${h(firstSite)}">${h(cell.detail)}</td>`;
-    }
-    const info = statusInfo[cell.status] || statusInfo.none;
-    return `<td class="matrix-cell ${info.cls}${todayCls}">${info.label}</td>`;
-  };
 
   // フィルタの選択肢は、実際に取得したデータに存在する値だけを出す
   const kaOptions = [...new Set(data.rows.map(r=>r.ka).filter(Boolean))].sort();
@@ -2885,18 +2962,7 @@ async function pageDaySchedule(app){
     </div>
   </div>
   <div class="card" style="padding:0">
-    <div class="sched-wrap">
-      <table class="matrix-table">
-        <tr>
-          <th class="matrix-name-col">氏名</th>
-          ${dateHead.map(dh=>`<th class="${dh.isToday?'matrix-today':''}">${dh.mo}/${dh.da}<br><span class="muted" style="font-weight:400">(${WD[dh.wd]})</span></th>`).join('')}
-        </tr>
-        ${list.map(r=>`<tr>
-          <td class="matrix-name-col"><a href="#/schedule/${r.id}">${h(r.name)}</a><br><span class="muted" style="font-size:11px">${h(r.regno)} ${r.rank?h(r.rank)+'ランク':''}</span><br><span class="muted" style="font-size:10.5px">${h(r.managerName)}</span></td>
-          ${r.days.map((cell,i)=>cellHtml(cell, dateHead[i].isToday, dateHead[i].d)).join('')}
-        </tr>`).join('') || `<tr><td colspan="${st.days+1}" class="muted" style="text-align:center;padding:16px">該当するメンバーはいません</td></tr>`}
-      </table>
-    </div>
+    ${renderMatrixTable(data.dates, list)}
   </div>
   <div class="muted" style="margin-top:8px;font-size:12px">${list.length}人 表示中(全${data.rows.length}人)</div>`;
 
@@ -2908,9 +2974,7 @@ async function pageDaySchedule(app){
   $('#ds-han').onchange = (e) => { st.han = e.target.value; pageDaySchedule(app); };
   $('#ds-mgr').onchange = (e) => { st.mgr = e.target.value; pageDaySchedule(app); };
   const cb = $('#ds-clear'); if(cb) cb.onclick = () => { st.ka=''; st.han=''; st.mgr=''; pageDaySchedule(app); };
-  app.querySelectorAll('.cell-site-link').forEach(td => td.onclick = () => {
-    if(td.dataset.site) openSiteModal(td.dataset.date, td.dataset.site);
-  });
+  wireMatrixCellClicks(app);
 }
 
 /* ===== メンバー分析(準備中) ===== */
