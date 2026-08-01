@@ -4265,7 +4265,7 @@ async function pageImport(app, hash){
   <div class="card" style="margin-top:16px">
     <h3 style="margin-bottom:8px">${icon('fileText')} 台帳Excelファイルの取り込み</h3>
     <div class="muted" style="margin-bottom:12px">PCに保存してあるExcelファイル(手配管理表と同じ形式)を、直接アップロードして取り込みます。複数ファイルをまとめて選び、ファイルごとに対象日を指定できます(月をまたいだ一括取込も可能)。<b>この機能は深夜の自動再取り込みには含まれません。常に手動での実行です。</b></div>
-    <input type="file" id="xl-file-input" multiple accept=".xlsx" style="margin-bottom:12px">
+    <input type="file" id="xl-file-input" multiple accept=".xlsx" style="margin-bottom:12px;width:100%;max-width:100%;box-sizing:border-box">
     <div id="xl-file-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px"></div>
     <label style="display:flex;align-items:flex-start;gap:7px;font-size:12.5px;margin-bottom:10px;padding:8px 10px;background:#faf9f6;border-radius:8px;border:1px solid var(--line)">
       <input type="checkbox" id="xl-check-absent" style="margin-top:2px">
