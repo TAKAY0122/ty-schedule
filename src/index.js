@@ -1844,23 +1844,25 @@ async function buildScheduleMatrixRows(env, dates, uidList) {
   }));
 }
 
-// 現場名(またはvenueが同じ場合はvenue)を軸に、指定日を含む「連続した日付」の範囲を求める。
-// 複数日にわたる現場(掛かり込み設営〜本番〜バラシ等)を、暦日の連続性だけで機械的に推定するための
-// ヘルパー。日をまたいだ現場名の表記ゆれに備え、現場名一致が無い日でも会場名が一致すれば範囲に含める
-// (現場名一致を優先し、会場名一致は補助的に使う)。実際の現場は長くても数日程度のため、
-// 前後3日を上限として探索する(離れた日程の別公演を誤って同一期間に取り込まないため)。
+// 現場名(またはvenueが同じ場合はvenue)を軸に、指定日を含む「連続した日程」の範囲を求める。
+// 複数日にわたる現場(仕込み〜本番〜バラシ等)を、暦日の連続性から機械的に推定するためのヘルパー。
+// 日をまたいだ現場名の表記ゆれに備え、現場名一致が無い日でも会場名が一致すれば範囲に含める
+// (現場名一致を優先し、会場名一致は補助的に使う)。現場の合間(その現場が入っていない中日)は
+// 最大3日までまたいで連続とみなし、それを超えて現場が入っていない日が続く場合はそこで期間を
+// 打ち切る(合間が無く連続している限り、期間の長さ自体に上限は無い)。
 async function findGigDateRange(env, date, site) {
   const siteRow = await env.DB.prepare(
     "SELECT venue FROM schedule WHERE date=? AND site=? AND type='work' LIMIT 1"
   ).bind(date, site).first();
   const venue = siteRow ? (siteRow.venue || '') : '';
 
-  const WINDOW = 3;
+  const GAP_MAX = 3; // 現場が入っていない日を、最大何日までまたいで連続とみなすか
+  const SAFETY_WINDOW = 60; // DB検索範囲の安全上限(実際の現場でここまで離れることは想定していない)
   const addDays = (s, n) => {
     const [y, m, d] = s.split('-').map(Number);
     return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
   };
-  const winFrom = addDays(date, -WINDOW), winTo = addDays(date, WINDOW);
+  const winFrom = addDays(date, -SAFETY_WINDOW), winTo = addDays(date, SAFETY_WINDOW);
   const matchRows = venue
     ? (await env.DB.prepare(
         "SELECT DISTINCT date FROM schedule WHERE type='work' AND date>=? AND date<=? AND (site=? OR venue=?)"
@@ -1870,9 +1872,21 @@ async function findGigDateRange(env, date, site) {
       ).bind(winFrom, winTo, site).all()).results;
   const matchDates = new Set(matchRows.map(r => r.date));
 
-  let from = date, to = date;
-  while (matchDates.has(addDays(from, -1))) from = addDays(from, -1);
-  while (matchDates.has(addDays(to, 1))) to = addDays(to, 1);
+  const extend = (start, dir) => {
+    let cur = start;
+    while (true) {
+      let bridged = null;
+      for (let g = 1; g <= GAP_MAX + 1; g++) {
+        const cand = addDays(cur, dir * g);
+        if (matchDates.has(cand)) { bridged = cand; break; }
+      }
+      if (!bridged) break;
+      cur = bridged;
+    }
+    return cur;
+  };
+  const from = extend(date, -1);
+  const to = extend(date, 1);
 
   const dates = [];
   for (let d = from; d <= to; d = addDays(d, 1)) dates.push(d);
