@@ -2688,7 +2688,7 @@ async function pageSites(app){
             ${s.registryId?`<span class="muted" style="font-size:11px">(登録のみ・未配置)</span>`:''}
             ${(s.blacklistNames&&s.blacklistNames.length)?`<span class="st-share blacklist" title="ブラックリスト登録あり:${s.blacklistNames.map(h).join('、')}">${icon('clockWarn')} ${s.blacklistNames.length}</span>`:''}
           </button>
-          ${(s.registryId&&canRegister)?`<button type="button" class="btn ghost xs st-site-unregister" data-id="${s.registryId}" title="登録した現場情報を削除">${icon('x',{size:'12px'})}</button>`:''}
+          ${(s.registryId&&canRegister)?`<button type="button" class="st-site-unregister" data-id="${s.registryId}" title="登録した現場情報を削除">${icon('x',{size:'12px'})}</button>`:''}
           </div>
           ${(s.rookies&&s.rookies.length)?`<div class="st-rookie-list">
             ${s.rookies.map(rk=>`<button type="button" class="st-rookie-item" data-report-id="${rk.reportId||''}">${icon('badge',{size:'11px'})} ${h(rk.name)}${rk.reporterName?`<span class="muted"> (報告:${h(rk.reporterName)})</span>`:''}</button>`).join('')}
