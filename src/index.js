@@ -743,6 +743,31 @@ async function clearAbsentFromDaicho(env, rows, editorId) {
   return { clearedPeople, clearedDays: dates.length };
 }
 
+// 台帳取込(不在者を休暇にするcheckAbsentと同じタイミング・同じ判定材料)にあわせて、
+// 手動登録した現場情報(site_registry)のうち、既に無くなったとみなせるものを自動削除する。
+// 「その日の台帳データが今回の取込に含まれていて、かつその現場名が一件も見当たらない」場合だけ
+// 削除する。対象日自体が今回の取込範囲に含まれていない場合は判断材料が無いため削除しない
+// (例:今月分だけ取り込んだ場合、来月分として登録した現場は残す)。
+async function clearAbsentSiteRegistry(env, rows) {
+  const datesSites = {};
+  for (const r of rows) {
+    const date = String(r.date || '').trim();
+    if (!date) continue;
+    if (!datesSites[date]) datesSites[date] = new Set();
+    if (r.site) datesSites[date].add(r.site); // r.site が非空 = その日その現場への実際の配置行(パーサー形式によりtype無しの場合もあるためsiteの有無で判定)
+  }
+  const dates = Object.keys(datesSites);
+  if (!dates.length) return { clearedRegistrations: 0 };
+  const ph = dates.map(() => '?').join(',');
+  const registryRows = (await env.DB.prepare(`SELECT id, date, site FROM site_registry WHERE date IN (${ph})`).bind(...dates).all()).results;
+  const toDelete = registryRows.filter(rg => !datesSites[rg.date].has(rg.site)).map(rg => rg.id);
+  if (toDelete.length) {
+    const ph2 = toDelete.map(() => '?').join(',');
+    await env.DB.prepare(`DELETE FROM site_registry WHERE id IN (${ph2})`).bind(...toDelete).run();
+  }
+  return { clearedRegistrations: toDelete.length };
+}
+
 async function applyImportRows(env, rows, editorId, mode = 'replace-person-day', srcLabel = 'spreadsheet', isDaicho = false, opt = {}) {
   const ts = jstTs();
   const resolve = await loadWageResolver(env);
@@ -2414,7 +2439,7 @@ async function api(req, env, url) {
       await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_run',?)").bind(jstDate()).run();
       return J({
         ok: 1, okCount: r.okCount, ngCount: r.ngCount, totalApplied: r.totalApplied,
-        results: r.results, clearedAbsent: r.absentResult.clearedPeople, checkedAbsent: checkAbsent,
+        results: r.results, clearedAbsent: r.absentResult.clearedPeople, clearedRegistrations: r.registryResult.clearedRegistrations, checkedAbsent: checkAbsent,
         remainingCount: remainRaw.length,
       });
     } catch (e) {
@@ -2469,9 +2494,12 @@ async function api(req, env, url) {
     // 不在者の休暇化は、既定オフ(複数日をまたぐ取込のため、日ごとに対象者が違うと誤爆しやすい)。
     // 明示的にcheckAbsentが指定された場合のみ、今回アップロードした全ファイル分をまとめて判定する。
     let absentResult = { clearedPeople: 0, clearedDays: 0 };
+    let registryResult = { clearedRegistrations: 0 };
     if (body.checkAbsent && allRowsCombined.length) {
       try { absentResult = await clearAbsentFromDaicho(env, allRowsCombined, me.id); }
       catch (e) { console.error('clearAbsentFromDaicho failed:', e); }
+      try { registryResult = await clearAbsentSiteRegistry(env, allRowsCombined); }
+      catch (e) { console.error('clearAbsentSiteRegistry failed:', e); }
       try { await matchRookieAndBlacklist(env, allRowsCombined); } catch (e) {}
     } else if (allRowsCombined.length) {
       try { await matchRookieAndBlacklist(env, allRowsCombined); } catch (e) {}
@@ -2479,7 +2507,7 @@ async function api(req, env, url) {
 
     const okCount = results.filter(r => r.ok).length;
     const totalApplied = results.reduce((s, r) => s + (r.ok ? (r.applied || 0) : 0), 0);
-    return J({ ok: 1, okCount, ngCount: results.length - okCount, totalApplied, results, clearedAbsent: absentResult.clearedPeople });
+    return J({ ok: 1, okCount, ngCount: results.length - okCount, totalApplied, results, clearedAbsent: absentResult.clearedPeople, clearedRegistrations: registryResult.clearedRegistrations });
   }
 
   // ---- 台帳保管(R2)に既に保存済みのExcelファイルから、再度取り込む(新規機能) ----
@@ -2522,9 +2550,12 @@ async function api(req, env, url) {
     }
 
     let absentResult = { clearedPeople: 0, clearedDays: 0 };
+    let registryResult = { clearedRegistrations: 0 };
     if (body.checkAbsent && allRowsCombined.length) {
       try { absentResult = await clearAbsentFromDaicho(env, allRowsCombined, me.id); }
       catch (e) { console.error('clearAbsentFromDaicho failed:', e); }
+      try { registryResult = await clearAbsentSiteRegistry(env, allRowsCombined); }
+      catch (e) { console.error('clearAbsentSiteRegistry failed:', e); }
       try { await matchRookieAndBlacklist(env, allRowsCombined); } catch (e) {}
     } else if (allRowsCombined.length) {
       try { await matchRookieAndBlacklist(env, allRowsCombined); } catch (e) {}
@@ -2532,7 +2563,7 @@ async function api(req, env, url) {
 
     const okCount = results.filter(r => r.ok).length;
     const totalApplied = results.reduce((s, r) => s + (r.ok ? (r.applied || 0) : 0), 0);
-    return J({ ok: 1, okCount, ngCount: results.length - okCount, totalApplied, results, clearedAbsent: absentResult.clearedPeople });
+    return J({ ok: 1, okCount, ngCount: results.length - okCount, totalApplied, results, clearedAbsent: absentResult.clearedPeople, clearedRegistrations: registryResult.clearedRegistrations });
   }
 
   // ---- 給与確定ロック期間の設定 ----
@@ -3404,6 +3435,14 @@ async function api(req, env, url) {
     if (dup) return ERR('同じ日付・現場名が既に登録されています');
     await env.DB.prepare('INSERT INTO site_registry(date,site,venue,created_by,created_at) VALUES(?,?,?,?,?)')
       .bind(date, site, venue, me.id, jstTs()).run();
+    return J({ ok: 1 });
+  }
+
+  // ---- 現場一覧: 手動登録した現場情報の削除(手配者以上・手配モード中のみ) ----
+  let srgm;
+  if (method === 'DELETE' && (srgm = path.match(/^\/sites\/register\/(\d+)$/))) {
+    if (!handlerMode) return ERR('手配者モードでのみ削除できます', 403);
+    await env.DB.prepare('DELETE FROM site_registry WHERE id=?').bind(Number(srgm[1])).run();
     return J({ ok: 1 });
   }
 
@@ -4369,16 +4408,19 @@ async function runDaichoReload(env, urls, opt = {}) {
   //  誤って休暇にしてしまうため、必ず全ファイル分を集めてから最後に1回だけ行う。
   //  一部URLのみの手動実行では、他の未選択ファイルの人を巻き込む恐れがあるため実行しない)
   let absentResult = { clearedPeople: 0, clearedDays: 0 };
+  let registryResult = { clearedRegistrations: 0 };
   if (allRowsCombined.length) {
     if (opt.checkAbsent) {
       try { absentResult = await clearAbsentFromDaicho(env, allRowsCombined, editorId); }
       catch (e) { console.error('clearAbsentFromDaicho failed:', e); }
+      try { registryResult = await clearAbsentSiteRegistry(env, allRowsCombined); }
+      catch (e) { console.error('clearAbsentSiteRegistry failed:', e); }
     }
     try { await matchRookieAndBlacklist(env, allRowsCombined); }
     catch (e) { console.error('matchRookieAndBlacklist failed:', e); }
   }
 
-  return { okCount, ngCount, totalApplied, results, absentResult, editorId };
+  return { okCount, ngCount, totalApplied, results, absentResult, registryResult, editorId };
 }
 
 async function cronDaichoReload(env) {
@@ -4413,7 +4455,7 @@ async function cronDaichoReload(env) {
   // 取り込み結果を確定・通知しておく(この後の不在者判定・照合処理でタイムアウトしても、
   // 取り込み自体の成否は必ず管理者に届くようにするため)
   await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_result',?)").bind(
-    JSON.stringify({ ts: jstTs(), count: urls.length, results: r.results, clearedAbsent: r.absentResult.clearedPeople })
+    JSON.stringify({ ts: jstTs(), count: urls.length, results: r.results, clearedAbsent: r.absentResult.clearedPeople, clearedRegistrations: r.registryResult.clearedRegistrations })
   ).run();
   try {
     const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
@@ -4423,6 +4465,9 @@ async function cronDaichoReload(env) {
         '#/import?result=daicho');
       if (r.absentResult.clearedPeople) {
         await notify(env, admins.map(a => a.id), 'sched_import', `🌙 台帳自動再取り込みに伴い、不在者の休暇化を${r.absentResult.clearedPeople}件行いました。`, '#/import?result=daicho');
+      }
+      if (r.registryResult.clearedRegistrations) {
+        await notify(env, admins.map(a => a.id), 'sched_import', `🌙 台帳自動再取り込みに伴い、台帳に見当たらなくなった登録現場を${r.registryResult.clearedRegistrations}件削除しました。`, '#/sites');
       }
     }
   } catch (e) {}

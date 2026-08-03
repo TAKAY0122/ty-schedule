@@ -158,7 +158,7 @@ const UPDATE_ITEMS = [
   { v:5, icon:'layoutGrid', title:'複数日の現場に「稼働表」を追加', desc:'現場一覧の現場詳細から「稼働表」を押すと、その現場が行われている期間(前後の連続した日程を自動判定)に入っている人だけを、日付×人の一覧で確認できるようになりました。現場に入っていない日も、休暇・NG・別の現場のどれかが分かります。', show: () => LV[ME.role] >= 1 },
   { v:5, icon:'clockWarn', title:'現場詳細に「過去・今後の公演」を追加', desc:'現場詳細画面に、同じ会場・同じアーティスト(現場名)の過去と今後の公演一覧を追加しました。押すとその公演の詳細(入っていた人・時間等)がすぐに確認できます。', show: () => LV[ME.role] >= 1 },
   { v:6, icon:'edit', title:'現場一覧で現場名・会場をまとめて変更できるように', desc:'入力者によってバラバラになりがちな現場名・会場の表記を、現場一覧でチェックを入れて選び、まとめて統一名称に変更できるようになりました(手配者以上)。', show: () => LV[ME.role] >= 2 },
-  { v:7, icon:'plus', title:'現場一覧に、現場情報を先に登録できるように', desc:'これまで現場一覧はメンバーが配置された現場だけを表示していましたが、まだ誰も配置していない現場も先に登録して表示しておけるようになりました(手配者以上・手配モード中)。登録後は他の現場と同じようにタップしてメンバーを追加できます。', show: () => LV[ME.role] >= 2 },
+  { v:7, icon:'plus', title:'現場一覧に、現場情報を先に登録できるように', desc:'これまで現場一覧はメンバーが配置された現場だけを表示していましたが、まだ誰も配置していない現場も先に登録して表示しておけるようになりました(手配者以上・手配モード中)。登録後は他の現場と同じようにタップしてメンバーを追加でき、不要になれば削除もできます。台帳取込で「登場しない人を休暇に変更する」にチェックを入れた際、その現場が台帳に見当たらなくなっていれば自動的に削除されます。', show: () => LV[ME.role] >= 2 },
 ];
 // 機能公開設定の対象画面。バックエンドのFEATURE_KEYSと必ず一致させる。
 // 新しい画面を追加したら、ここと src/index.js の FEATURE_KEYS の両方に追記する。
@@ -2688,6 +2688,7 @@ async function pageSites(app){
             ${s.registryId?`<span class="muted" style="font-size:11px">(登録のみ・未配置)</span>`:''}
             ${(s.blacklistNames&&s.blacklistNames.length)?`<span class="st-share blacklist" title="ブラックリスト登録あり:${s.blacklistNames.map(h).join('、')}">${icon('clockWarn')} ${s.blacklistNames.length}</span>`:''}
           </button>
+          ${(s.registryId&&canRegister)?`<button type="button" class="btn ghost xs st-site-unregister" data-id="${s.registryId}" title="登録した現場情報を削除">${icon('x',{size:'12px'})}</button>`:''}
           </div>
           ${(s.rookies&&s.rookies.length)?`<div class="st-rookie-list">
             ${s.rookies.map(rk=>`<button type="button" class="st-rookie-item" data-report-id="${rk.reportId||''}">${icon('badge',{size:'11px'})} ${h(rk.name)}${rk.reporterName?`<span class="muted"> (報告:${h(rk.reporterName)})</span>`:''}</button>`).join('')}
@@ -2714,6 +2715,14 @@ async function pageSites(app){
   app.querySelectorAll('.st-site').forEach(b => b.onclick = () => openSiteModal(b.dataset.date, b.dataset.site));
   app.querySelectorAll('.st-rookie-item').forEach(b => b.onclick = () => {
     location.hash = b.dataset.reportId ? `#/reports?open=${b.dataset.reportId}` : '#/reports';
+  });
+  app.querySelectorAll('.st-site-unregister').forEach(b => b.onclick = async (e) => {
+    e.stopPropagation();
+    if(!confirm('登録した現場情報を削除しますか？')) return;
+    await withLoading(b, async () => {
+      try{ await api(`/sites/register/${b.dataset.id}`, { method:'DELETE' }); pageSites(app); }
+      catch(err){ popup(err.message,'error'); }
+    });
   });
   if(canRename){
     app.querySelectorAll('.st-site-check').forEach(cb => cb.onclick = (e) => {
@@ -4472,7 +4481,7 @@ async function pageImport(app, hash){
           try{
             const r = await api('/daicho-reload-run-now', { method:'POST', body:{ urls: selected, checkAbsent } });
             const hasChanges = (r.results||[]).some(x => x.changes && x.changes.length);
-            msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${r.checkedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''} / 残りの保存済みURL ${r.remainingCount}件${hasChanges?` <button class="btn ghost xs" id="dr-run-show-changes">変更内容を見る</button>`:''}<br><span class="muted" style="font-size:11px">今夜の深夜自動再取り込みは、今回の手動実行分としてスキップされます。</span><br>`
+            msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${r.checkedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''}${r.checkedAbsent&&r.clearedRegistrations?` / 台帳に見当たらない登録現場を削除 ${r.clearedRegistrations}件`:''} / 残りの保存済みURL ${r.remainingCount}件${hasChanges?` <button class="btn ghost xs" id="dr-run-show-changes">変更内容を見る</button>`:''}<br><span class="muted" style="font-size:11px">今夜の深夜自動再取り込みは、今回の手動実行分としてスキップされます。</span><br>`
               + r.results.map(x=>`${x.ok?icon('checkCircle',{size:'12px'}):icon('xCircle',{size:'12px'})} ${h((x.url||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>');
             const showBtn2 = $('#dr-run-show-changes');
             if(showBtn2) showBtn2.onclick = () => showDaichoChanges({ ts: '今回の実行結果', results: r.results });
@@ -4535,7 +4544,7 @@ async function pageImport(app, hash){
           const r = res && res.result;
           const hasChanges = r && (r.results||[]).some(x => x.changes && x.changes.length);
           el.innerHTML = `<div style="margin-bottom:6px">現在の保存済みURL: <b>${savedCount}件</b>${savedCount?` <span class="muted">(次回0:00に自動再取り込み後、削除されます)</span>`:' <span class="muted">(再取り込み対象なし)</span>'}</div>`
-            + (r ? `<div class="muted" style="word-break:break-all">最終実行: ${h(r.ts)} / ${r.count}件のURLを再取り込み${r.clearedAbsent?` / ${icon('sun',{size:'12px'})} どのファイルにも登場しなかった人の現場を${r.clearedAbsent}件、休暇に変更`:''}${hasChanges?` <button class="btn ghost xs" id="daicho-show-changes">変更内容を見る</button>`:''}<br>${r.results.map(x=>`${x.ok?icon('checkCircle',{size:'12px'}):icon('xCircle',{size:'12px'})} ${h((x.url||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>')}</div>` : '<div class="muted">まだ自動実行されていません</div>');
+            + (r ? `<div class="muted" style="word-break:break-all">最終実行: ${h(r.ts)} / ${r.count}件のURLを再取り込み${r.clearedAbsent?` / ${icon('sun',{size:'12px'})} どのファイルにも登場しなかった人の現場を${r.clearedAbsent}件、休暇に変更`:''}${r.clearedRegistrations?` / 台帳に見当たらない登録現場を${r.clearedRegistrations}件削除`:''}${hasChanges?` <button class="btn ghost xs" id="daicho-show-changes">変更内容を見る</button>`:''}<br>${r.results.map(x=>`${x.ok?icon('checkCircle',{size:'12px'}):icon('xCircle',{size:'12px'})} ${h((x.url||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>')}</div>` : '<div class="muted">まだ自動実行されていません</div>');
           const showBtn = $('#daicho-show-changes');
           if(showBtn) showBtn.onclick = () => showDaichoChanges(r);
           // 通知から「#/import?result=daicho」で遷移してきた場合、変更内容を自動で開く
@@ -4608,7 +4617,7 @@ async function pageImport(app, hash){
             fileBase64: await fileToBase64(f.file),
           })));
           const r = await api('/import-excel-daicho', { method:'POST', body:{ files: filesPayload, checkAbsent } });
-          msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${checkAbsent&&r.clearedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''}<br>`
+          msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${checkAbsent&&r.clearedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''}${checkAbsent&&r.clearedRegistrations?` / 台帳に見当たらない登録現場を削除 ${r.clearedRegistrations}件`:''}<br>`
             + r.results.map(x=>`${x.ok?icon('checkCircle',{size:'12px'}):icon('xCircle',{size:'12px'})} ${h(x.fileName)}${x.targetDate?` (${h(x.targetDate)})`:''} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>');
           popup(`Excel取り込みが完了しました(${r.okCount}件成功)`);
           xlState.files = [];
@@ -5619,7 +5628,7 @@ async function pageDaicho(app){
         await withLoading(runBtn, async () => {
           try{
             const r = await api('/daicho/reimport-from-archive', { method:'POST', body:{ items, checkAbsent } });
-            msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${checkAbsent&&r.clearedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''}<br>`
+            msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${checkAbsent&&r.clearedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''}${checkAbsent&&r.clearedRegistrations?` / 台帳に見当たらない登録現場を削除 ${r.clearedRegistrations}件`:''}<br>`
               + r.results.map(x=>`${x.ok?icon('checkCircle',{size:'12px'}):icon('xCircle',{size:'12px'})} ${h(x.fileName)}${x.targetDate?` (${h(x.targetDate)})`:''} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>');
             popup(`取り込みが完了しました(${r.okCount}件成功)`);
           }catch(e){ msgEl.innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
