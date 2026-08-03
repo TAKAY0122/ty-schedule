@@ -353,6 +353,20 @@ CREATE TABLE IF NOT EXISTS rookie_site_matches(
   UNIQUE(kind, matched_name, date, site)
 );
 
+-- 現場一覧は基本的にscheduleの実績から抽出するが、まだ誰も配置されていない現場も
+-- 事前に一覧へ表示できるよう、手配者以上が手配モード中に手動登録できる(GET /sites参照)。
+-- 同じ(date,site)にscheduleの実績ができた時点で、一覧側の表示はそちらに切り替わる。
+CREATE TABLE IF NOT EXISTS site_registry(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL,
+  site TEXT NOT NULL,
+  venue TEXT DEFAULT '',
+  created_by INTEGER,
+  created_at TEXT,
+  UNIQUE(date, site)
+);
+CREATE INDEX IF NOT EXISTS idx_site_registry_date ON site_registry(date);
+
 -- ログイン失敗回数の記録(ブルートフォース攻撃対策)。登録番号ごとに一定回数失敗すると
 -- 一定時間ロックする。regnoが存在しない/しないに関わらず記録し、アカウント有無の推測も防ぐ。
 CREATE TABLE IF NOT EXISTS login_attempts(

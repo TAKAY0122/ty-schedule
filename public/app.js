@@ -140,7 +140,7 @@ let UPDATE_NOTICE_SHOWN = false; // 1セッション中に一度だけ表示す�
 // アップデートのお知らせに表示する項目。新機能を追加したら、ここに { v: 新しいバージョン番号, ... } で
 // 追記し、CURRENT_UPDATE_VERSION(この下)をインクリメントする。過去の項目はそのまま残しておいてよい
 // (各ユーザーは自分がまだ見ていないバージョン分の項目だけを見るため、勝手に重複表示されることはない)。
-const CURRENT_UPDATE_VERSION = 6;
+const CURRENT_UPDATE_VERSION = 7;
 const UPDATE_ITEMS = [
   { v:1, icon:'home', title:'ホーム画面を追加', desc:'ログイン後、今日・明日の現場や通知が一目で見られるようになりました。', show: () => true },
   { v:1, icon:'handRaise', title:'休み希望・稼働時間の提出', desc:'マイスケジュールから、休み希望や「この時間なら動ける」を手配担当者に伝えられます。', show: () => true },
@@ -158,6 +158,7 @@ const UPDATE_ITEMS = [
   { v:5, icon:'layoutGrid', title:'複数日の現場に「稼働表」を追加', desc:'現場一覧の現場詳細から「稼働表」を押すと、その現場が行われている期間(前後の連続した日程を自動判定)に入っている人だけを、日付×人の一覧で確認できるようになりました。現場に入っていない日も、休暇・NG・別の現場のどれかが分かります。', show: () => LV[ME.role] >= 1 },
   { v:5, icon:'clockWarn', title:'現場詳細に「過去・今後の公演」を追加', desc:'現場詳細画面に、同じ会場・同じアーティスト(現場名)の過去と今後の公演一覧を追加しました。押すとその公演の詳細(入っていた人・時間等)がすぐに確認できます。', show: () => LV[ME.role] >= 1 },
   { v:6, icon:'edit', title:'現場一覧で現場名・会場をまとめて変更できるように', desc:'入力者によってバラバラになりがちな現場名・会場の表記を、現場一覧でチェックを入れて選び、まとめて統一名称に変更できるようになりました(手配者以上)。', show: () => LV[ME.role] >= 2 },
+  { v:7, icon:'plus', title:'現場一覧に、現場情報を先に登録できるように', desc:'これまで現場一覧はメンバーが配置された現場だけを表示していましたが、まだ誰も配置していない現場も先に登録して表示しておけるようになりました(手配者以上・手配モード中)。登録後は他の現場と同じようにタップしてメンバーを追加できます。', show: () => LV[ME.role] >= 2 },
 ];
 // 機能公開設定の対象画面。バックエンドのFEATURE_KEYSと必ず一致させる。
 // 新しい画面を追加したら、ここと src/index.js の FEATURE_KEYS の両方に追記する。
@@ -679,14 +680,16 @@ async function openSiteModal(date, site){
   const canAdd = ME.handler === 1; // 手配者モードのときメンバー追加・編集可
   const canViewSched = LV[ME.role] >= 1; // 名前タップでスケジュールへ遷移できるか(チーフ以上)
   const canRoster = has('sites_view'); // 稼働表・過去公演を見られるか(このモーダル自体を開ける権限と同じ)
-  const [list, breaksArr, history] = await Promise.all([
+  const [siteData, breaksArr, history] = await Promise.all([
     api(`/site-members?date=${date}&site=${encodeURIComponent(site)}`),
     canViewSched ? api(`/site-record-breaks?date=${date}&site=${encodeURIComponent(site)}`).catch(()=>[]) : Promise.resolve([]),
     canRoster ? api(`/site-history?date=${date}&site=${encodeURIComponent(site)}`).catch(()=>null) : Promise.resolve(null),
   ]);
+  const list = siteData.list;
   // 休憩時間の合計(チーフ以上に公開。6h超45分/8h超60分の目安に届いていない場合だけ軽く表示)
   const breakByUid = {}; breaksArr.forEach(b => breakByUid[b.uid] = b);
-  const venue = (list.find(p => p.venue) || {}).venue || '';
+  // 誰も配置されていない現場(手動登録のみ)は、site-membersが代わりに返す登録済み会場を使う
+  const venue = (list.find(p => p.venue) || {}).venue || siteData.venue || '';
   const loadEnd = (list.find(p => p.load_end) || {}).load_end || '';
   const showEnd = (list.find(p => p.show_end) || {}).show_end || '';
   const chiefs = list.filter(p => p.role !== 'member');
@@ -2642,6 +2645,7 @@ async function pageSites(app){
   if(!stSites.openDates) stSites.openDates = new Set(); // 古い保存状態との互換
   if(!stSites.selected) stSites.selected = new Set();
   const canRename = has('site_manage'); // 現場名・会場名の一括変更(手配者以上)
+  const canRegister = ME.handler===1 && has('site_manage'); // 現場情報の手動登録(手配者以上・手配モード中のみ)
   const month = stSites.month;
   const sites = await api(`/sites?month=${month}`);
   // 日付ごとにグループ化
@@ -2662,6 +2666,7 @@ async function pageSites(app){
       <b style="min-width:110px;text-align:center">${y}年 ${mo}月</b>
       <button class="btn ghost sm" id="st-next">▶</button>
       ${dates.length ? `<button class="btn ghost sm" id="st-toggle-all">${allOpen ? icon('chevronsUp',{size:'12px'}) : icon('chevronsDown',{size:'12px'})} ${allOpen ? '全て閉じる' : '全て開く'}</button>` : ''}
+      ${canRegister ? `<button class="btn ghost sm" id="st-register-btn">${icon('plus',{size:'12px'})} 現場を登録</button>` : ''}
       ${ME.handler===1 ? '<span class="muted" style="margin-left:auto">現場をタップ → メンバー確認・追加</span>' : '<span class="muted" style="margin-left:auto">現場をタップ → メンバー確認</span>'}
     </div>
     ${canRename && stSites.selected.size ? `<div class="row" style="margin-bottom:12px;gap:8px;align-items:center;background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:8px 10px;flex-wrap:wrap">
@@ -2680,6 +2685,7 @@ async function pageSites(app){
             <span class="st-site-name">${h(s.site)}</span>
             ${s.venue?`<span class="st-site-venue">${h(s.venue)}</span>`:''}
             <span class="st-site-cnt">${s.cnt}名</span>
+            ${s.registryId?`<span class="muted" style="font-size:11px">(登録のみ・未配置)</span>`:''}
             ${(s.blacklistNames&&s.blacklistNames.length)?`<span class="st-share blacklist" title="ブラックリスト登録あり:${s.blacklistNames.map(h).join('、')}">${icon('clockWarn')} ${s.blacklistNames.length}</span>`:''}
           </button>
           </div>
@@ -2698,6 +2704,8 @@ async function pageSites(app){
     else stSites.openDates = new Set(dates);
     pageSites(app);
   };
+  const registerBtn = $('#st-register-btn');
+  if(registerBtn) registerBtn.onclick = () => openSiteRegister(`${month}-01`, () => pageSites(app));
   // 開閉状態を都度PAGE_STATEに記録しておく(現場編集後の再描画で復元するため)
   app.querySelectorAll('.st-day').forEach(d => d.addEventListener('toggle', () => {
     if(d.open) stSites.openDates.add(d.dataset.date);
@@ -2721,6 +2729,33 @@ async function pageSites(app){
       openSiteBulkRename(targets, () => { stSites.selected = new Set(); pageSites(app); });
     };
   }
+}
+
+// まだ誰もメンバーが配置されていない現場を、先に現場一覧へ表示させておくための登録モーダル。
+// 実際にメンバーを配置すると(schedule側に実績ができると)、そちらの表示に自動的に切り替わる。
+function openSiteRegister(defaultDate, onDone){
+  modal(`<h3>現場を登録</h3>
+    <div class="muted" style="margin-bottom:10px">まだ誰も配置されていない現場を、先に現場一覧に表示させておけます。実際にメンバーを配置すると、そちらの内容が優先されます。</div>
+    <div class="form-grid" style="grid-template-columns:70px 1fr">
+      <label>日付</label><input type="date" id="sreg-date" value="${h(defaultDate||'')}">
+      <label>現場名</label><input id="sreg-site" placeholder="例:〇〇フェス">
+      <label>会場</label><input id="sreg-venue" placeholder="任意">
+    </div>
+    <div class="row" style="margin-top:14px"><button class="btn gold" id="sreg-save" style="flex:1">登録する</button></div>`);
+  $('#sreg-save').onclick = async () => {
+    const date = $('#sreg-date').value;
+    const site = $('#sreg-site').value.trim();
+    const venue = $('#sreg-venue').value.trim();
+    if(!date || !site){ popup('日付と現場名を入力してください','error'); return; }
+    await withLoading($('#sreg-save'), async () => {
+      try{
+        await api('/sites/register', { method:'POST', body:{ date, site, venue } });
+        closeModal();
+        popup('現場を登録しました');
+        if(onDone) onDone();
+      }catch(e){ popup(e.message,'error'); }
+    });
+  };
 }
 
 // 現場一覧でチェックした複数の(date,site,venue)を、まとめて統一の現場名・会場名に変更する。

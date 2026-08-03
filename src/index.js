@@ -126,7 +126,7 @@ async function pbkdf2(pw, salt) {
 // アプリの機能アップデートのお知らせに使うバージョン番号。新しいお知らせを追加したら値を増やし、
 // updateNoticeContent()にも内容を追記する。既にパスワードを変更済み(must_change=0)の既存ユーザーが
 // ログインした際、seen_update_version がこれより小さければ「アップデートのお知らせ」を表示する。
-const CURRENT_UPDATE_VERSION = 6;
+const CURRENT_UPDATE_VERSION = 7;
 
 const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0, must_change: u.must_change ? 1 : 0, extra_perms: getPerms(u), revoked_perms: getRevokedPerms(u), notify_rookie: u.notify_rookie === null || u.notify_rookie === undefined ? null : (u.notify_rookie ? 1 : 0), manner_done: u.manner_done ? 1 : 0, team2_done: u.team2_done ? 1 : 0, su_done: u.su_done ? 1 : 0, graduate_flag: u.graduate_flag ? 1 : 0, promotion_pending_date: u.promotion_pending_date || null, promotion_pending_rank: u.promotion_pending_rank || null, needsUpdateNotice: !u.must_change && (u.seen_update_version || 0) < CURRENT_UPDATE_VERSION, seenUpdateVersion: u.seen_update_version || 0 });
 
@@ -3351,6 +3351,19 @@ async function api(req, env, url) {
     const rows = (await env.DB.prepare(
       "SELECT date, site, venue, COUNT(*) AS cnt FROM schedule WHERE type='work' AND site<>'' AND date LIKE ? GROUP BY date, site, venue ORDER BY date, site"
     ).bind(month + '%').all()).results;
+    // 手動登録された現場(site_registry。まだ誰も配置されていない現場を、事前に一覧へ出すための機能)。
+    // 実績(schedule)側に同じ(date,site)が既にある場合は、そちらを優先し登録側は表示しない。
+    const registryRows = (await env.DB.prepare(
+      'SELECT id, date, site, venue FROM site_registry WHERE date LIKE ? ORDER BY date, site'
+    ).bind(month + '%').all()).results;
+    const existingKeys = new Set(rows.map(r => r.date + '|' + r.site));
+    for (const rg of registryRows) {
+      const key = rg.date + '|' + rg.site;
+      if (existingKeys.has(key)) continue;
+      rows.push({ date: rg.date, site: rg.site, venue: rg.venue || '', cnt: 0, registryId: rg.id });
+      existingKeys.add(key);
+    }
+    rows.sort((a, b) => a.date === b.date ? a.site.localeCompare(b.site) : (a.date < b.date ? -1 : 1));
     // 新人共有・要注意共有(台帳と新人報告/ブラックリストの氏名マッチ)がある現場に印を付ける。
     // 良い人(新人報告)と悪い人(ブラックリスト)は別々に持たせ、表示側で混同しないようにする。
     // 新人報告は、誰が報告したか・タップで報告詳細に飛べるよう、report_id/reporter_nameも一緒に返す。
@@ -3371,6 +3384,27 @@ async function api(req, env, url) {
       r.blacklistNames = blacklistMap[key] || [];
     }
     return J(rows);
+  }
+
+  // ---- 現場一覧: 現場情報の手動登録(手配者以上・手配モード中のみ)。
+  //      まだ誰もメンバーが配置されていない現場を、先に現場一覧へ表示させておくための機能。
+  //      同じ(date,site)に実績(schedule)ができた時点で、そちらの表示に切り替わる(GET /sites参照)。
+  if (method === 'POST' && path === '/sites/register') {
+    if (!handlerMode) return ERR('手配者モードでのみ登録できます', 403);
+    const date = typeof body.date === 'string' ? body.date.trim() : '';
+    const site = typeof body.site === 'string' ? body.site.trim() : '';
+    const venue = typeof body.venue === 'string' ? body.venue.trim() : '';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return ERR('日付を指定してください');
+    if (!site) return ERR('現場名を入力してください');
+    const already = await env.DB.prepare(
+      "SELECT 1 FROM schedule WHERE type='work' AND date=? AND site=? LIMIT 1"
+    ).bind(date, site).first();
+    if (already) return ERR('既にメンバーが配置されている現場です(現場一覧に表示されています)');
+    const dup = await env.DB.prepare('SELECT 1 FROM site_registry WHERE date=? AND site=? LIMIT 1').bind(date, site).first();
+    if (dup) return ERR('同じ日付・現場名が既に登録されています');
+    await env.DB.prepare('INSERT INTO site_registry(date,site,venue,created_by,created_at) VALUES(?,?,?,?,?)')
+      .bind(date, site, venue, me.id, jstTs()).run();
+    return J({ ok: 1 });
   }
 
   // ---- 現場一覧: 選択した複数の現場をまとめて改名(手配者以上) ----
@@ -3427,7 +3461,13 @@ async function api(req, env, url) {
       "SELECT u.id as uid,u.name,u.role,u.rank,u.ka,u.han,u.station,s.venue,s.tin,s.tout,s.note,s.load_end,s.show_end FROM schedule s JOIN users u ON u.id=s.user_id WHERE s.date=? AND s.site=? AND s.type='work' ORDER BY CASE u.role WHEN 'admin' THEN 0 WHEN 'handler' THEN 1 WHEN 'chief' THEN 2 ELSE 3 END, u.regno"
     ).bind(date, site).all()).results;
     if (!has(me, 'site_pay')) for (const r of rows) { r.tin = ''; r.tout = ''; } // IN/OUTを表示できるか
-    return J(rows);
+    // まだ誰も配置されていない現場は、手動登録(site_registry)側の会場情報を代わりに返す
+    let registryVenue = '';
+    if (!rows.length) {
+      const rg = await env.DB.prepare('SELECT venue FROM site_registry WHERE date=? AND site=? LIMIT 1').bind(date, site).first();
+      registryVenue = (rg && rg.venue) || '';
+    }
+    return J({ list: rows, venue: registryVenue });
   }
 
   // ---- 現場の稼働表(チーフ以上)。複数日にわたる現場について、その現場が行われている
