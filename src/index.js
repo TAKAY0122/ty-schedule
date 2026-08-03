@@ -26,6 +26,7 @@ const PERMS = {
   daicho_manage:   { label: '台帳保管の閲覧・ダウンロード・削除', baseLv: 3 },
   dashboard_view:  { label: '管理者ダッシュボードの閲覧', baseLv: 3 },
   member_summary_view: { label: '個人の年間稼働サマリー・備考欄の閲覧', baseLv: 2 },
+  activity_view:   { label: 'ログイン中メンバーの閲覧中ページの確認', baseLv: 3 },
 };
 function getPerms(u) { try { return JSON.parse(u.extra_perms || '[]'); } catch (e) { return []; } }
 function getRevokedPerms(u) { try { return JSON.parse(u.revoked_perms || '[]'); } catch (e) { return []; } }
@@ -126,7 +127,7 @@ async function pbkdf2(pw, salt) {
 // アプリの機能アップデートのお知らせに使うバージョン番号。新しいお知らせを追加したら値を増やし、
 // updateNoticeContent()にも内容を追記する。既にパスワードを変更済み(must_change=0)の既存ユーザーが
 // ログインした際、seen_update_version がこれより小さければ「アップデートのお知らせ」を表示する。
-const CURRENT_UPDATE_VERSION = 7;
+const CURRENT_UPDATE_VERSION = 8;
 
 const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0, must_change: u.must_change ? 1 : 0, extra_perms: getPerms(u), revoked_perms: getRevokedPerms(u), notify_rookie: u.notify_rookie === null || u.notify_rookie === undefined ? null : (u.notify_rookie ? 1 : 0), manner_done: u.manner_done ? 1 : 0, team2_done: u.team2_done ? 1 : 0, su_done: u.su_done ? 1 : 0, graduate_flag: u.graduate_flag ? 1 : 0, promotion_pending_date: u.promotion_pending_date || null, promotion_pending_rank: u.promotion_pending_rank || null, needsUpdateNotice: !u.must_change && (u.seen_update_version || 0) < CURRENT_UPDATE_VERSION, seenUpdateVersion: u.seen_update_version || 0 });
 
@@ -1821,7 +1822,12 @@ async function auth(req, env) {
     await env.DB.prepare('DELETE FROM sessions WHERE token=?').bind(t).run();
     return null;
   }
-  await env.DB.prepare('UPDATE sessions SET last_seen=? WHERE token=?').bind(now, t).run();
+  // フロントエンドがX-Pageヘッダーで現在の画面(location.hash)を送ってくるので、
+  // last_seenの更新と同じタイミングでlast_pageも記録しておく(管理者以上が
+  // 「ログイン中メンバーが何を見ているか」「セッションが何を見ていたか」を確認できるようにするため)。
+  const page = (req.headers.get('x-page') || '').slice(0, 100);
+  if (page) await env.DB.prepare('UPDATE sessions SET last_seen=?, last_page=? WHERE token=?').bind(now, page, t).run();
+  else await env.DB.prepare('UPDATE sessions SET last_seen=? WHERE token=?').bind(now, t).run();
   return s;
 }
 
@@ -4082,8 +4088,12 @@ async function api(req, env, url) {
   // ---- 手配者専用 ----
   if (method === 'GET' && path === '/online') {
     if (!handlerMode && !has(me, 'handler_tools')) return ERR('ページが見つかりません', 404);
+    // 「今どのページを見ているか」はactivity_view権限(管理者以上)を持つ人にだけ含める
+    const canSeeActivity = has(me, 'activity_view');
     const rows = (await env.DB.prepare(
-      'SELECT u.id AS uid,u.name,u.role,u.regno,MAX(s.last_seen) AS last_seen,MAX(s.handler) AS handler FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.last_seen>? GROUP BY u.id ORDER BY last_seen DESC'
+      `SELECT u.id AS uid,u.name,u.role,u.regno,MAX(s.last_seen) AS last_seen,MAX(s.handler) AS handler
+       ${canSeeActivity ? ",(SELECT s2.last_page FROM sessions s2 WHERE s2.user_id=u.id ORDER BY s2.last_seen DESC LIMIT 1) AS last_page" : ''}
+       FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.last_seen>? GROUP BY u.id ORDER BY last_seen DESC`
     ).bind(Date.now() - 120000).all()).results;
     return J(rows);
   }
@@ -4227,7 +4237,7 @@ async function api(req, env, url) {
       reports: "SELECT ts AS 日時, reporter_name AS 報告者, candidate_name AS 候補者, candidate_grade AS 学年, first_chief AS '1次_連絡チーフ', first_note AS '1次_所感', s_motivation AS やる気, s_response AS 受け答え, s_total AS 総合点, draft AS ドラフト, plan AS 育成計画, checker AS チェック者, next_site AS 次回現場, next_date AS 次回日付, status AS 状態 FROM reports ORDER BY id DESC",
       blacklist: "SELECT ts AS 登録日時, date AS 日付, reporter AS 報告者, name AS 名前, s_talk AS 会話, s_dress AS 服装, s_groom AS 身なり, s_late AS 遅刻, s_work AS 業務, reason AS 理由, added_by AS 登録者 FROM blacklist ORDER BY id DESC",
       notifications: "SELECT n.ts AS 日時, u.name AS 宛先, n.message AS 内容, CASE n.read WHEN 1 THEN '既読' ELSE '未読' END AS 状態 FROM notifications n JOIN users u ON u.id=n.user_id ORDER BY n.id DESC LIMIT 500",
-      sessions: "SELECT u.name AS 氏名, u.regno AS 登録番号, CASE s.handler WHEN 1 THEN '手配モード中' ELSE '' END AS 手配, datetime(s.last_seen/1000,'unixepoch','+9 hours') AS 最終アクセス, datetime(s.created/1000,'unixepoch','+9 hours') AS ログイン日時 FROM sessions s JOIN users u ON u.id=s.user_id ORDER BY s.last_seen DESC"
+      sessions: "SELECT u.name AS 氏名, u.regno AS 登録番号, CASE s.handler WHEN 1 THEN '手配モード中' ELSE '' END AS 手配, s.last_page AS 最後に見ていたページ, datetime(s.last_seen/1000,'unixepoch','+9 hours') AS 最終アクセス, datetime(s.created/1000,'unixepoch','+9 hours') AS ログイン日時 FROM sessions s JOIN users u ON u.id=s.user_id ORDER BY s.last_seen DESC"
     };
     const sql = Q[url.searchParams.get('table')];
     if (!sql) return ERR('不正なテーブル名です');

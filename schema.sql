@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS sessions(
   user_id INTEGER NOT NULL,
   handler INTEGER DEFAULT 0,             -- 手配者モード(PIN 111111入力済み)
   last_seen INTEGER,
-  created INTEGER
+  created INTEGER,
+  last_page TEXT DEFAULT ''              -- 最後にアクセスしたページ(location.hash。activity_view権限で確認可)
 );
 
 -- スケジュール:1日に複数現場を持てる(id採番 + slotで同日内の順番)

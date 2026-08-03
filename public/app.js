@@ -118,9 +118,25 @@ function rankOrder(r){
 }
 const ROLE_JP = { admin:'チーフ(管理者)', handler:'チーフ(手配者)', chief:'チーフ', member:'メンツ' };
 function roleLabel(u){ if(u && u.suspended) return (u.role==='member'?'メンツ':'チーフ')+'(アカウント停止)'; return ROLE_JP[u.role]||u.role; }
+// ログイン中メンバー・セッション一覧で、location.hashを見やすい画面名に変換するための対応表
+const PAGE_LABELS = {
+  'home':'ホーム','dashboard':'ダッシュボード','schedule':'マイスケジュール','edit':'スケジュール入力',
+  'availability':'休み希望・稼働時間の提出','availability-team':'チームの希望一覧','nominate':'メンバーを希望する','nominations':'メンバー指名の承認',
+  'self-reports':'現場変更報告の承認','sites':'現場一覧','members':'メンバー一覧','summary':'稼働サマリー','member-stats':'メンバー分析',
+  'day-schedule':'スケジュール一覧','member-summary':'個人の年間サマリー','report':'新人報告','reports':'報告一覧','draft':'ドラフト',
+  'blacklist':'ブラックリスト','report-export':'スプレッドシート貼り付け用コピー','admin':'アカウント管理','admin-settings':'システム設定',
+  'role-permissions':'権限の一括設定','handler-status':'ログイン中・編集履歴','import':'スプレッドシート取り込み','sched-sources':'予定表ソース管理',
+  'daicho':'台帳保管','permissions':'権限の個人設定','calendar-guide':'カレンダー連携のやり方','version-history':'アップデート履歴',
+  'password':'パスワード変更','login':'ログイン画面',
+};
+function pageLabelFromHash(hash){
+  if(!hash) return '';
+  const seg = hash.replace(/^#\//,'').split(/[/?]/)[0];
+  return PAGE_LABELS[seg] || hash;
+}
 const LV = { member:0, chief:1, handler:2, admin:3 };
 // 個別追加権限の基準レベル(バックエンドのPERMSと対応)
-const PERM_BASE_LV = { report_check:1, blacklist_manage:1, summary_view:1, day_schedule_view:1, member_stats_view:1, sites_view:1, members_view:1, site_pay:2, site_manage:2, import_data:2, handler_tools:2, wage_settings:3, account_manage:3, daicho_manage:3, dashboard_view:3, member_summary_view:2 };
+const PERM_BASE_LV = { report_check:1, blacklist_manage:1, summary_view:1, day_schedule_view:1, member_stats_view:1, sites_view:1, members_view:1, site_pay:2, site_manage:2, import_data:2, handler_tools:2, wage_settings:3, account_manage:3, daicho_manage:3, dashboard_view:3, member_summary_view:2, activity_view:3 };
 // has(key): MEがその機能を使えるか(基本権限を満たす、または個別に追加権限がある)
 function has(key){
   if(!ME) return false;
@@ -140,7 +156,7 @@ let UPDATE_NOTICE_SHOWN = false; // 1セッション中に一度だけ表示す�
 // アップデートのお知らせに表示する項目。新機能を追加したら、ここに { v: 新しいバージョン番号, ... } で
 // 追記し、CURRENT_UPDATE_VERSION(この下)をインクリメントする。過去の項目はそのまま残しておいてよい
 // (各ユーザーは自分がまだ見ていないバージョン分の項目だけを見るため、勝手に重複表示されることはない)。
-const CURRENT_UPDATE_VERSION = 7;
+const CURRENT_UPDATE_VERSION = 8;
 const UPDATE_ITEMS = [
   { v:1, icon:'home', title:'ホーム画面を追加', desc:'ログイン後、今日・明日の現場や通知が一目で見られるようになりました。', show: () => true },
   { v:1, icon:'handRaise', title:'休み希望・稼働時間の提出', desc:'マイスケジュールから、休み希望や「この時間なら動ける」を手配担当者に伝えられます。', show: () => true },
@@ -159,6 +175,7 @@ const UPDATE_ITEMS = [
   { v:5, icon:'clockWarn', title:'現場詳細に「過去・今後の公演」を追加', desc:'現場詳細画面に、同じ会場・同じアーティスト(現場名)の過去と今後の公演一覧を追加しました。押すとその公演の詳細(入っていた人・時間等)がすぐに確認できます。', show: () => LV[ME.role] >= 1 },
   { v:6, icon:'edit', title:'現場一覧で現場名・会場をまとめて変更できるように', desc:'入力者によってバラバラになりがちな現場名・会場の表記を、現場一覧でチェックを入れて選び、まとめて統一名称に変更できるようになりました(手配者以上)。', show: () => LV[ME.role] >= 2 },
   { v:7, icon:'plus', title:'現場一覧に、現場情報を先に登録できるように', desc:'これまで現場一覧はメンバーが配置された現場だけを表示していましたが、まだ誰も配置していない現場も先に登録して表示しておけるようになりました(手配者以上・手配モード中)。登録後は他の現場と同じようにタップしてメンバーを追加でき、不要になれば削除もできます。台帳取込で「登場しない人を休暇に変更する」にチェックを入れた際、その現場が台帳に見当たらなくなっていれば自動的に削除されます。', show: () => LV[ME.role] >= 2 },
+  { v:8, icon:'circleFilled', title:'ログイン中メンバーの閲覧中ページを確認できるように', desc:'「ログイン中・編集履歴」画面で、ログイン中の各メンバーが今どの画面を見ているかを確認できるようになりました(管理者以上)。あわせて、アカウント管理の全データ閲覧「ログインセッション」にも、そのセッションが最後に見ていたページを表示するようになりました。', show: () => has('activity_view') },
 ];
 // 機能公開設定の対象画面。バックエンドのFEATURE_KEYSと必ず一致させる。
 // 新しい画面を追加したら、ここと src/index.js の FEATURE_KEYS の両方に追記する。
@@ -353,7 +370,7 @@ async function api(path, opt = {}) {
   try {
     const res = await fetch('/api' + path, {
       method: opt.method || 'GET',
-      headers: { 'content-type':'application/json', ...(TOKEN ? { authorization:'Bearer '+TOKEN } : {}) },
+      headers: { 'content-type':'application/json', 'x-page': location.hash || '#/home', ...(TOKEN ? { authorization:'Bearer '+TOKEN } : {}) },
       body: opt.body ? JSON.stringify(opt.body) : undefined
     });
     const d = await res.json().catch(() => ({}));
@@ -4822,13 +4839,15 @@ async function pageHandlerStatus(app){
     try{
       const rows = await api('/online');
       const el = $('#hd-online'); if(!el) return;
-      el.innerHTML = rows.length ? `<table class="list pc-only"><tr><th></th><th>氏名</th><th>役割</th><th>登録番号</th><th>最終アクセス</th></tr>
+      const canSeeActivity = rows.length && rows[0].last_page !== undefined;
+      el.innerHTML = rows.length ? `<table class="list pc-only"><tr><th></th><th>氏名</th><th>役割</th><th>登録番号</th>${canSeeActivity?'<th>閲覧中</th>':''}<th>最終アクセス</th></tr>
         ${rows.map(r=>`<tr><td class="c"><span class="online-dot pulse"></span></td><td>${r.uid?`<span class="name-link" data-goto-uid="${r.uid}">${h(r.name)}</span>`:h(r.name)}</td>
         <td><span class="tag ${r.role}">${roleLabel(r)}</span>${r.handler?' <span class="tag handler">手配モード中</span>':''}</td>
-        <td>${h(r.regno)}</td><td>${fmtAgo(r.last_seen)}</td></tr>`).join('')}</table>
+        <td>${h(r.regno)}</td>${canSeeActivity?`<td>${h(pageLabelFromHash(r.last_page))}</td>`:''}<td>${fmtAgo(r.last_seen)}</td></tr>`).join('')}</table>
         <div class="cards sp-only">${rows.map(r=>`<div class="dcard">
           <div class="dcard-head"><span class="dcard-title"><span class="online-dot pulse"></span> ${r.uid?`<span class="name-link" data-goto-uid="${r.uid}">${h(r.name)}</span>`:h(r.name)}</span><span class="tag ${r.role}">${roleLabel(r)}</span></div>
           <div class="drow"><span class="dk">登録番号</span><span class="dv">${h(r.regno)}</span></div>
+          ${canSeeActivity?`<div class="drow"><span class="dk">閲覧中</span><span class="dv">${h(pageLabelFromHash(r.last_page))}</span></div>`:''}
           <div class="drow"><span class="dk">最終アクセス</span><span class="dv">${fmtAgo(r.last_seen)}${r.handler?' / 手配モード中':''}</span></div>
         </div>`).join('')}</div>` : '<div class="muted">現在ログイン中のメンバーはいません</div>';
       wireNameLinks(el);
