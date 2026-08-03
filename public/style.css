@@ -217,7 +217,7 @@ table.list tr.click:hover{background:#fdf6e0;cursor:pointer}
 /* ===== モーダル ===== */
 .modal-bg{position:fixed;inset:0;height:100vh;height:100dvh;background:rgba(15,20,35,.55);display:flex;align-items:center;justify-content:center;z-index:200;padding:16px;animation:fadein .2s ease}
 .modal-bg.closing{animation:fadeout .16s ease forwards}
-.modal{background:rgba(255,255,255,.94);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-radius:8px;max-width:560px;width:100%;max-height:85vh;overflow-y:auto;padding:20px;box-shadow:0 24px 80px rgba(0,0,0,.45);opacity:0;transform:scale(.94) translateY(8px)}
+.modal{background:rgba(255,255,255,.94);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-radius:8px;max-width:560px;width:100%;max-height:85vh;overflow-y:auto;overflow-x:hidden;padding:20px;box-shadow:0 24px 80px rgba(0,0,0,.45);opacity:0;transform:scale(.94) translateY(8px)}
 .modal.modal-animate-in{animation:modalIn .25s cubic-bezier(.25,.8,.35,1) forwards}
 .modal.closing{animation:modalOut .16s ease forwards}
 @keyframes modalIn{from{opacity:0;transform:scale(.94) translateY(8px)}to{opacity:1;transform:scale(1) translateY(0)}}
@@ -417,6 +417,10 @@ table.list tr.click:hover{background:#fdf6e0;cursor:pointer}
 .sched-wrap::after{content:"";position:absolute;top:0;right:0;width:18px;height:100%;
   background:linear-gradient(to right,rgba(255,255,255,0),rgba(255,255,255,.9));pointer-events:none;opacity:0;transition:opacity .2s}
 @media (max-width:900px){ .sched-wrap{position:relative} .sched-wrap::after{opacity:1} }
+/* モーダル内の表(稼働表等)は、モーダル自体がビューポートよりずっと狭いため、
+   ビューポート幅を見る上のmedia queryとは関係なく横スクロールのヒントを常に出す */
+.modal .sched-wrap{position:relative}
+.modal .sched-wrap::after{opacity:1}
 
 /* ===== 課(1課/2課)の視覚区別 ===== */
 :root{ --ka1:#2E6FB7; --ka1-bg:#EAF2FB; --ka2:#C9A227; --ka2-bg:#FBF6E7; }
@@ -648,6 +652,11 @@ tr.is-suspended .matrix-name-col{background:#fafafa}
   .matrix-table{table-layout:fixed;width:100%;white-space:normal}
   .matrix-name-col{width:104px;min-width:104px;max-width:104px}
   .matrix-cell{width:auto;min-width:0;max-width:none;overflow-wrap:break-word;word-break:break-word}
+  /* 稼働表(現場ごとに日数が変動し、7日を超えることも多い)は、日数が多いほど列を均等分割して
+     潰してしまう上のルールを適用せず、実際の幅を保ったまま横スクロールさせる */
+  .sched-wrap-scroll .matrix-table{table-layout:auto;width:auto;white-space:nowrap}
+  .sched-wrap-scroll .matrix-name-col{width:auto;min-width:82px;max-width:82px}
+  .sched-wrap-scroll .matrix-cell{width:auto;min-width:60px;max-width:110px;overflow-wrap:normal;word-break:normal}
 }
 /* スマホ: 名前列+2日分だけが画面に収まる幅にし、残りは横スクロールで見る */
 @media (max-width:640px){

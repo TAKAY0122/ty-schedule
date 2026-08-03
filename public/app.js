@@ -805,7 +805,7 @@ async function openSiteRoster(date, site){
       <dt>期間</dt><dd>${h(periodLabel)}</dd>
     </dl>
     <div style="margin-top:10px">
-      ${data.rows.length ? renderMatrixTable(data.dates, data.rows) : '<div class="muted">この期間、この現場に入っているメンバーはいません</div>'}
+      ${data.rows.length ? renderMatrixTable(data.dates, data.rows, {scrollable:true}) : '<div class="muted">この期間、この現場に入っているメンバーはいません</div>'}
     </div>`);
   wireMatrixCellClicks($('#modal-layer'));
 }
@@ -2975,14 +2975,14 @@ function matrixCellHtml(cell, isToday, date){
   const info = MATRIX_STATUS_INFO[cell.status] || MATRIX_STATUS_INFO.none;
   return `<td class="matrix-cell ${info.cls}${todayCls}">${info.label}</td>`;
 }
-function renderMatrixTable(dates, rows){
+function renderMatrixTable(dates, rows, opts={}){
   const today = jstToday();
   const dateHead = dates.map(d => {
     const [,mo,da] = d.split('-').map(Number);
     const wd = new Date(d+'T00:00:00+09:00').getDay();
     return { d, mo, da, wd, isToday: d===today };
   });
-  return `<div class="sched-wrap">
+  return `<div class="sched-wrap${opts.scrollable?' sched-wrap-scroll':''}">
     <table class="matrix-table">
       <tr>
         <th class="matrix-name-col">氏名</th>

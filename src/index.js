@@ -1869,12 +1869,13 @@ async function buildScheduleMatrixRows(env, dates, uidList) {
   }));
 }
 
-// 現場名(またはvenueが同じ場合はvenue)を軸に、指定日を含む「連続した日程」の範囲を求める。
-// 複数日にわたる現場(仕込み〜本番〜バラシ等)を、暦日の連続性から機械的に推定するためのヘルパー。
-// 日をまたいだ現場名の表記ゆれに備え、現場名一致が無い日でも会場名が一致すれば範囲に含める
-// (現場名一致を優先し、会場名一致は補助的に使う)。現場の合間(その現場が入っていない中日)は
-// 最大3日までまたいで連続とみなし、それを超えて現場が入っていない日が続く場合はそこで期間を
-// 打ち切る(合間が無く連続している限り、期間の長さ自体に上限は無い)。
+// 現場名を軸に、指定日を含む「連続した日程」の範囲を求める。複数日にわたる現場
+// (仕込み〜本番〜バラシ等)を、暦日の連続性から機械的に推定するためのヘルパー。
+// 現場名の完全一致のみで判定する(会場が同じでも現場名が違えば別の現場とみなす。
+// 会場だけが同じ別公演を誤って同一期間に取り込んでいた不具合を修正)。現場の合間
+// (その現場が入っていない中日)は最大3日までまたいで連続とみなし、それを超えて
+// 現場が入っていない日が続く場合はそこで期間を打ち切る(合間が無く連続している限り、
+// 期間の長さ自体に上限は無い)。
 async function findGigDateRange(env, date, site) {
   const siteRow = await env.DB.prepare(
     "SELECT venue FROM schedule WHERE date=? AND site=? AND type='work' LIMIT 1"
@@ -1888,13 +1889,9 @@ async function findGigDateRange(env, date, site) {
     return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
   };
   const winFrom = addDays(date, -SAFETY_WINDOW), winTo = addDays(date, SAFETY_WINDOW);
-  const matchRows = venue
-    ? (await env.DB.prepare(
-        "SELECT DISTINCT date FROM schedule WHERE type='work' AND date>=? AND date<=? AND (site=? OR venue=?)"
-      ).bind(winFrom, winTo, site, venue).all()).results
-    : (await env.DB.prepare(
-        "SELECT DISTINCT date FROM schedule WHERE type='work' AND date>=? AND date<=? AND site=?"
-      ).bind(winFrom, winTo, site).all()).results;
+  const matchRows = (await env.DB.prepare(
+    "SELECT DISTINCT date FROM schedule WHERE type='work' AND date>=? AND date<=? AND site=?"
+  ).bind(winFrom, winTo, site).all()).results;
   const matchDates = new Set(matchRows.map(r => r.date));
 
   const extend = (start, dir) => {
@@ -3510,8 +3507,8 @@ async function api(req, env, url) {
   }
 
   // ---- 現場の稼働表(チーフ以上)。複数日にわたる現場について、その現場が行われている
-  //      期間(findGigDateRangeで算出)を対象に、実際にその現場(または同じ会場)へ
-  //      入っている人だけを抜き出して、スケジュール一覧と同じマトリックス形式で返す。 ----
+  //      期間(findGigDateRangeで算出)を対象に、実際にその現場名へ入っている人だけを
+  //      抜き出して、スケジュール一覧と同じマトリックス形式で返す。 ----
   if (method === 'GET' && path === '/site-roster') {
     if (!has(me, 'sites_view')) return ERR('ページが見つかりません', 404);
     const date = url.searchParams.get('date'), site = url.searchParams.get('site');
@@ -3519,9 +3516,7 @@ async function api(req, env, url) {
     const { venue, dates } = await findGigDateRange(env, date, site);
 
     const ph = dates.map(() => '?').join(',');
-    const relevantRows = venue
-      ? (await env.DB.prepare(`SELECT DISTINCT user_id FROM schedule WHERE type='work' AND date IN (${ph}) AND (site=? OR venue=?)`).bind(...dates, site, venue).all()).results
-      : (await env.DB.prepare(`SELECT DISTINCT user_id FROM schedule WHERE type='work' AND date IN (${ph}) AND site=?`).bind(...dates, site).all()).results;
+    const relevantRows = (await env.DB.prepare(`SELECT DISTINCT user_id FROM schedule WHERE type='work' AND date IN (${ph}) AND site=?`).bind(...dates, site).all()).results;
     const uids = relevantRows.map(r => r.user_id);
     const rows = uids.length ? await buildScheduleMatrixRows(env, dates, uids) : [];
     return J({ site, venue, dates, rows });
