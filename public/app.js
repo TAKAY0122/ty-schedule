@@ -156,7 +156,7 @@ let UPDATE_NOTICE_SHOWN = false; // 1セッション中に一度だけ表示す�
 // アップデートのお知らせに表示する項目。新機能を追加したら、ここに { v: 新しいバージョン番号, ... } で
 // 追記し、CURRENT_UPDATE_VERSION(この下)をインクリメントする。過去の項目はそのまま残しておいてよい
 // (各ユーザーは自分がまだ見ていないバージョン分の項目だけを見るため、勝手に重複表示されることはない)。
-const CURRENT_UPDATE_VERSION = 8;
+const CURRENT_UPDATE_VERSION = 9;
 const UPDATE_ITEMS = [
   { v:1, icon:'home', title:'ホーム画面を追加', desc:'ログイン後、今日・明日の現場や通知が一目で見られるようになりました。', show: () => true },
   { v:1, icon:'handRaise', title:'休み希望・稼働時間の提出', desc:'マイスケジュールから、休み希望や「この時間なら動ける」を手配担当者に伝えられます。', show: () => true },
@@ -176,6 +176,7 @@ const UPDATE_ITEMS = [
   { v:6, icon:'edit', title:'現場一覧で現場名・会場をまとめて変更できるように', desc:'入力者によってバラバラになりがちな現場名・会場の表記を、現場一覧でチェックを入れて選び、まとめて統一名称に変更できるようになりました(手配者以上)。', show: () => LV[ME.role] >= 2 },
   { v:7, icon:'plus', title:'現場一覧に、現場情報を先に登録できるように', desc:'これまで現場一覧はメンバーが配置された現場だけを表示していましたが、まだ誰も配置していない現場も先に登録して表示しておけるようになりました(手配者以上・手配モード中)。登録後は他の現場と同じようにタップしてメンバーを追加でき、不要になれば削除もできます。台帳取込で「登場しない人を休暇に変更する」にチェックを入れた際、その現場が台帳に見当たらなくなっていれば自動的に削除されます。', show: () => LV[ME.role] >= 2 },
   { v:8, icon:'circleFilled', title:'ログイン中メンバーの閲覧中ページを確認できるように', desc:'「ログイン中・編集履歴」画面で、ログイン中の各メンバーが今どの画面を見ているかを確認できるようになりました(管理者以上)。あわせて、アカウント管理の全データ閲覧「ログインセッション」にも、そのセッションが最後に見ていたページを表示するようになりました。', show: () => has('activity_view') },
+  { v:9, icon:'edit', title:'現場詳細画面から、同会場・同アーティストの公演をまとめて編集できるように', desc:'現場詳細画面の「同会場の公演」「同アーティストの公演」一覧から、それぞれ「まとめて編集」で一覧全体をまとめて変更できるようになりました(手配者以上)。「同会場の公演」は会場のみ、「同アーティストの公演」は現場名のみが対象で、一覧内の他の項目まで誤って書き換わることはありません。', show: () => LV[ME.role] >= 2 },
 ];
 // 機能公開設定の対象画面。バックエンドのFEATURE_KEYSと必ず一致させる。
 // 新しい画面を追加したら、ここと src/index.js の FEATURE_KEYS の両方に追記する。
@@ -697,6 +698,7 @@ async function openSiteModal(date, site){
   const canAdd = ME.handler === 1; // 手配者モードのときメンバー追加・編集可
   const canViewSched = LV[ME.role] >= 1; // 名前タップでスケジュールへ遷移できるか(チーフ以上)
   const canRoster = has('sites_view'); // 稼働表・過去公演を見られるか(このモーダル自体を開ける権限と同じ)
+  const canRename = has('site_manage'); // 同会場・同アーティストの公演をまとめて編集できるか(手配者以上)
   const [siteData, breaksArr, history] = await Promise.all([
     api(`/site-members?date=${date}&site=${encodeURIComponent(site)}`),
     canViewSched ? api(`/site-record-breaks?date=${date}&site=${encodeURIComponent(site)}`).catch(()=>[]) : Promise.resolve([]),
@@ -737,10 +739,17 @@ async function openSiteModal(date, site){
   const histItem = r => `<button type="button" class="btn ghost sm site-hist-item" data-date="${r.date}" data-site="${h(r.site)}" style="display:block;width:100%;text-align:left;margin-bottom:4px;white-space:normal">
     ${h(r.date)} ${h(r.site)}${r.venue && r.venue!==venue ? ` <span class="muted">(${h(r.venue)})</span>` : ''} <span class="muted">${r.cnt}名</span>
   </button>`;
-  // 過去/今後どちらの範囲かひと目でわかるよう、見出しを分けて表示する(境目=現在閲覧中の現場)
-  const histSection = (label, past, future) => {
+  // 過去/今後どちらの範囲かひと目でわかるよう、見出しを分けて表示する(境目=現在閲覧中の現場)。
+  // bulkKey('venue'|'site')を指定すると、その一覧全体をまとめて会場/現場名変更できるボタンを出す
+  // (同会場一覧は会場のみ、同アーティスト一覧は現場名のみ変更可能とし、無関係な項目まで巻き込む
+  //  誤操作を防ぐ)。
+  const histSection = (label, past, future, bulkKey) => {
     if(!past.length && !future.length) return '';
-    return `<div class="section-label" style="margin-top:14px">${label}</div>
+    const canBulk = canRename && bulkKey;
+    return `<div class="section-label" style="margin-top:14px;display:flex;align-items:center;justify-content:space-between;gap:8px">
+        <span>${label}</span>
+        ${canBulk ? `<button type="button" class="btn ghost xs site-hist-bulk-edit" data-key="${bulkKey}">${icon('edit',{size:'11px'})} まとめて編集</button>` : ''}
+      </div>
       ${past.length ? `<div class="muted" style="font-size:11px;margin:6px 0 3px">${icon('arrowLeft',{size:'10px'})} 過去</div><div>${past.map(histItem).join('')}</div>` : ''}
       ${future.length ? `<div class="muted" style="font-size:11px;margin:${past.length?'10':'6'}px 0 3px">今後 ${icon('arrowRight',{size:'10px'})}</div><div>${future.map(histItem).join('')}</div>` : ''}`;
   };
@@ -770,10 +779,22 @@ async function openSiteModal(date, site){
       <button class="btn gold" id="site-add-btn">＋ メンバーを追加</button>
       ${list.length?`<button class="btn ghost" id="site-edit-btn">${icon('edit')} 全員まとめて一括編集</button>`:''}
     </div>` : ''}
-    ${venue ? histSection('同会場の公演', sameVenuePast, sameVenueFuture) : ''}
-    ${histSection('同アーティストの公演', sameSitePast, sameSiteFuture)}`);
+    ${venue ? histSection('同会場の公演', sameVenuePast, sameVenueFuture, 'venue') : ''}
+    ${histSection('同アーティストの公演', sameSitePast, sameSiteFuture, 'site')}`);
   const rosterBtn = $('#site-roster-btn');
   if(rosterBtn) rosterBtn.onclick = () => openSiteRoster(date, site);
+  document.querySelectorAll('#modal-layer .site-hist-bulk-edit').forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      if(btn.dataset.key === 'venue'){
+        openSiteBulkRename([...sameVenuePast, ...sameVenueFuture], () => openSiteModal(date, site),
+          { fieldsMode:'venue', title:'同会場の公演の会場をまとめて変更' });
+      } else {
+        openSiteBulkRename([...sameSitePast, ...sameSiteFuture], () => openSiteModal(date, site),
+          { fieldsMode:'site', title:'同アーティストの公演名をまとめて変更' });
+      }
+    };
+  });
   document.querySelectorAll('#modal-layer .site-hist-item').forEach(el => {
     el.onclick = () => openSiteModal(el.dataset.date, el.dataset.site);
   });
@@ -2786,27 +2807,33 @@ function openSiteRegister(defaultDate, onDone){
 
 // 現場一覧でチェックした複数の(date,site,venue)を、まとめて統一の現場名・会場名に変更する。
 // 入力者によって現場名・会場名の書き方がバラバラになるのは避けられないため、後から統一するための機能。
-function openSiteBulkRename(targets, onDone){
+// fieldsMode('both'|'site'|'venue')を指定すると、その項目だけを編集可能にする。
+// 「同会場の公演」一覧は現場名がバラバラで当然なので会場のみ、「同アーティストの公演」一覧は
+// 会場がバラバラなことがあるので現場名のみ、というように誤って無関係な項目を巻き込まないため。
+function openSiteBulkRename(targets, onDone, opt={}){
   if(!targets.length) return;
   const first = targets[0];
-  modal(`<h3>${icon('edit',{size:'15px'})} 選択した${targets.length}件の現場名・会場をまとめて変更</h3>
+  const mode = opt.fieldsMode || 'both';
+  const showSite = mode !== 'venue', showVenue = mode !== 'site';
+  const title = opt.title || `選択した${targets.length}件の現場名・会場をまとめて変更`;
+  modal(`<h3>${icon('edit',{size:'15px'})} ${h(title)}</h3>
     <div class="muted" style="font-size:12px;margin-bottom:10px">対象(${targets.length}件):</div>
     <div style="max-height:30vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-bottom:12px">
       ${targets.map(s=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:#faf9f6;border:1px solid var(--line);border-radius:6px">${h(s.date)} ${h(s.site)}${s.venue?` (${h(s.venue)})`:''} ・${s.cnt}名</div>`).join('')}
     </div>
-    <label style="display:block;margin-bottom:10px">新しい現場名<br>
+    ${showSite?`<label style="display:block;margin-bottom:10px">新しい現場名<br>
       <input type="text" id="sbr-site" value="${h(first.site)}" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;margin-top:4px">
-    </label>
-    <label style="display:block;margin-bottom:10px">新しい会場<br>
+    </label>`:''}
+    ${showVenue?`<label style="display:block;margin-bottom:10px">新しい会場<br>
       <input type="text" id="sbr-venue" value="${h(first.venue||'')}" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;margin-top:4px">
-    </label>
-    <div class="muted" style="font-size:11.5px;margin-bottom:12px">どちらかを空欄のままにすると、その項目は変更しません(現場名だけ・会場だけの統一も可能です)。</div>
+    </label>`:''}
+    ${(showSite&&showVenue)?`<div class="muted" style="font-size:11.5px;margin-bottom:12px">どちらかを空欄のままにすると、その項目は変更しません(現場名だけ・会場だけの統一も可能です)。</div>`:''}
     <button class="btn gold" id="sbr-run">変更を適用する</button>
     <div id="sbr-msg" class="muted" style="margin-top:10px"></div>`);
   $('#sbr-run').onclick = async () => {
-    const newSite = $('#sbr-site').value.trim();
-    const newVenue = $('#sbr-venue').value.trim();
-    if(!newSite && !newVenue){ $('#sbr-msg').textContent = '現場名または会場のどちらかを入力してください'; return; }
+    const newSite = showSite ? $('#sbr-site').value.trim() : '';
+    const newVenue = showVenue ? $('#sbr-venue').value.trim() : '';
+    if(!newSite && !newVenue){ $('#sbr-msg').textContent = mode==='venue' ? '新しい会場を入力してください' : mode==='site' ? '新しい現場名を入力してください' : '現場名または会場のどちらかを入力してください'; return; }
     if(!confirm(`選択した${targets.length}件を、まとめて変更します。よろしいですか?`)) return;
     await withLoading($('#sbr-run'), async () => {
       try{
