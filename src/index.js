@@ -3537,7 +3537,7 @@ async function api(req, env, url) {
     if (!date || !site) return ERR('date/site が必要です');
     const { venue, from, to } = await findGigDateRange(env, date, site);
 
-    const [sameVenuePastRes, sameVenueFutureRes, sameSitePastRes, sameSiteFutureRes] = await Promise.all([
+    const [sameVenuePastRes, sameVenueFutureRes, sameSitePastRes, sameSiteFutureRes, currentRes] = await Promise.all([
       venue
         ? env.DB.prepare("SELECT date, site, venue, COUNT(*) AS cnt FROM schedule WHERE type='work' AND venue=? AND date<? GROUP BY date, site, venue ORDER BY date DESC LIMIT 15").bind(venue, from).all()
         : Promise.resolve({ results: [] }),
@@ -3546,11 +3546,15 @@ async function api(req, env, url) {
         : Promise.resolve({ results: [] }),
       env.DB.prepare("SELECT date, site, venue, COUNT(*) AS cnt FROM schedule WHERE type='work' AND site=? AND date<? GROUP BY date, site, venue ORDER BY date DESC LIMIT 15").bind(site, from).all(),
       env.DB.prepare("SELECT date, site, venue, COUNT(*) AS cnt FROM schedule WHERE type='work' AND site=? AND date>? GROUP BY date, site, venue ORDER BY date ASC LIMIT 15").bind(site, to).all(),
+      // 現在閲覧中の現場自体(from〜to、この現場名の日すべて)。同会場・同アーティストの一覧は
+      // これを意図的に除外しているため、一括編集の対象に含めたい場合はここから取得する。
+      env.DB.prepare("SELECT date, site, venue, COUNT(*) AS cnt FROM schedule WHERE type='work' AND site=? AND date>=? AND date<=? GROUP BY date, site, venue ORDER BY date").bind(site, from, to).all(),
     ]);
     return J({
       site, venue, from, to,
       sameVenuePast: sameVenuePastRes.results, sameVenueFuture: sameVenueFutureRes.results,
       sameSitePast: sameSitePastRes.results, sameSiteFuture: sameSiteFutureRes.results,
+      current: currentRes.results,
     });
   }
 

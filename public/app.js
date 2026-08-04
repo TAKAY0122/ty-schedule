@@ -757,6 +757,10 @@ async function openSiteModal(date, site){
   const sameVenueFuture = (history && history.sameVenueFuture) || [];
   const sameSitePast = (history && history.sameSitePast) || [];
   const sameSiteFuture = (history && history.sameSiteFuture) || [];
+  // 同会場/同アーティストの一覧は、現在閲覧中の現場自体をわざと除外している(別公演として
+  // 誤って過去/今後に混ぜないため)。まとめて編集の対象には、その現在閲覧中の現場自体も
+  // 含めないと「選択したのに自分の日だけ変わらない」ことになるため、別途取得したcurrentを加える
+  const currentGig = (history && history.current) || [];
   modal(`<h3>現場情報</h3>
     <dl class="kv">
       <dt>現場名</dt><dd><b>${h(site)}</b></dd>
@@ -787,10 +791,10 @@ async function openSiteModal(date, site){
     btn.onclick = (e) => {
       e.stopPropagation();
       if(btn.dataset.key === 'venue'){
-        openSiteBulkRename([...sameVenuePast, ...sameVenueFuture], () => openSiteModal(date, site),
+        openSiteBulkRename([...sameVenuePast, ...currentGig, ...sameVenueFuture], () => openSiteModal(date, site),
           { fieldsMode:'venue', title:'同会場の公演の会場をまとめて変更' });
       } else {
-        openSiteBulkRename([...sameSitePast, ...sameSiteFuture], () => openSiteModal(date, site),
+        openSiteBulkRename([...sameSitePast, ...currentGig, ...sameSiteFuture], () => openSiteModal(date, site),
           { fieldsMode:'site', title:'同アーティストの公演名をまとめて変更' });
       }
     };
@@ -4770,10 +4774,19 @@ async function pageSelfReports(app){
 
 // 現場変更報告の承認時に、通常の現場入力と同じ項目(現場名・会場・時刻・業務名など)を
 // 入力・修正してから反映できるモーダル。現場名/会場名は報告内容を初期値にする。
-function openSelfReportApprove(r){
+// 報告の対象日は既に決まっているため、その日に既に登録されている現場があれば一覧から選んで
+// 「既存の現場に追加」でき、新規入力(表記ゆれで別の現場として増えてしまうこと)を防げる。
+async function openSelfReportApprove(r){
+  let daySites = [];
+  try{ daySites = (await api(`/sites?month=${r.date.slice(0,7)}`)).filter(s => s.date === r.date); }
+  catch(e){}
   modal(`<h3>${h(r.user_name)} さん / ${h(r.date)} の報告を承認</h3>
     <div class="muted" style="margin-bottom:10px">伝えた人: ${h(r.told_by)}</div>
     <div class="form-grid" style="grid-template-columns:64px 1fr;gap:6px 8px">
+      ${daySites.length ? `<label>既存の現場</label><select id="sra-existing">
+        <option value="">— 新規入力 —</option>
+        ${daySites.map((s,i)=>`<option value="${i}">${h(s.site)}${s.venue?`(${h(s.venue)})`:''} ・${s.cnt}名</option>`).join('')}
+      </select>` : ''}
       <label>現場名</label><input id="sra-site" value="${h(r.site||'')}" placeholder="例:NiziU">
       <label>会場</label><input id="sra-venue" value="${h(r.venue||'')}" placeholder="例:京セラドーム大阪">
       <label>業務名</label><select id="sra-duty">${DUTIES.map(d=>`<option ${d==='案内'?'selected':''}>${d}</option>`).join('')}</select>
@@ -4788,6 +4801,16 @@ function openSelfReportApprove(r){
       <button class="btn gold" id="sra-save" style="flex:1">承認して反映する</button>
     </div>
 `);
+
+  const existingSel = $('#sra-existing');
+  if(existingSel) existingSel.onchange = () => {
+    const idx = existingSel.value;
+    if(idx === '') return;
+    const s = daySites[Number(idx)];
+    if(!s) return;
+    $('#sra-site').value = s.site;
+    $('#sra-venue').value = s.venue || '';
+  };
 
   $('#sra-save').onclick = async () => {
     const site = $('#sra-site').value.trim();
