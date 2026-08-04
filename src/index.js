@@ -2716,7 +2716,13 @@ async function api(req, env, url) {
       if (body.role !== undefined) { // 役割変更
         if (!has(me, 'account_manage')) return ERR('役割の変更には権限が必要です', 403);
         if (LV[body.role] == null) return ERR('不正な役割です');
+        const before = await env.DB.prepare('SELECT role FROM users WHERE id=?').bind(uid).first();
         await env.DB.prepare('UPDATE users SET role=? WHERE id=?').bind(body.role, uid).run();
+        // 権限レベルを下げた場合、手配モードに入ったままのセッションが残り続けることを防ぐため、
+        // 強制ログアウトする(次回ログイン時に新しい役割で入り直してもらう)
+        if (before && LV[body.role] < LV[before.role]) {
+          await env.DB.prepare('DELETE FROM sessions WHERE user_id=?').bind(uid).run();
+        }
       }
       if (body.regno !== undefined) { // 登録番号の変更(管理者のみ)
         if (me.role !== 'admin') return ERR('登録番号の変更には管理者権限が必要です', 403);
