@@ -3591,6 +3591,53 @@ async function api(req, env, url) {
     return J({ venue, past: pastRes.results, future: futureRes.results });
   }
 
+  // ---- 会場一覧: 選択した複数の会場名を、まとめて統一名称に変更(手配者以上)。
+  //      現場一覧の一括改名と違い、対象は(日付,現場名,会場)の組ではなく会場名そのもの。
+  //      選択した会場名のどれかに一致するscheduleの全行(過去・未来・全期間)が対象になる。 ----
+  if (method === 'POST' && path === '/venues/bulk-rename') {
+    if (!has(me, 'site_manage')) return ERR('権限がありません', 403);
+    const venues = Array.isArray(body.venues) ? [...new Set(body.venues.map(v => String(v || '').trim()).filter(Boolean))] : [];
+    const newVenue = typeof body.newVenue === 'string' ? body.newVenue.trim() : '';
+    if (!venues.length) return ERR('対象の会場が選択されていません');
+    if (!newVenue) return ERR('新しい会場名を入力してください');
+
+    const ts = jstTs();
+    const batch = [];
+    const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
+    const ph = venues.map(() => '?').join(',');
+
+    const targets = (await env.DB.prepare(
+      `SELECT DISTINCT user_id, date FROM schedule WHERE type='work' AND venue IN (${ph})`
+    ).bind(...venues).all()).results;
+
+    let updatedDays = 0;
+    for (const { user_id, date } of targets) {
+      // その人・その日の全スロットを取得し、対象の会場と一致するスロットだけ改名する
+      // (同じ日に他の予定が混在していても、それらは変更しない)
+      const before = (await env.DB.prepare('SELECT * FROM schedule WHERE user_id=? AND date=? ORDER BY slot').bind(user_id, date).all()).results;
+      const beforeJson = JSON.stringify(before.map(stripRow));
+      const afterRows = before.map(r => (r.type === 'work' && venues.includes(r.venue)) ? { ...r, venue: newVenue } : r);
+      const afterJson = JSON.stringify(afterRows.map(stripRow));
+      if (beforeJson === afterJson) continue;
+      batch.push(env.DB.prepare('DELETE FROM schedule WHERE user_id=? AND date=?').bind(user_id, date));
+      let slot = 0;
+      for (const r of afterRows) {
+        batch.push(env.DB.prepare('INSERT INTO schedule(user_id,date,slot,type,site,venue,tin,tout,hours,overtime,pay,note,duty,load_end,show_end,multi) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+          .bind(user_id, date, slot, r.type, r.site, r.venue, r.tin, r.tout, r.hours || 0, r.overtime || 0, r.pay || 0, r.note || '', r.duty || '', r.load_end || '', r.show_end || '', r.multi ? 1 : 0));
+        slot++;
+      }
+      batch.push(env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
+        .bind(ts, me.id, user_id, date, beforeJson, JSON.stringify({ slots: afterRows.map(stripRow), _src: `会場一覧の一括変更(→${newVenue})` })));
+      updatedDays++;
+    }
+    if (batch.length) for (const part of chunk(batch, 200)) await env.DB.batch(part);
+
+    // 未配置のまま登録だけされている現場(site_registry)が旧会場名を参照していれば、あわせて更新する
+    await env.DB.prepare(`UPDATE site_registry SET venue=? WHERE venue IN (${ph})`).bind(newVenue, ...venues).run();
+
+    return J({ ok: 1, updatedDays, ts });
+  }
+
   // ---- スケジュール一覧(チーフ以上)。指定期間(既定7日分)の全メンバーの予定を、
   //      日付×人のマトリックス形式で返す。現場に入っている人は現場名、休暇/NG/1日OK/有給の
   //      人はその状態、未入力の人も含める。停止中アカウントも一覧性のため含める。 ----
