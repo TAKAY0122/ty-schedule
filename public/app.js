@@ -2971,14 +2971,17 @@ async function openVenueModal(venue){
   const item = r => `<button type="button" class="btn ghost sm venue-hist-item" data-date="${r.date}" data-site="${h(r.site)}" style="display:block;width:100%;text-align:left;margin-bottom:4px;white-space:normal">
     ${h(r.date)} ${h(r.site)} <span class="muted">${r.cnt}名</span>
   </button>`;
-  modal(`<h3>${icon('mapPin',{size:'15px'})} ${h(venue)}${canRename?`<button type="button" class="btn ghost xs icon-btn" id="venue-rename-btn" title="会場名を変更" style="float:right">${icon('edit',{size:'13px'})}</button>`:''}</h3>
+  modal(`<h3>${icon('mapPin',{size:'15px'})} ${h(venue)}</h3>
     <div class="row" style="gap:8px;margin:2px 0 10px;flex-wrap:wrap;align-items:center">
       <a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(venue)}" target="_blank" class="btn ghost sm">${icon('mapPin',{size:'13px'})} 地図で見る</a>
       <button type="button" class="btn ghost sm" id="venue-manual-btn">${icon('bookOpen',{size:'13px'})} 会場マニュアル</button>
+      ${canRename ? `<button type="button" class="btn ghost sm" id="venue-rename-btn">${icon('edit',{size:'13px'})} 名前を変更</button>` : ''}
+    </div>
+    ${(canRename || data.hasManual) ? `<div class="row" style="margin:0 0 10px;align-items:center">
       ${canRename
         ? `<label style="display:flex;align-items:center;gap:5px;font-size:12.5px;cursor:pointer"><input type="checkbox" id="venue-manual-flag" ${data.hasManual?'checked':''}> マニュアルあり</label>`
-        : (data.hasManual ? `<span class="venue-manual-badge">${icon('bookOpen',{size:'12px'})} マニュアルあり</span>` : '')}
-    </div>
+        : `<span class="venue-manual-badge">${icon('bookOpen',{size:'12px'})} マニュアルあり</span>`}
+    </div>` : ''}
     ${data.past.length ? `<div class="section-label" style="margin-top:6px">${icon('arrowLeft',{size:'10px'})} 過去の公演</div><div>${data.past.map(item).join('')}</div>` : ''}
     ${data.future.length ? `<div class="section-label" style="margin-top:12px">今後の公演 ${icon('arrowRight',{size:'10px'})}</div><div>${data.future.map(item).join('')}</div>` : ''}
     ${(!data.past.length && !data.future.length) ? '<div class="muted">この会場の現場情報はまだありません</div>' : ''}`);
