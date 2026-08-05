@@ -156,7 +156,7 @@ let UPDATE_NOTICE_SHOWN = false; // 1セッション中に一度だけ表示す�
 // アップデートのお知らせに表示する項目。新機能を追加したら、ここに { v: 新しいバージョン番号, ... } で
 // 追記し、CURRENT_UPDATE_VERSION(この下)をインクリメントする。過去の項目はそのまま残しておいてよい
 // (各ユーザーは自分がまだ見ていないバージョン分の項目だけを見るため、勝手に重複表示されることはない)。
-const CURRENT_UPDATE_VERSION = 9;
+const CURRENT_UPDATE_VERSION = 10;
 const UPDATE_ITEMS = [
   { v:1, icon:'home', title:'ホーム画面を追加', desc:'ログイン後、今日・明日の現場や通知が一目で見られるようになりました。', show: () => true },
   { v:1, icon:'handRaise', title:'休み希望・稼働時間の提出', desc:'マイスケジュールから、休み希望や「この時間なら動ける」を手配担当者に伝えられます。', show: () => true },
@@ -177,6 +177,7 @@ const UPDATE_ITEMS = [
   { v:7, icon:'plus', title:'現場一覧に、現場情報を先に登録できるように', desc:'これまで現場一覧はメンバーが配置された現場だけを表示していましたが、まだ誰も配置していない現場も先に登録して表示しておけるようになりました(手配者以上・手配モード中)。登録後は他の現場と同じようにタップしてメンバーを追加でき、不要になれば削除もできます。台帳取込で「登場しない人を休暇に変更する」にチェックを入れた際、その現場が台帳に見当たらなくなっていれば自動的に削除されます。', show: () => LV[ME.role] >= 2 },
   { v:8, icon:'circleFilled', title:'ログイン中メンバーの閲覧中ページを確認できるように', desc:'「ログイン中・編集履歴」画面で、ログイン中の各メンバーが今どの画面を見ているかを確認できるようになりました(管理者以上)。あわせて、アカウント管理の全データ閲覧「ログインセッション」にも、そのセッションが最後に見ていたページを表示するようになりました。', show: () => has('activity_view') },
   { v:9, icon:'edit', title:'現場詳細画面から、同会場・同アーティストの公演をまとめて編集できるように', desc:'現場詳細画面の「同会場の公演」「同アーティストの公演」一覧から、それぞれ「まとめて編集」で一覧全体をまとめて変更できるようになりました(手配者以上)。「同会場の公演」は会場のみ、「同アーティストの公演」は現場名のみが対象で、一覧内の他の項目まで誤って書き換わることはありません。', show: () => LV[ME.role] >= 2 },
+  { v:10, icon:'mapPin', title:'会場一覧を追加', desc:'現場一覧と同じ感覚で使える「会場一覧」を追加しました。会場ごとに、過去・今後どちらもまとめてその会場の現場を確認でき、タップすると現場の詳細も見られます。各会場に「会場マニュアル」を用意する予定ですが、まだ準備中です。', show: () => LV[ME.role] >= 1 },
 ];
 // 機能公開設定の対象画面。バックエンドのFEATURE_KEYSと必ず一致させる。
 // 新しい画面を追加したら、ここと src/index.js の FEATURE_KEYS の両方に追記する。
@@ -206,6 +207,8 @@ const FEATURE_LABELS = {
   'sched-sources': { icon:'rss', label:'予定表ソース管理' },
   'daicho': { icon:'package', label:'台帳保管' },
   'member-summary': { icon:'barChart', label:'個人の年間サマリー' },
+  'venues': { icon:'mapPin', label:'会場一覧' },
+  'venue-manual': { icon:'bookOpen', label:'会場マニュアル' },
 };
 const FEATURE_KEYS = Object.keys(FEATURE_LABELS);
 // 給与計算区分コード → 表示用の日本語ラベル(業務名対応表の表示に使う)
@@ -1109,6 +1112,8 @@ async function render(){
     else if(hash.startsWith('#/schedule')) await pageSchedule(app, hash);
     else if(hash === '#/members') await pageMembers(app);
     else if(hash === '#/sites') await pageSites(app);
+    else if(hash === '#/venues') await pageVenues(app);
+    else if(hash.startsWith('#/venue-manual')) await pageVenueManual(app, hash);
     else if(hash === '#/day-schedule') await pageDaySchedule(app);
     else if(hash === '#/summary') await pageSummary(app);
     else if(hash === '#/member-stats') await pageMemberStats(app);
@@ -1258,6 +1263,7 @@ function renderShell(hash){
       ...(isHandlerRole ? [{ path:'#/nominations', icon:'checkCircle', label:'メンバー指名の承認', role:'handler' }] : []),
     ]},
     { path:'#/sites', icon:'stadium', label:'現場一覧', show:canSitesView },
+    { path:'#/venues', icon:'mapPin', label:'会場一覧', show:canSitesView },
     { icon:'users', label:'メンバー', show:showMemberGroup, children:[
       ...(isHandlerRole ? [{ path:'#/members/mine', icon:'briefcase', label:`${ME.name}手配`, role:'handler' }] : []),
       ...(canMembersView ? [{ path:'#/members', icon:'users', label:'メンバー一覧' }] : []),
@@ -2046,6 +2052,7 @@ async function pageHome(app){
     ['#/nominate','user','メンバー指名', isChief, 'chief'],
     ['#/nominations','checkCircle','指名の承認', isHandlerRole, 'handler'],
     ['#/sites','stadium','現場一覧', has('sites_view')],
+    ['#/venues','mapPin','会場一覧', has('sites_view')],
     ['#/members/mine','briefcase',`${h(ME.name)}手配`, isHandlerRole, 'handler'],
     ['#/members','users','メンバー\n一覧', has('members_view')],
     ['#/summary','barChart','稼働サマリー', has('summary_view')],
@@ -2850,8 +2857,74 @@ function openSiteBulkRename(targets, onDone, opt={}){
     });
   };
 }
-// 開発中の機能ページを「準備中」として表示する共通ヘルパー。
-// 管理者には、システム設定からON/OFFを切り替えられる旨のリンクも案内する。
+
+/* ===== 会場一覧(チーフ以上)。現場一覧と同じ感覚で、会場ごとに過去/今後の現場を確認できる ===== */
+async function pageVenues(app){
+  if(!has('sites_view')){ notFound(app); return; }
+  const st = PAGE_STATE.venues || (PAGE_STATE.venues = { q:'' });
+  app.innerHTML = `<h2>${icon('mapPin')} 会場一覧</h2><div class="card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>`;
+  let venues;
+  try{ venues = await api('/venues'); }
+  catch(e){ app.innerHTML = `<h2>${icon('mapPin')} 会場一覧</h2><div class="card"><div class="msg err">${h(e.message)}</div></div>`; return; }
+
+  const renderList = () => {
+    const q = st.q.trim();
+    const filtered = q ? venues.filter(v => (v.venue||'').includes(q)) : venues;
+    const listEl = $('#venue-list');
+    if(!listEl) return;
+    listEl.innerHTML = filtered.length ? filtered.map(v => `<button type="button" class="st-site venue-item" data-venue="${h(v.venue)}">
+        <span class="st-site-name">${h(v.venue)}</span>
+        <span class="muted" style="font-size:12px">${h(v.firstDate)} 〜 ${h(v.lastDate)}</span>
+        <span class="st-site-cnt">${v.dateCnt}日</span>
+      </button>`).join('') : `<div class="muted" style="padding:20px 0;text-align:center">${q?'該当する会場はありません':'まだ会場のデータがありません'}</div>`;
+    listEl.querySelectorAll('.venue-item').forEach(b => b.onclick = () => openVenueModal(b.dataset.venue));
+  };
+
+  app.innerHTML = `
+  <h2 style="margin-bottom:8px">${icon('mapPin')} 会場一覧</h2>
+  <div class="card">
+    <div class="row" style="margin-bottom:12px">
+      <input id="venue-q" placeholder="会場名で検索" value="${h(st.q)}" style="flex:1">
+    </div>
+    <div id="venue-list" class="st-sites"></div>
+  </div>`;
+  renderList();
+  $('#venue-q').oninput = (e) => { st.q = e.target.value; renderList(); };
+}
+
+// 会場詳細モーダル。その会場の現場を、今日を境に過去・今後に分けて一覧表示する。
+// 項目をタップすると現場詳細(openSiteModal)へ、「会場マニュアル」ボタンは専用ページ
+// (現時点では機能公開設定「準備中」)へ遷移する。
+async function openVenueModal(venue){
+  let data;
+  try{ data = await api(`/venue-history?venue=${encodeURIComponent(venue)}`); }
+  catch(e){ popup(e.message, 'error'); return; }
+  const item = r => `<button type="button" class="btn ghost sm venue-hist-item" data-date="${r.date}" data-site="${h(r.site)}" style="display:block;width:100%;text-align:left;margin-bottom:4px;white-space:normal">
+    ${h(r.date)} ${h(r.site)} <span class="muted">${r.cnt}名</span>
+  </button>`;
+  modal(`<h3>${icon('mapPin',{size:'15px'})} ${h(venue)}</h3>
+    <div class="row" style="gap:8px;margin:2px 0 10px;flex-wrap:wrap">
+      <a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(venue)}" target="_blank" class="btn ghost sm">${icon('mapPin',{size:'13px'})} 地図で見る</a>
+      <button type="button" class="btn ghost sm" id="venue-manual-btn">${icon('bookOpen',{size:'13px'})} 会場マニュアル</button>
+    </div>
+    ${data.past.length ? `<div class="section-label" style="margin-top:6px">${icon('arrowLeft',{size:'10px'})} 過去の公演</div><div>${data.past.map(item).join('')}</div>` : ''}
+    ${data.future.length ? `<div class="section-label" style="margin-top:12px">今後の公演 ${icon('arrowRight',{size:'10px'})}</div><div>${data.future.map(item).join('')}</div>` : ''}
+    ${(!data.past.length && !data.future.length) ? '<div class="muted">この会場の現場情報はまだありません</div>' : ''}`);
+  document.querySelectorAll('#modal-layer .venue-hist-item').forEach(el => {
+    el.onclick = () => { closeModal(); openSiteModal(el.dataset.date, el.dataset.site); };
+  });
+  const manualBtn = $('#venue-manual-btn');
+  if(manualBtn) manualBtn.onclick = () => { closeModal(); goTo('#/venue-manual/' + encodeURIComponent(venue)); };
+}
+
+// 会場マニュアル(準備中)。中身はまだ無いため、機能公開設定を「準備中」で登録し、通常は
+// render()の共通ゲートで自動的に案内される。管理者はゲートを常にスキップするため、
+// プレビューできるようここでも同じ準備中メッセージを表示する。
+async function pageVenueManual(app, hash){
+  const venue = decodeURIComponent(hash.split('/')[2] || '');
+  renderFeatureBlocked(app, 'hidden', { icon:'bookOpen', label: venue ? `${venue} マニュアル` : '会場マニュアル' });
+}
+
 /* ===== 稼働サマリー(チーフ以上)。月間の出勤日数・シフト数・連勤・手配偏りを一覧できる。
    統計カード・手配担当バーをタップすると、その条件で一覧を絞り込める。 ===== */
 async function pageSummary(app){
