@@ -368,6 +368,15 @@ CREATE TABLE IF NOT EXISTS site_registry(
 );
 CREATE INDEX IF NOT EXISTS idx_site_registry_date ON site_registry(date);
 
+-- 会場マニュアルの有無フラグ。マニュアル本文自体は未実装(機能公開設定で「準備中」)だが、
+-- 会場一覧で「この会場は既にマニュアルを用意済みか」を一目で分かるようにするための機能。
+-- 行の存在=あり、として扱う(無ければ「なし」)。
+CREATE TABLE IF NOT EXISTS venue_manuals(
+  venue TEXT PRIMARY KEY,
+  updated_by INTEGER,
+  updated_at TEXT
+);
+
 -- ログイン失敗回数の記録(ブルートフォース攻撃対策)。登録番号ごとに一定回数失敗すると
 -- 一定時間ロックする。regnoが存在しない/しないに関わらず記録し、アカウント有無の推測も防ぐ。
 CREATE TABLE IF NOT EXISTS login_attempts(

@@ -3573,6 +3573,9 @@ async function api(req, env, url) {
     const rows = (await env.DB.prepare(
       "SELECT venue, COUNT(*) AS cnt, COUNT(DISTINCT date) AS dateCnt, MIN(date) AS firstDate, MAX(date) AS lastDate FROM schedule WHERE type='work' AND venue<>'' GROUP BY venue ORDER BY venue"
     ).all()).results;
+    const manualRows = (await env.DB.prepare('SELECT venue FROM venue_manuals').all()).results;
+    const manualSet = new Set(manualRows.map(r => r.venue));
+    for (const r of rows) r.hasManual = manualSet.has(r.venue);
     return J(rows);
   }
 
@@ -3584,11 +3587,27 @@ async function api(req, env, url) {
     const venue = url.searchParams.get('venue');
     if (!venue) return ERR('venue が必要です');
     const today = jstDate();
-    const [pastRes, futureRes] = await Promise.all([
+    const [pastRes, futureRes, manualRow] = await Promise.all([
       env.DB.prepare("SELECT date, site, venue, COUNT(*) AS cnt FROM schedule WHERE type='work' AND venue=? AND date<? GROUP BY date, site, venue ORDER BY date DESC LIMIT 200").bind(venue, today).all(),
       env.DB.prepare("SELECT date, site, venue, COUNT(*) AS cnt FROM schedule WHERE type='work' AND venue=? AND date>=? GROUP BY date, site, venue ORDER BY date ASC LIMIT 200").bind(venue, today).all(),
+      env.DB.prepare('SELECT 1 FROM venue_manuals WHERE venue=?').bind(venue).first(),
     ]);
-    return J({ venue, past: pastRes.results, future: futureRes.results });
+    return J({ venue, past: pastRes.results, future: futureRes.results, hasManual: !!manualRow });
+  }
+
+  // ---- 会場マニュアルの有無フラグ(手配者以上)。マニュアル本文自体はまだ実装していないが、
+  //      「この会場は既にマニュアルを用意済みか」を会場一覧で一目で分かるようにするための機能。
+  //      行の存在=あり、として扱う(venue_manualsに行が無ければ「なし」)。 ----
+  if (method === 'POST' && path === '/venues/manual-flag') {
+    if (!has(me, 'site_manage')) return ERR('権限がありません', 403);
+    const venue = typeof body.venue === 'string' ? body.venue.trim() : '';
+    if (!venue) return ERR('会場名が必要です');
+    if (body.hasManual) {
+      await env.DB.prepare('INSERT OR REPLACE INTO venue_manuals(venue,updated_by,updated_at) VALUES(?,?,?)').bind(venue, me.id, jstTs()).run();
+    } else {
+      await env.DB.prepare('DELETE FROM venue_manuals WHERE venue=?').bind(venue).run();
+    }
+    return J({ ok: 1 });
   }
 
   // ---- 会場一覧: 選択した複数の会場名を、まとめて統一名称に変更(手配者以上)。
@@ -3634,6 +3653,11 @@ async function api(req, env, url) {
 
     // 未配置のまま登録だけされている現場(site_registry)が旧会場名を参照していれば、あわせて更新する
     await env.DB.prepare(`UPDATE site_registry SET venue=? WHERE venue IN (${ph})`).bind(newVenue, ...venues).run();
+
+    // 会場マニュアルの有無フラグも、統合後の新しい会場名に引き継ぐ(元のいずれかが「あり」なら引き継ぐ)
+    const hadManual = await env.DB.prepare(`SELECT 1 FROM venue_manuals WHERE venue IN (${ph}) LIMIT 1`).bind(...venues).first();
+    await env.DB.prepare(`DELETE FROM venue_manuals WHERE venue IN (${ph})`).bind(...venues).run();
+    if (hadManual) await env.DB.prepare('INSERT OR REPLACE INTO venue_manuals(venue,updated_by,updated_at) VALUES(?,?,?)').bind(newVenue, me.id, ts).run();
 
     return J({ ok: 1, updatedDays, ts });
   }
