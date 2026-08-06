@@ -1641,7 +1641,7 @@ async function pageAvailabilityTeam(app){
 
   app.innerHTML = `
   <h2 style="margin-bottom:4px">${icon('calendarDays')} チームの希望一覧</h2>
-  <div class="card" style="margin-bottom:14px">
+  <div class="card sticky-filters" style="margin-bottom:14px">
     <div class="row" style="align-items:center;gap:10px">
       <button class="btn ghost sm" id="avt-prev">◀</button>
       <div class="mtitle" style="margin:0">${y}年 ${mo}月</div>
@@ -1728,7 +1728,7 @@ async function pageNominationsApprove(app){
   app.innerHTML = `
   <h2 style="margin-bottom:8px">${icon('handRaise')} メンバー指名の承認</h2>
   ${rows.length ? `
-  <div class="row" id="sn-bulk-bar" style="margin-bottom:10px;gap:8px;align-items:center">
+  <div class="row sticky-filters" id="sn-bulk-bar" style="margin-bottom:10px;gap:8px;align-items:center">
     <button class="btn gold sm" id="sn-bulk-approve" disabled>選択した項目を承認(<span id="sn-sel-count">0</span>)</button>
     <button class="btn danger sm" id="sn-bulk-reject" disabled>選択した項目を見送る</button>
   </div>
@@ -2325,7 +2325,7 @@ async function pageSchedule(app, hash){
   app.innerHTML = `
   <h2>${h(u.name)} のスケジュール ${uid!==ME.id?'<span class="muted">(閲覧中)</span>':''}</h2>
   <div class="card">
-    <div class="row" style="justify-content:space-between">
+    <div class="row sticky-filters" style="justify-content:space-between">
       <div class="month-nav">
         <button class="btn ghost sm" id="prev-m">◀</button>
         <div class="mtitle">${y}年 ${mo}月</div>
@@ -2710,19 +2710,21 @@ async function pageSites(app){
   app.innerHTML = `
   <h2>現場一覧</h2>
   <div class="card">
-    <div class="row" style="margin-bottom:12px;align-items:center;flex-wrap:wrap;gap:8px">
-      <button class="btn ghost sm" id="st-prev">◀</button>
-      <b style="min-width:110px;text-align:center">${y}年 ${mo}月</b>
-      <button class="btn ghost sm" id="st-next">▶</button>
-      ${dates.length ? `<button class="btn ghost sm" id="st-toggle-all">${allOpen ? icon('chevronsUp',{size:'12px'}) : icon('chevronsDown',{size:'12px'})} ${allOpen ? '全て閉じる' : '全て開く'}</button>` : ''}
-      ${canRegister ? `<button class="btn ghost sm" id="st-register-btn">${icon('plus',{size:'12px'})} 現場を登録</button>` : ''}
-      ${ME.handler===1 ? '<span class="muted" style="margin-left:auto">現場をタップ → メンバー確認・追加</span>' : '<span class="muted" style="margin-left:auto">現場をタップ → メンバー確認</span>'}
+    <div class="sticky-filters">
+      <div class="row" style="margin-bottom:12px;align-items:center;flex-wrap:wrap;gap:8px">
+        <button class="btn ghost sm" id="st-prev">◀</button>
+        <b style="min-width:110px;text-align:center">${y}年 ${mo}月</b>
+        <button class="btn ghost sm" id="st-next">▶</button>
+        ${dates.length ? `<button class="btn ghost sm" id="st-toggle-all">${allOpen ? icon('chevronsUp',{size:'12px'}) : icon('chevronsDown',{size:'12px'})} ${allOpen ? '全て閉じる' : '全て開く'}</button>` : ''}
+        ${canRegister ? `<button class="btn ghost sm" id="st-register-btn">${icon('plus',{size:'12px'})} 現場を登録</button>` : ''}
+        ${ME.handler===1 ? '<span class="muted" style="margin-left:auto">現場をタップ → メンバー確認・追加</span>' : '<span class="muted" style="margin-left:auto">現場をタップ → メンバー確認</span>'}
+      </div>
+      ${canRename && stSites.selected.size ? `<div class="row" style="margin-bottom:0;gap:8px;align-items:center;background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:8px 10px;flex-wrap:wrap">
+        <span class="muted" style="font-weight:600">${stSites.selected.size}件選択中</span>
+        <button class="btn gold sm" id="st-bulk-rename">${icon('edit',{size:'12px'})} まとめて現場名・会場を変更</button>
+        <button class="btn ghost sm" id="st-bulk-clear">選択解除</button>
+      </div>` : ''}
     </div>
-    ${canRename && stSites.selected.size ? `<div class="row" style="margin-bottom:12px;gap:8px;align-items:center;background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:8px 10px;flex-wrap:wrap">
-      <span class="muted" style="font-weight:600">${stSites.selected.size}件選択中</span>
-      <button class="btn gold sm" id="st-bulk-rename">${icon('edit',{size:'12px'})} まとめて現場名・会場を変更</button>
-      <button class="btn ghost sm" id="st-bulk-clear">選択解除</button>
-    </div>` : ''}
     ${dates.length ? dates.map(date=>{
       const w = new Date(date.slice(0,4), Number(date.slice(5,7))-1, Number(date.slice(8,10))).getDay();
       return `<details class="st-day" data-date="${date}" ${stSites.openDates.has(date)?'open':''}>
@@ -2914,13 +2916,15 @@ async function pageVenues(app){
   app.innerHTML = `
   <h2 style="margin-bottom:8px">${icon('mapPin')} 会場一覧</h2>
   <div class="card">
-    <div class="row" style="margin-bottom:12px;gap:10px;flex-wrap:wrap;align-items:center">
-      <input id="venue-q" placeholder="会場名で検索" value="${h(st.q)}" style="flex:1;min-width:140px">
-      <label style="display:flex;align-items:center;gap:6px;font-size:13px;white-space:nowrap;cursor:pointer">
-        <input type="checkbox" id="venue-manual-only" ${st.manualOnly?'checked':''}> マニュアルがある会場のみ
-      </label>
+    <div class="sticky-filters">
+      <div class="row" style="margin-bottom:12px;gap:10px;flex-wrap:wrap;align-items:center">
+        <input id="venue-q" placeholder="会場名で検索" value="${h(st.q)}" style="flex:1;min-width:140px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;white-space:nowrap;cursor:pointer">
+          <input type="checkbox" id="venue-manual-only" ${st.manualOnly?'checked':''}> マニュアルがある会場のみ
+        </label>
+      </div>
+      <div class="row" id="venue-bulk-bar" style="margin-bottom:0;gap:8px;align-items:center;background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:8px 10px;flex-wrap:wrap"></div>
     </div>
-    <div class="row" id="venue-bulk-bar" style="margin-bottom:12px;gap:8px;align-items:center;background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:8px 10px;flex-wrap:wrap"></div>
     <div id="venue-list" class="st-sites"></div>
   </div>`;
   renderList();
@@ -3068,7 +3072,7 @@ async function pageSummary(app){
   const [y,mo] = st.month.split('-').map(Number);
 
   app.innerHTML = `
-  <div class="sum-head">
+  <div class="sum-head sticky-filters">
     <h2 style="margin-bottom:0">${icon('barChart')} 稼働サマリー</h2>
     <div class="row" style="gap:8px;align-items:center">
       <button class="btn ghost sm" id="sum-prev">◀</button>
@@ -3248,33 +3252,35 @@ async function pageDaySchedule(app){
 
   app.innerHTML = `
   <h2 style="margin-bottom:4px">${icon('layoutGrid')} スケジュール一覧</h2>
-  <div class="card" style="margin-bottom:14px">
-    <div class="row" style="align-items:center;gap:10px">
-      <button class="btn ghost sm" id="ds-prev">◀ 前の${st.days}日間</button>
-      <b style="min-width:120px;text-align:center">${dateHead[0].mo}/${dateHead[0].da} 〜 ${dateHead[dateHead.length-1].mo}/${dateHead[dateHead.length-1].da}</b>
-      <button class="btn ghost sm" id="ds-next">次の${st.days}日間 ▶</button>
-      ${st.from!==today?'<button class="btn ghost sm" id="ds-today">今日に戻る</button>':''}
+  <div class="sticky-filters">
+    <div class="card" style="margin-bottom:14px">
+      <div class="row" style="align-items:center;gap:10px">
+        <button class="btn ghost sm" id="ds-prev">◀ 前の${st.days}日間</button>
+        <b style="min-width:120px;text-align:center">${dateHead[0].mo}/${dateHead[0].da} 〜 ${dateHead[dateHead.length-1].mo}/${dateHead[dateHead.length-1].da}</b>
+        <button class="btn ghost sm" id="ds-next">次の${st.days}日間 ▶</button>
+        ${st.from!==today?'<button class="btn ghost sm" id="ds-today">今日に戻る</button>':''}
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:0">
+      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
+        <label class="muted" style="font-size:12px">並び替え</label>
+        <select id="ds-sort">
+          ${opt('regno','登録番号順',st.sort)}${opt('rank','ランク順',st.sort)}${opt('ka','課順',st.sort)}${opt('han','班順',st.sort)}${opt('managerName','手配担当順',st.sort)}
+        </select>
+        <label class="muted" style="font-size:12px;margin-left:8px">絞り込み</label>
+        <select id="ds-ka"><option value="">課:すべて</option>${kaOptions.map(v=>opt(v,v,st.ka)).join('')}</select>
+        <select id="ds-han"><option value="">班:すべて</option>${hanOptions.map(v=>opt(v,v,st.han)).join('')}</select>
+        <select id="ds-mgr">
+          <option value="">手配担当:すべて</option>
+          ${mgrOptions.map(([id,name])=>opt(id,name,st.mgr)).join('')}
+          <option value="__chief:1課" ${st.mgr==='__chief:1課'?'selected':''}>チーフ手配(1課)</option>
+          <option value="__chief:2課" ${st.mgr==='__chief:2課'?'selected':''}>チーフ手配(2課)</option>
+        </select>
+        ${(st.ka||st.han||st.mgr)?`<button class="btn ghost sm" id="ds-clear">${icon('x')} 絞り込み解除</button>`:''}
+      </div>
     </div>
   </div>
-  <div class="card" style="margin-bottom:14px">
-    <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
-      <label class="muted" style="font-size:12px">並び替え</label>
-      <select id="ds-sort">
-        ${opt('regno','登録番号順',st.sort)}${opt('rank','ランク順',st.sort)}${opt('ka','課順',st.sort)}${opt('han','班順',st.sort)}${opt('managerName','手配担当順',st.sort)}
-      </select>
-      <label class="muted" style="font-size:12px;margin-left:8px">絞り込み</label>
-      <select id="ds-ka"><option value="">課:すべて</option>${kaOptions.map(v=>opt(v,v,st.ka)).join('')}</select>
-      <select id="ds-han"><option value="">班:すべて</option>${hanOptions.map(v=>opt(v,v,st.han)).join('')}</select>
-      <select id="ds-mgr">
-        <option value="">手配担当:すべて</option>
-        ${mgrOptions.map(([id,name])=>opt(id,name,st.mgr)).join('')}
-        <option value="__chief:1課" ${st.mgr==='__chief:1課'?'selected':''}>チーフ手配(1課)</option>
-        <option value="__chief:2課" ${st.mgr==='__chief:2課'?'selected':''}>チーフ手配(2課)</option>
-      </select>
-      ${(st.ka||st.han||st.mgr)?`<button class="btn ghost sm" id="ds-clear">${icon('x')} 絞り込み解除</button>`:''}
-    </div>
-  </div>
-  <div class="card" style="padding:0">
+  <div class="card" style="padding:0;margin-top:14px">
     ${renderMatrixTable(data.dates, list)}
   </div>
   <div class="muted" style="margin-top:8px;font-size:12px">${list.length}人 表示中(全${data.rows.length}人)</div>`;
@@ -3339,7 +3345,7 @@ async function pageMemberStats(app){
   app.innerHTML = `
   <h2 style="margin-bottom:4px">${icon('trendingUp')} メンバー分析</h2>
 
-  <div class="ka-tabs">
+  <div class="ka-tabs sticky-filters">
     ${['全体','1課','2課'].map(t=>`<button class="ka-tab ${t==='1課'?'ka1':t==='2課'?'ka2':''} ${st.tab===t?'on':''}" data-tab="${t}">${t}</button>`).join('')}
   </div>
 
@@ -3620,19 +3626,21 @@ async function pageMembers(app){
   app.innerHTML = `
   <h2>メンバー一覧 <span class="ka-badge ka-${st.tab==='1課'?'1':'2'}">${st.tab}</span></h2>
   <div class="card">
-    <div class="ka-tabs">
-      <button class="ka-tab ka2 ${st.tab==='2課'?'on':''}" data-tab="2課">2課 (${cnt2}名)</button>
-      <button class="ka-tab ka1 ${st.tab==='1課'?'on':''}" data-tab="1課">1課 (${cnt1}名)</button>
-      ${cntX?`<button class="ka-tab ${st.tab==='未設定'?'on':''}" data-tab="未設定">未設定 (${cntX}名)</button>`:''}
-    </div>
-    <div class="filter-bar">
-      <input id="m-search" class="search-input" placeholder="氏名・登録番号・班・駅で検索" value="${h(st.q)}">
-      <select id="m-mgr" class="filter-select">
-        <option value="">手配担当:すべて</option>
-        ${managers.map(m=>`<option value="${m.id}" ${String(st.mgr)===String(m.id)?'selected':''}>${h(m.name)}手配</option>`).join('')}
-        <option value="__chief" ${st.mgr==='__chief'?'selected':''}>チーフ手配</option>
-      </select>
-      <button class="btn ghost sm" id="m-clear" style="${(st.q||st.mgr)?'':'display:none'}">クリア</button>
+    <div class="sticky-filters">
+      <div class="ka-tabs">
+        <button class="ka-tab ka2 ${st.tab==='2課'?'on':''}" data-tab="2課">2課 (${cnt2}名)</button>
+        <button class="ka-tab ka1 ${st.tab==='1課'?'on':''}" data-tab="1課">1課 (${cnt1}名)</button>
+        ${cntX?`<button class="ka-tab ${st.tab==='未設定'?'on':''}" data-tab="未設定">未設定 (${cntX}名)</button>`:''}
+      </div>
+      <div class="filter-bar" style="margin-bottom:0">
+        <input id="m-search" class="search-input" placeholder="氏名・登録番号・班・駅で検索" value="${h(st.q)}">
+        <select id="m-mgr" class="filter-select">
+          <option value="">手配担当:すべて</option>
+          ${managers.map(m=>`<option value="${m.id}" ${String(st.mgr)===String(m.id)?'selected':''}>${h(m.name)}手配</option>`).join('')}
+          <option value="__chief" ${st.mgr==='__chief'?'selected':''}>チーフ手配</option>
+        </select>
+        <button class="btn ghost sm" id="m-clear" style="${(st.q||st.mgr)?'':'display:none'}">クリア</button>
+      </div>
     </div>
     <div id="m-list-area"></div>
   </div>`;
@@ -4847,7 +4855,7 @@ async function pageSelfReports(app){
   app.innerHTML = `
   <h2 style="margin-bottom:8px">${icon('mail')} 現場変更報告の承認</h2>
   ${rows.length ? `
-  <div class="row" id="sr-bulk-bar" style="margin-bottom:10px;gap:8px;align-items:center;flex-wrap:wrap">
+  <div class="row sticky-filters" id="sr-bulk-bar" style="margin-bottom:10px;gap:8px;align-items:center;flex-wrap:wrap">
     <button class="btn gold sm" id="sr-bulk-approve" disabled>選択した項目を承認(<span id="sr-sel-count">0</span>)</button>
     <button class="btn danger sm" id="sr-bulk-reject" disabled>選択した項目を見送る</button>
   </div>
@@ -5027,7 +5035,7 @@ async function pageHandlerStatus(app){
   const sec = (id,title,body)=>`<details class="adm-sec" id="hssec-${id}" data-sec="${id}" ${openSet[id]?'open':''}><summary><span class="adm-sec-title">${title}</span></summary><div class="adm-body">${body}</div></details>`;
   app.innerHTML = `
   <h2 style="margin-bottom:8px">ログイン中メンバー・編集履歴</h2>
-  <div class="adm-nav">
+  <div class="adm-nav sticky-filters">
     ${[['online',`${icon('circleFilled')} ログイン中`],['hist',`${icon('fileText')} 編集履歴`]].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
   </div>
   ${sec('online',`${icon('circleFilled')} 現在ログイン中のメンバー <span class="muted" style="font-weight:400">(10秒ごとに自動更新)</span>`, `<div id="hd-online" class="muted"><span class="spinner" style="width:13px;height:13px;border-width:2px;margin-right:5px"></span>読み込み中…</div>`)}
@@ -5143,7 +5151,7 @@ async function pageRolePermissions(app){
   app.innerHTML = `
   <div style="margin-bottom:14px"><a href="#/admin" class="btn ghost sm">← アカウント管理に戻る</a></div>
   <h2 style="margin-bottom:4px">権限の一括設定</h2>
-  <div class="adm-nav">
+  <div class="adm-nav sticky-filters">
     ${roles.map(r=>`<button class="adm-chip" data-jump="role-${r.key}">${r.label}</button>`).join('')}
   </div>
   ${roles.map(r=>`<details class="adm-sec" id="rsec-${r.key}" data-sec="${r.key}">
@@ -5909,21 +5917,23 @@ async function pageDaicho(app){
   <h2 style="margin-bottom:8px">${icon('package')} 台帳保管</h2>
   <div class="card">
     ${items.length ? `
-    <div class="filter-bar" style="flex-wrap:wrap;gap:8px">
-      <input id="dc-name" class="search-input" placeholder="ファイル名で検索" value="${h(st.name)}" style="min-width:160px;flex:1 1 160px">
-      <select id="dc-person" class="filter-select" style="flex:1 1 140px">
-        <option value="">取り込んだ人:すべて</option>
-        ${persons.map(p=>`<option value="${h(p)}" ${st.person===p?'selected':''}>${h(p)}</option>`).join('')}
-      </select>
-      <label class="muted" style="display:flex;align-items:center;gap:4px;font-size:13px;white-space:nowrap">開始<input type="date" id="dc-from" value="${h(st.dateFrom)}" style="max-width:150px"></label>
-      <label class="muted" style="display:flex;align-items:center;gap:4px;font-size:13px;white-space:nowrap">終了<input type="date" id="dc-to" value="${h(st.dateTo)}" style="max-width:150px"></label>
-      <button class="btn ghost sm" id="dc-clear" style="${hasFilterOn()?'':'display:none'}">クリア</button>
-    </div>
-    <div class="row" style="margin:8px 0;align-items:center;gap:6px">
-      <label class="muted" style="font-size:13px;white-space:nowrap">並び替え</label>
-      <select id="dc-sort" class="filter-select" style="flex:1 1 220px">
-        ${sortOptions.map(([col,dir,label])=>`<option value="${col}:${dir}" ${st.sortCol===col&&st.sortDir===dir?'selected':''}>${label}</option>`).join('')}
-      </select>
+    <div class="sticky-filters">
+      <div class="filter-bar" style="flex-wrap:wrap;gap:8px">
+        <input id="dc-name" class="search-input" placeholder="ファイル名で検索" value="${h(st.name)}" style="min-width:160px;flex:1 1 160px">
+        <select id="dc-person" class="filter-select" style="flex:1 1 140px">
+          <option value="">取り込んだ人:すべて</option>
+          ${persons.map(p=>`<option value="${h(p)}" ${st.person===p?'selected':''}>${h(p)}</option>`).join('')}
+        </select>
+        <label class="muted" style="display:flex;align-items:center;gap:4px;font-size:13px;white-space:nowrap">開始<input type="date" id="dc-from" value="${h(st.dateFrom)}" style="max-width:150px"></label>
+        <label class="muted" style="display:flex;align-items:center;gap:4px;font-size:13px;white-space:nowrap">終了<input type="date" id="dc-to" value="${h(st.dateTo)}" style="max-width:150px"></label>
+        <button class="btn ghost sm" id="dc-clear" style="${hasFilterOn()?'':'display:none'}">クリア</button>
+      </div>
+      <div class="row" style="margin:8px 0 0;align-items:center;gap:6px">
+        <label class="muted" style="font-size:13px;white-space:nowrap">並び替え</label>
+        <select id="dc-sort" class="filter-select" style="flex:1 1 220px">
+          ${sortOptions.map(([col,dir,label])=>`<option value="${col}:${dir}" ${st.sortCol===col&&st.sortDir===dir?'selected':''}>${label}</option>`).join('')}
+        </select>
+      </div>
     </div>
     <div id="dc-list-area"></div>
     ` : '<div class="muted" style="padding:24px 0;text-align:center">まだ保管された台帳はありません。スプレッドシートを取り込むと、ここに元Excelが保管されます。</div>'}
@@ -6109,7 +6119,7 @@ async function pageAdmin(app){
 
   app.innerHTML = `
   <h2 style="margin-bottom:8px">アカウント管理</h2>
-  <div class="adm-nav">
+  <div class="adm-nav sticky-filters">
     ${[['data',`${icon('clipboardList')} 全データ`],['create',`${icon('plus')} 新規作成`],['list',`${icon('users')} アカウント一覧`]].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
     <a href="#/role-permissions" class="adm-chip" style="text-decoration:none;display:inline-block">${icon('shield')} 権限の一括設定</a>
     <a href="#/admin-settings" class="adm-chip" style="text-decoration:none;display:inline-block">${icon('wrench')} システム設定</a>
@@ -6260,7 +6270,7 @@ async function pageAdminSettings(app){
   const sec = (id,title,body)=>`<details class="adm-sec" id="asec-${id}" data-sec="${id}" ${openSet[id]?'open':''}><summary><span class="adm-sec-title">${title}</span></summary><div class="adm-body">${body}</div></details>`;
   app.innerHTML = `
   <h2 style="margin-bottom:8px">${icon('wrench')} システム設定</h2>
-  <div class="adm-nav">
+  <div class="adm-nav sticky-filters">
     ${[['pin',`${icon('key')} PIN`],['link',`${icon('link')} 連携`],['features',`${icon('flask')} 機能公開`],['notify',`${icon('bell')} 通知`],['wage',`${icon('yen')} 時給`],['report-type',`${icon('fileText')} 報告選択肢`],['maintenance',`${icon('construction')} メンテナンス`]].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
   </div>
 

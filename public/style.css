@@ -466,6 +466,14 @@ table.sched tbody tr.editable-row:hover td:not(.site-multi):not(.plan-cell){ bac
 .filter-select:focus{ border-color:var(--gold); outline:none; box-shadow:0 0 0 3px rgba(201,162,39,.15); }
 @media (max-width:480px){ .filter-bar{ gap:6px } .search-input{ min-width:0; flex:1 1 100% } .filter-select{ flex:1 } }
 
+/* 検索欄・フィルタ・タブ・一括操作バーなど、各ページの上部操作エリアをヘッダーの下に
+   固定表示する(下にスクロールしても、いちいち上まで戻らず操作できるようにするため)。
+   ヘッダー(header)がposition:sticky;top:0;height:54px(スマホ52px)なので、その高さ分
+   topをずらす。背景は.card/ページ背景がいずれも白系のため、単純に白背景を敷けば
+   下に隠れる要素との境目も自然に馴染む(はみ出し防止のためカードのbleedは行わない)。 */
+.sticky-filters{position:sticky;top:54px;z-index:30;background:#fff;padding-top:2px;padding-bottom:8px;margin-bottom:2px;box-shadow:0 4px 6px -6px rgba(0,0,0,.25)}
+@media (max-width:640px){ .sticky-filters{top:52px} }
+
 /* ===== コンフリクト検知モーダル ===== */
 .cf-layer{position:fixed;inset:0;background:rgba(20,25,40,.55);display:flex;align-items:center;justify-content:center;z-index:200;padding:16px}
 .cf-box{background:#fff;border-radius:10px;max-width:560px;width:100%;max-height:88vh;overflow:auto;padding:18px;box-shadow:0 10px 40px rgba(0,0,0,.35);border-top:4px solid var(--cell-off)}
