@@ -2863,7 +2863,9 @@ function openSiteBulkRename(targets, onDone, opt={}){
 /* ===== 会場一覧(チーフ以上)。現場一覧と同じ感覚で、会場ごとに過去/今後の現場を確認できる ===== */
 async function pageVenues(app){
   if(!has('sites_view')){ notFound(app); return; }
-  const st = PAGE_STATE.venues || (PAGE_STATE.venues = { q:'', selected: new Set(), manualOnly:false });
+  const st = PAGE_STATE.venues || (PAGE_STATE.venues = { q:'', selected: new Set(), manualOnly:false, sort:'name' });
+  if(!st.sort) st.sort = 'name'; // 古い保存状態との互換
+  const venueSortOptions = { name:'会場名順(あ→ん)', cnt:'使用回数が多い順', recent:'最近使った順' };
   if(!st.selected) st.selected = new Set(); // 古い保存状態との互換
   const canRename = has('site_manage'); // 会場名のまとめて変更(手配者以上)
   app.innerHTML = `<h2>${icon('mapPin')} 会場一覧</h2><div class="card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>`;
@@ -2889,10 +2891,19 @@ async function pageVenues(app){
     if(bcBtn) bcBtn.onclick = () => { st.selected = new Set(); renderList(); renderBulkBar(); };
   };
 
+  const sortList = (list) => {
+    const sorted = [...list];
+    if(st.sort === 'cnt') sorted.sort((a,b) => b.cnt - a.cnt || String(a.venue||'').localeCompare(String(b.venue||''), 'ja'));
+    else if(st.sort === 'recent') sorted.sort((a,b) => String(b.lastDate||'').localeCompare(String(a.lastDate||'')) || String(a.venue||'').localeCompare(String(b.venue||''), 'ja'));
+    else sorted.sort((a,b) => String(a.venue||'').localeCompare(String(b.venue||''), 'ja'));
+    return sorted;
+  };
+
   const renderList = () => {
     const q = st.q.trim();
     let filtered = q ? venues.filter(v => (v.venue||'').includes(q)) : venues;
     if(st.manualOnly) filtered = filtered.filter(v => v.hasManual);
+    filtered = sortList(filtered);
     const listEl = $('#venue-list');
     if(!listEl) return;
     listEl.innerHTML = filtered.length ? filtered.map(v => `<div class="st-site-row">
@@ -2919,6 +2930,10 @@ async function pageVenues(app){
     <div class="sticky-filters">
       <div class="row" style="margin-bottom:12px;gap:10px;flex-wrap:wrap;align-items:center">
         <input id="venue-q" placeholder="会場名で検索" value="${h(st.q)}" style="flex:1;min-width:140px">
+        <label class="muted" style="font-size:12px;white-space:nowrap">並び替え</label>
+        <select id="venue-sort">
+          ${Object.entries(venueSortOptions).map(([k,l])=>`<option value="${k}" ${k===st.sort?'selected':''}>${l}</option>`).join('')}
+        </select>
         <label style="display:flex;align-items:center;gap:6px;font-size:13px;white-space:nowrap;cursor:pointer">
           <input type="checkbox" id="venue-manual-only" ${st.manualOnly?'checked':''}> マニュアルがある会場のみ
         </label>
@@ -2930,6 +2945,7 @@ async function pageVenues(app){
   renderList();
   renderBulkBar();
   $('#venue-q').oninput = (e) => { st.q = e.target.value; renderList(); };
+  $('#venue-sort').onchange = (e) => { st.sort = e.target.value; renderList(); };
   $('#venue-manual-only').onchange = (e) => { st.manualOnly = e.target.checked; renderList(); };
 }
 
