@@ -942,7 +942,7 @@ async function openSiteBulkEdit(date, site, venue, list){
   const def = { tin:(list.find(p=>p.tin)||{}).tin||'', tout:(list.find(p=>p.tout)||{}).tout||'' };
   modal(`<h3>既存メンバーを一括編集</h3>
     <div class="muted" style="margin-bottom:8px"><b>${h(site)}</b>${venue?` / ${h(venue)}`:''} / ${h(date)}</div>
-    <div class="be-note muted" style="margin-bottom:10px">空欄の項目は変更しません。チェックを外した人はこの現場から削除します。</div>
+    <div class="be-note muted" style="margin-bottom:10px">チェックを入れた人だけに、現場名・会場・IN/OUTの変更を適用します(空欄の項目は変更しません)。チェックを外した人は変更しません。「休暇」にチェックを入れた人はこの現場を休暇に変更します(現場の変更内容より優先されます)。</div>
     <div class="form-grid" style="grid-template-columns:70px 1fr;max-width:420px">
       <label>現場名</label><input id="be-site" value="${h(site)}" placeholder="変更する場合のみ">
       <label>会場</label><input id="be-venue" value="${h(venue)}" placeholder="変更する場合のみ">
@@ -951,25 +951,35 @@ async function openSiteBulkEdit(date, site, venue, list){
     </div>
     <div class="section-label" style="margin-top:12px">対象メンバー(${list.length}名)</div>
     <div id="be-list" style="max-height:46vh;overflow:auto;margin-top:6px">
-      ${list.map((p,i)=>`<label class="be-item ka-${p.ka==='1課'?'1':'2'}" style="display:flex;align-items:center;gap:8px;padding:7px 8px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px">
-        <input type="checkbox" class="be-chk" data-uid="${p.uid}" checked>
-        <span style="flex:1"><b>${h(p.name)}</b> ${p.ka?`<span class="ka-pill ka-${p.ka==='1課'?'1':'2'}">${p.ka}</span>`:''} <span class="muted">${h(p.rank)} ${h(p.han)}</span></span>
+      ${list.map((p,i)=>`<div class="be-item ka-${p.ka==='1課'?'1':'2'}" style="display:flex;align-items:center;gap:8px;padding:7px 8px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px">
+        <label style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;cursor:pointer">
+          <input type="checkbox" class="be-chk" data-uid="${p.uid}" checked>
+          <span style="flex:1"><b>${h(p.name)}</b> ${p.ka?`<span class="ka-pill ka-${p.ka==='1課'?'1':'2'}">${p.ka}</span>`:''} <span class="muted">${h(p.rank)} ${h(p.han)}</span></span>
+        </label>
         <span class="muted" style="font-size:12px">${h(p.tin)||'—'}〜${h(p.tout)||'—'}</span>
-      </label>`).join('')}
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted);cursor:pointer"><input type="checkbox" class="be-off" data-uid="${p.uid}">休暇</label>
+      </div>`).join('')}
     </div>
     <div class="row" style="margin-top:14px"><button class="btn gold" id="be-save" style="flex:1">変更を保存</button></div>`);
   $('#be-save').onclick = async () => {
     const siteNew=$('#be-site').value.trim();
     const venueNew=$('#be-venue').value.trim(), tin=$('#be-in').value.trim(), tout=$('#be-out').value.trim();
-    const keep=[], remove=[];
-    document.querySelectorAll('.be-chk').forEach(c=>{ (c.checked?keep:remove).push(Number(c.dataset.uid)); });
-    if(!siteNew){ popup('現場名は空にできません','error'); return; }
+    const offSet = new Set();
+    document.querySelectorAll('.be-off').forEach(c=>{ if(c.checked) offSet.add(Number(c.dataset.uid)); });
+    const keep=[], off=[];
+    document.querySelectorAll('.be-chk').forEach(c=>{
+      const uid = Number(c.dataset.uid);
+      if(offSet.has(uid)) off.push(uid);
+      else if(c.checked) keep.push(uid);
+    });
+    if(!keep.length && !off.length){ popup('対象を選択してください','error'); return; }
+    if(keep.length && !siteNew){ popup('現場名は空にできません','error'); return; }
     await withLoading($('#be-save'), async () => {
       try{
-        const r = await api('/site-edit',{method:'PUT',body:{ date, site, keepUids:keep, removeUids:remove,
+        const r = await api('/site-edit',{method:'PUT',body:{ date, site, keepUids:keep, offUids:off,
           newSite:siteNew, venue:venueNew, tin, tout }});
         closeModal();
-        popup(`${r.updated||0}名を更新${r.removed?` / ${r.removed}名を削除`:''}しました。`);
+        popup(`${r.updated||0}名を更新${r.off?` / ${r.off}名を休暇に変更`:''}しました。`);
         if(typeof pageSites==='function' && location.hash.startsWith('#/sites')){ const app=document.getElementById('app'); pageSites(app); }
         else render();
       }catch(e){ popup(e.message,'error'); }

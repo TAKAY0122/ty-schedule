@@ -2952,25 +2952,26 @@ async function api(req, env, url) {
     const venue = (body.venue || '').trim();
     const newSite = (body.newSite || '').trim();
     const tin = (body.tin || '').trim(), tout = (body.tout || '').trim();
-    const removeUids = Array.isArray(body.removeUids) ? body.removeUids.map(Number).filter(Boolean) : [];
+    const offUids = Array.isArray(body.offUids) ? body.offUids.map(Number).filter(Boolean) : [];
     const keepUids = Array.isArray(body.keepUids) ? body.keepUids.map(Number).filter(Boolean) : [];
     const ts = jstTs();
-    let updated = 0, removed = 0;
+    let updated = 0, off = 0;
     if (isLocked(date, me, await getLockDays(env))) return ERR('給与確定済みのため編集できません（確定期間を過ぎています）', 409);
     const resolve = await loadWageResolver(env);
     const dutyMap = await loadDutyMap(env);
-    // 削除対象
-    for (const uid of removeUids) {
+    // 休暇に変更する対象
+    for (const uid of offUids) {
       const before = (await env.DB.prepare('SELECT * FROM schedule WHERE user_id=? AND date=? ORDER BY slot').bind(uid, date).all()).results;
       if (!before.some(b => b.site === site)) continue;
-      await env.DB.prepare("DELETE FROM schedule WHERE user_id=? AND date=? AND site=?").bind(uid, date, site).run();
-      const after = (await env.DB.prepare('SELECT * FROM schedule WHERE user_id=? AND date=? ORDER BY slot').bind(uid, date).all()).results;
-      const afterJsonSe1 = JSON.stringify(after.map(stripRow));
-      if (!isNonWorkOnlyChange(afterJsonSe1)) {
-        await env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
-          .bind(ts, me.id, uid, date, JSON.stringify(before.map(stripRow)), afterJsonSe1).run();
-      }
-      removed++;
+      const beforeJson = JSON.stringify(before.map(stripRow));
+      const afterJson = JSON.stringify([stripRow({ type: 'off', site: '', venue: '', tin: '', tout: '', pay: 0, note: '', duty: '', load_end: '', show_end: '', multi: 0 })]);
+      await env.DB.prepare('DELETE FROM schedule WHERE user_id=? AND date=?').bind(uid, date).run();
+      await env.DB.prepare('INSERT INTO schedule(user_id,date,slot,type,site,venue,tin,tout,hours,overtime,pay,note,duty,load_end,show_end,multi) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+        .bind(uid, date, 0, 'off', '', '', '', '', 0, 0, 0, '', '', '', '', 0).run();
+      // 現場に入る予定だった人を休暇に変更する重要な操作のため、休暇のみへの変更を除外する通常のルールに関わらず必ず履歴に記録する
+      await env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
+        .bind(ts, me.id, uid, date, beforeJson, JSON.stringify({ slots: JSON.parse(afterJson), _src: `現場一覧の一括編集(${site}を休暇に変更)` })).run();
+      off++;
     }
     const rankCache = {};
     // 更新対象(keep)。空欄項目は据え置き。
@@ -2988,8 +2989,8 @@ async function api(req, env, url) {
         updated++;
       }
     }
-    // 手配チーム通知: 更新・削除された対象者の手配担当が自分以外なら知らせる(本人による自己更新は対象外)
-    const touchedUids = [...new Set([...removeUids, ...keepUids])];
+    // 手配チーム通知: 更新・休暇化された対象者の手配担当が自分以外なら知らせる(本人による自己更新は対象外)
+    const touchedUids = [...new Set([...offUids, ...keepUids])];
     if (touchedUids.length) {
       const ph = touchedUids.map(() => '?').join(',');
       const tgtUsers = (await env.DB.prepare(`SELECT id, name, manager_id FROM users WHERE id IN (${ph})`).bind(...touchedUids).all()).results;
@@ -3001,7 +3002,7 @@ async function api(req, env, url) {
         }
       }
     }
-    return J({ ok: 1, updated, removed });
+    return J({ ok: 1, updated, off });
   }
 
   // 個人スケジュール保存(手配者モード)。1日まるごと置換。保存前にコンフリクト検知
