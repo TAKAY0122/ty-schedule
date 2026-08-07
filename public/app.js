@@ -6487,14 +6487,13 @@ async function pageAdminSettings(app){
       </div>
       <div class="muted" style="margin-top:6px;font-size:12px">現在の設定では <b>${h(lockData.lockBefore)}</b> 以前が確定済みです。0にすると当日以降すべて編集可、長くすると過去まで編集可になります。</div>
     </div>` : ''}
-    ${wageData.periods.map(p=>`
-      <div style="font-weight:700;margin:10px 0 4px">${p.effective_from==='1900-01-01'?'旧時給（〜2025/9）':h(p.effective_from)+' 〜（改定）'}</div>
-      <table class="wage-tbl">
-        <tr><th>ランク</th><th>案内料金</th><th>搬入出料金</th></tr>
-        ${['A','B','C','D','E'].map(rk=>{const g=(p.rates[rk]||{}).guide||0,l=(p.rates[rk]||{}).load||0;return `<tr><td>${rk}</td>
-          <td><input type="number" class="wage-in" data-ef="${h(p.effective_from)}" data-rank="${rk}" data-kind="guide" value="${g}"></td>
-          <td><input type="number" class="wage-in" data-ef="${h(p.effective_from)}" data-rank="${rk}" data-kind="load" value="${l}"></td></tr>`;}).join('')}
-      </table>`).join('')}
+    <div id="wage-periods"></div>
+    <div class="row" style="margin:10px 0;gap:8px;align-items:center;flex-wrap:wrap;background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:8px 10px">
+      <span class="muted" style="font-size:12.5px">新しい改定の適用開始日</span>
+      <input type="date" id="wage-new-ef" style="width:150px">
+      <button class="btn ghost sm" id="wage-new-add">${icon('plus',{size:'12px'})} 改定を追加</button>
+      <span id="wage-new-msg" class="muted"></span>
+    </div>
     <div class="row" style="margin-top:12px;gap:8px;align-items:center">
       <button class="btn gold sm" id="wage-save">時給を保存</button>
       <span id="wage-msg" class="muted"></span>
@@ -6605,6 +6604,48 @@ async function pageAdminSettings(app){
       });
   }; }
 
+  const renderWagePeriods = () => {
+    const el = $('#wage-periods'); if(!el || !wageData) return;
+    const sorted = [...wageData.periods].sort((a,b)=>a.effective_from.localeCompare(b.effective_from));
+    el.innerHTML = sorted.map(p=>`
+      <div class="row" style="align-items:center;gap:8px;margin:10px 0 4px">
+        <div style="font-weight:700;flex:1">${p.effective_from==='1900-01-01'?'旧時給（〜2025/9）':h(p.effective_from)+' 〜（改定）'}</div>
+        ${sorted.length>1?`<button type="button" class="btn ghost xs wage-period-del" data-ef="${h(p.effective_from)}">削除</button>`:''}
+      </div>
+      <table class="wage-tbl">
+        <tr><th>ランク</th><th>案内料金</th><th>搬入出料金</th></tr>
+        ${['A','B','C','D','E'].map(rk=>{const g=(p.rates[rk]||{}).guide||0,l=(p.rates[rk]||{}).load||0;return `<tr><td>${rk}</td>
+          <td><input type="number" class="wage-in" data-ef="${h(p.effective_from)}" data-rank="${rk}" data-kind="guide" value="${g}"></td>
+          <td><input type="number" class="wage-in" data-ef="${h(p.effective_from)}" data-rank="${rk}" data-kind="load" value="${l}"></td></tr>`;}).join('')}
+      </table>`).join('');
+    el.querySelectorAll('.wage-period-del').forEach(b => b.onclick = async () => {
+      const ef = b.dataset.ef;
+      if(!confirm(`${ef} 〜 の改定を削除します。この期間に該当する現場の給与は、次に古い改定の時給で計算されるようになります。よろしいですか？`)) return;
+      await withLoading(b, async () => {
+        try{
+          await api('/wage-rates/delete',{method:'POST',body:{effective_from:ef}});
+          wageData.periods = wageData.periods.filter(p=>p.effective_from!==ef);
+          renderWagePeriods();
+          popup('削除しました');
+        }catch(e){ popup(e.message,'error'); }
+      });
+    });
+  };
+  renderWagePeriods();
+  { const wa = $('#wage-new-add'); if(wa) wa.onclick = () => {
+      const ef = $('#wage-new-ef').value;
+      const msg = $('#wage-new-msg');
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(ef)){ msg.textContent = '日付を選択してください'; return; }
+      if(wageData.periods.some(p=>p.effective_from===ef)){ msg.textContent = 'その日付は既に登録されています'; return; }
+      const base = [...wageData.periods].sort((a,b)=>a.effective_from.localeCompare(b.effective_from)).pop();
+      const rates = {};
+      for(const rk of ['A','B','C','D','E']) rates[rk] = { guide:(base&&base.rates[rk]||{}).guide||0, load:(base&&base.rates[rk]||{}).load||0 };
+      wageData.periods.push({ effective_from: ef, rates });
+      msg.textContent = '';
+      $('#wage-new-ef').value = '';
+      renderWagePeriods();
+      popup('入力欄を追加しました。金額を確認のうえ「時給を保存」を押してください');
+  }; }
   { const ws = $('#wage-save'); if(ws) ws.onclick = async () => {
       const rates = [...document.querySelectorAll('.wage-in')].map(i=>({effective_from:i.dataset.ef,rank:i.dataset.rank,kind:i.dataset.kind,amount:Number(i.value)})).filter(r=>Number.isFinite(r.amount)&&r.amount>=0);
       $('#wage-msg').textContent='保存中…';
