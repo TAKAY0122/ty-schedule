@@ -1284,15 +1284,15 @@ function renderShell(hash){
       ...(isChief ? [{ path:'#/nominate', icon:'user', label:'メンバーを希望する', role:'chief' }] : []),
       ...(isHandlerRole ? [{ path:'#/nominations', icon:'checkCircle', label:'メンバー指名の承認', role:'handler' }] : []),
     ]},
-    { path:'#/sites', icon:'stadium', label:'現場一覧', show:canSitesView },
-    { path:'#/venues', icon:'mapPin', label:'会場一覧', show:canSitesView },
-    { path:'#/artists', icon:'megaphone', label:'公演一覧', show:canSitesView },
+    { path:'#/sites', icon:'stadium', label:'現場一覧', show:canSitesView, role:'chief' },
+    { path:'#/venues', icon:'mapPin', label:'会場一覧', show:canSitesView, role:'chief' },
+    { path:'#/artists', icon:'megaphone', label:'公演一覧', show:canSitesView, role:'chief' },
     { icon:'users', label:'メンバー', show:showMemberGroup, children:[
       ...(isHandlerRole ? [{ path:'#/members/mine', icon:'briefcase', label:`${ME.name}手配`, role:'handler' }] : []),
-      ...(canMembersView ? [{ path:'#/members', icon:'users', label:'メンバー一覧' }] : []),
-      ...(canSummaryView ? [{ path:'#/summary', icon:'barChart', label:'稼働サマリー' }] : []),
-      ...(canMemberStatsView ? [{ path:'#/member-stats', icon:'trendingUp', label:'メンバー分析' }] : []),
-      ...(canDayScheduleView ? [{ path:'#/day-schedule', icon:'layoutGrid', label:'スケジュール一覧' }] : []),
+      ...(canMembersView ? [{ path:'#/members', icon:'users', label:'メンバー一覧', role:'chief' }] : []),
+      ...(canSummaryView ? [{ path:'#/summary', icon:'barChart', label:'稼働サマリー', role:'chief' }] : []),
+      ...(canMemberStatsView ? [{ path:'#/member-stats', icon:'trendingUp', label:'メンバー分析', role:'chief' }] : []),
+      ...(canDayScheduleView ? [{ path:'#/day-schedule', icon:'layoutGrid', label:'スケジュール一覧', role:'chief' }] : []),
       ...(canMemberSummaryNav ? [{ path:'#/member-summary/search', icon:'barChart', label:'個人の年間サマリー', role:'handler' }] : []),
     ]},
     { icon:'sparkles', label:'新人報告', show:true, children:[
@@ -2075,14 +2075,15 @@ async function pageHome(app){
     ['#/availability-team','calendarDays','チーム希望一覧', isHandlerRole, 'handler'],
     ['#/nominate','user','メンバー指名', isChief, 'chief'],
     ['#/nominations','checkCircle','指名の承認', isHandlerRole, 'handler'],
-    ['#/sites','stadium','現場一覧', has('sites_view')],
-    ['#/venues','mapPin','会場一覧', has('sites_view')],
+    ['#/sites','stadium','現場一覧', has('sites_view'), 'chief'],
+    ['#/venues','mapPin','会場一覧', has('sites_view'), 'chief'],
+    ['#/artists','megaphone','公演一覧', has('sites_view'), 'chief'],
     ['#/members/mine','briefcase',`${h(ME.name)}手配`, isHandlerRole, 'handler'],
-    ['#/members','users','メンバー\n一覧', has('members_view')],
-    ['#/summary','barChart','稼働サマリー', has('summary_view')],
+    ['#/members','users','メンバー\n一覧', has('members_view'), 'chief'],
+    ['#/summary','barChart','稼働サマリー', has('summary_view'), 'chief'],
     ['#/member-summary/search','barChart','個人の年間\nサマリー', has('member_summary_view'), 'handler'],
-    ['#/member-stats','trendingUp','メンバー分析', has('member_stats_view')],
-    ['#/day-schedule','layoutGrid','スケジュール一覧', has('day_schedule_view')],
+    ['#/member-stats','trendingUp','メンバー分析', has('member_stats_view'), 'chief'],
+    ['#/day-schedule','layoutGrid','スケジュール一覧', has('day_schedule_view'), 'chief'],
     ['#/self-reports','mail','変更報告承認', isHandlerRole, 'handler'],
     ['#/report','fileText','新人報告', true],
     ['#/reports','clipboardList','報告一覧', true],
@@ -2383,7 +2384,8 @@ async function pageSchedule(app, hash){
       </div>
     </div>
 
-  </div>`;
+  </div>
+  ${has('member_summary_view') ? `<div id="sched-year-summary" style="margin-top:24px"></div>` : ''}`;
 
   $('#prev-m').onclick = () => { MONTH = shiftMonth(MONTH,-1); render(); };
   $('#next-m').onclick = () => { MONTH = shiftMonth(MONTH, 1); render(); };
@@ -2504,6 +2506,29 @@ async function pageSchedule(app, hash){
     hint.className='muted'; hint.style.marginTop='6px';
     hint.innerHTML=`${icon('messageCircle',{size:'12px'})} 日付をタップ → 手配担当者以外から言われた現場変更を報告できます(自動で手配担当者に通知されます)`;
     app.querySelector('.card').appendChild(hint);
+  }
+
+  // マイスケジュール最下部に、個人の年間サマリーをあわせて表示する(閲覧権限はmember_summary_viewと同じ)。
+  // メインのスケジュール表とは独立して、この区画だけ年送り・備考の追加/削除で再描画する。
+  if(has('member_summary_view')){
+    const ysSt = PAGE_STATE.scheduleYearSummary || (PAGE_STATE.scheduleYearSummary = {});
+    if(ysSt.uid !== uid){ ysSt.uid = uid; ysSt.year = Number(jstToday().slice(0,4)) - (Number(jstToday().slice(5,7)) < 12 ? 1 : 0); }
+    const renderInlineYearSummary = async () => {
+      const container = $('#sched-year-summary');
+      if(!container) return;
+      container.innerHTML = `<div class="loading-box"><span class="spinner"></span>読み込み中…</div>`;
+      let data, notesData;
+      try{
+        [data, notesData] = await Promise.all([
+          api(`/member-year-summary?uid=${uid}&year=${ysSt.year}`),
+          api(`/member-notes?uid=${uid}`),
+        ]);
+      }catch(e){ container.innerHTML = ''; return; }
+      const canPayYS = has('site_pay');
+      container.innerHTML = `<h2 style="margin-bottom:4px">${icon('barChart')} 年間サマリー</h2>${yearSummaryCardsHtml(data, notesData, canPayYS)}`;
+      wireYearSummaryCards(uid, (delta)=>{ ysSt.year += delta; renderInlineYearSummary(); }, renderInlineYearSummary);
+    };
+    renderInlineYearSummary();
   }
 }
 
@@ -2884,21 +2909,116 @@ function openSiteBulkRename(targets, onDone, opt={}){
   };
 }
 
+/* ===== グループ機能(会場一覧・公演一覧共通)。手配者以上が自由に作成し、一覧のフィルタに使う。
+   kind: 'venue' | 'artist'。memberLabel: 会場名/公演名の呼び方(表示文言用)。 ===== */
+
+// 選択中の項目(会場名/公演名)を、既存グループに追加 or 新規グループを作って追加する。
+function openGroupPicker(kind, memberLabel, groups, selectedMembers, onDone){
+  if(!selectedMembers.length) return;
+  modal(`<h3>${icon('tag',{size:'15px'})} グループに追加</h3>
+    <div class="muted" style="font-size:12px;margin-bottom:10px">対象(${selectedMembers.length}件):</div>
+    <div style="max-height:20vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-bottom:12px">
+      ${selectedMembers.map(m=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:#faf9f6;border:1px solid var(--line);border-radius:6px">${h(m)}</div>`).join('')}
+    </div>
+    ${groups.length ? `<label style="display:block;margin-bottom:10px">既存のグループに追加<br>
+      <select id="gp-existing" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;margin-top:4px">
+        <option value="">選択してください</option>
+        ${groups.map(g=>`<option value="${g.id}">${h(g.name)}(${g.members.length}件)</option>`).join('')}
+      </select>
+    </label>
+    <div class="muted" style="text-align:center;margin:8px 0">または</div>` : ''}
+    <label style="display:block;margin-bottom:10px">新しいグループを作る<br>
+      <input type="text" id="gp-new" placeholder="新しいグループ名" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;margin-top:4px">
+    </label>
+    <button class="btn gold" id="gp-run">追加する</button>
+    <div id="gp-msg" class="muted" style="margin-top:10px"></div>`);
+  $('#gp-run').onclick = async () => {
+    const existingSel = $('#gp-existing');
+    const existingId = existingSel ? existingSel.value : '';
+    const newName = $('#gp-new').value.trim();
+    if(!existingId && !newName){ $('#gp-msg').textContent = '既存グループを選ぶか、新しいグループ名を入力してください'; return; }
+    await withLoading($('#gp-run'), async () => {
+      try{
+        if(existingId){
+          const g = groups.find(g=>String(g.id)===String(existingId));
+          const merged = [...new Set([...(g?g.members:[]), ...selectedMembers])];
+          await api(`/site-groups/${existingId}`, { method:'PUT', body:{ members: merged } });
+        }else{
+          await api('/site-groups', { method:'POST', body:{ kind, name:newName, members:selectedMembers } });
+        }
+        closeModal();
+        popup('グループに追加しました');
+        if(onDone) onDone();
+      }catch(e){ $('#gp-msg').textContent = e.message; }
+    });
+  };
+}
+
+// グループ管理モーダル。作成済みの全グループを一覧し、名前変更・メンバー個別削除・グループ削除ができる。
+async function openGroupManage(kind, memberLabel, onDone){
+  let groups;
+  try{ groups = await api(`/site-groups?kind=${kind}`); }
+  catch(e){ popup(e.message,'error'); return; }
+  const render = () => {
+    modal(`<h3>${icon('tag',{size:'15px'})} グループ管理</h3>
+      ${groups.length ? groups.map(g=>`<div class="card" style="padding:10px 12px;margin-bottom:8px">
+        <div class="row" style="align-items:center;gap:8px;margin-bottom:6px">
+          <input type="text" class="grp-name-edit" data-id="${g.id}" value="${h(g.name)}" style="flex:1;padding:6px 8px;border:1px solid var(--line);border-radius:6px">
+          <button type="button" class="btn ghost xs grp-del" data-id="${g.id}" style="color:#b03030;border-color:#e0b0b0">削除</button>
+        </div>
+        <div class="muted" style="font-size:11px;margin-bottom:4px">${g.members.length}件</div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px">
+          ${g.members.map(m=>`<span class="ka-pill ka-2" style="display:inline-flex;align-items:center;gap:4px">${h(m)}<button type="button" class="grp-member-del" data-id="${g.id}" data-member="${h(m)}" style="border:none;background:none;cursor:pointer;padding:0;line-height:1;color:inherit">${icon('x',{size:'10px'})}</button></span>`).join('') || '<span class="muted" style="font-size:12px">メンバーなし</span>'}
+        </div>
+      </div>`).join('') : `<div class="muted" style="text-align:center;padding:16px">まだグループがありません</div>`}
+      `);
+    document.querySelectorAll('#modal-layer .grp-name-edit').forEach(inp => inp.onchange = async () => {
+      const name = inp.value.trim();
+      if(!name){ popup('グループ名は空にできません','error'); return; }
+      try{ await api(`/site-groups/${inp.dataset.id}`, { method:'PUT', body:{ name } }); popup('変更しました'); if(onDone) onDone(); }
+      catch(e){ popup(e.message,'error'); }
+    });
+    document.querySelectorAll('#modal-layer .grp-del').forEach(btn => btn.onclick = async () => {
+      if(!confirm('このグループを削除しますか?(グループ分けの解除のみで、会場・公演のデータ自体は変更されません)')) return;
+      try{
+        await api(`/site-groups/${btn.dataset.id}`, { method:'DELETE' });
+        groups = groups.filter(g=>String(g.id)!==String(btn.dataset.id));
+        render();
+        if(onDone) onDone();
+      }catch(e){ popup(e.message,'error'); }
+    });
+    document.querySelectorAll('#modal-layer .grp-member-del').forEach(btn => btn.onclick = async () => {
+      const g = groups.find(g=>String(g.id)===String(btn.dataset.id));
+      if(!g) return;
+      const merged = g.members.filter(m=>m!==btn.dataset.member);
+      try{
+        await api(`/site-groups/${g.id}`, { method:'PUT', body:{ members: merged } });
+        g.members = merged;
+        render();
+        if(onDone) onDone();
+      }catch(e){ popup(e.message,'error'); }
+    });
+  };
+  render();
+}
+
 /* ===== 会場一覧(チーフ以上)。現場一覧と同じ感覚で、会場ごとに過去/今後の現場を確認できる ===== */
 async function pageVenues(app){
   if(!has('sites_view')){ notFound(app); return; }
-  const st = PAGE_STATE.venues || (PAGE_STATE.venues = { q:'', selected: new Set(), manualOnly:false, sort:'name' });
+  const st = PAGE_STATE.venues || (PAGE_STATE.venues = { q:'', selected: new Set(), manualOnly:false, sort:'name', groupFilter:'' });
   if(!st.sort) st.sort = 'name'; // 古い保存状態との互換
+  if(st.groupFilter === undefined) st.groupFilter = '';
   const venueSortOptions = { name:'会場名順(あ→ん)', cnt:'使用回数が多い順', recent:'最近使った順' };
   if(!st.selected) st.selected = new Set(); // 古い保存状態との互換
-  const canRename = has('site_manage'); // 会場名のまとめて変更(手配者以上)
+  const canRename = has('site_manage'); // 会場名のまとめて変更・グループ作成(手配者以上)
   app.innerHTML = `<h2>${icon('mapPin')} 会場一覧</h2><div class="card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>`;
-  let venues;
-  try{ venues = await api('/venues'); }
+  let venues, groups;
+  try{ [venues, groups] = await Promise.all([api('/venues'), api('/site-groups?kind=venue')]); }
   catch(e){ app.innerHTML = `<h2>${icon('mapPin')} 会場一覧</h2><div class="card"><div class="msg err">${h(e.message)}</div></div>`; return; }
   // 前回の検索結果に無くなった会場の選択は解除しておく(有り得ないはずだが念のため)
   const allVenues = new Set(venues.map(v => v.venue));
   for(const v of [...st.selected]) if(!allVenues.has(v)) st.selected.delete(v);
+  if(st.groupFilter && !groups.some(g=>String(g.id)===String(st.groupFilter))) st.groupFilter = '';
 
   const renderBulkBar = () => {
     const bar = $('#venue-bulk-bar');
@@ -2906,10 +3026,15 @@ async function pageVenues(app){
     bar.innerHTML = canRename && st.selected.size ? `
       <span class="muted" style="font-weight:600">${st.selected.size}件選択中</span>
       <button class="btn gold sm" id="venue-bulk-rename">${icon('edit',{size:'12px'})} まとめて名前を変更</button>
+      <button class="btn ghost sm" id="venue-bulk-group">${icon('tag',{size:'12px'})} グループに追加</button>
       <button class="btn ghost sm" id="venue-bulk-clear">選択解除</button>` : '';
     const brBtn = $('#venue-bulk-rename');
     if(brBtn) brBtn.onclick = () => {
       openVenueBulkRename([...st.selected], () => { st.selected = new Set(); pageVenues(app); });
+    };
+    const bgBtn = $('#venue-bulk-group');
+    if(bgBtn) bgBtn.onclick = () => {
+      openGroupPicker('venue', '会場', groups, [...st.selected], () => { st.selected = new Set(); pageVenues(app); });
     };
     const bcBtn = $('#venue-bulk-clear');
     if(bcBtn) bcBtn.onclick = () => { st.selected = new Set(); renderList(); renderBulkBar(); };
@@ -2927,6 +3052,10 @@ async function pageVenues(app){
     const q = st.q.trim();
     let filtered = q ? venues.filter(v => (v.venue||'').includes(q)) : venues;
     if(st.manualOnly) filtered = filtered.filter(v => v.hasManual);
+    if(st.groupFilter){
+      const g = groups.find(g=>String(g.id)===String(st.groupFilter));
+      if(g) filtered = filtered.filter(v => g.members.includes(v.venue));
+    }
     filtered = sortList(filtered);
     const listEl = $('#venue-list');
     if(!listEl) return;
@@ -2937,7 +3066,7 @@ async function pageVenues(app){
           ${v.hasManual?`<span class="venue-manual-badge" title="会場マニュアルあり">${icon('bookOpen',{size:'12px'})} マニュアルあり</span>`:''}
           <span class="st-site-cnt">${v.cnt}名</span>
         </button>
-      </div>`).join('') : `<div class="muted" style="padding:20px 0;text-align:center">${q||st.manualOnly?'該当する会場はありません':'まだ会場のデータがありません'}</div>`;
+      </div>`).join('') : `<div class="muted" style="padding:20px 0;text-align:center">${q||st.manualOnly||st.groupFilter?'該当する会場はありません':'まだ会場のデータがありません'}</div>`;
     listEl.querySelectorAll('.venue-item').forEach(b => b.onclick = () => openVenueModal(b.dataset.venue));
     if(canRename){
       listEl.querySelectorAll('.st-site-check').forEach(cb => cb.onclick = (e) => {
@@ -2962,6 +3091,14 @@ async function pageVenues(app){
           <input type="checkbox" id="venue-manual-only" ${st.manualOnly?'checked':''}> マニュアルがある会場のみ
         </label>
       </div>
+      <div class="row" style="margin-bottom:12px;gap:10px;flex-wrap:wrap;align-items:center">
+        <label class="muted" style="font-size:12px;white-space:nowrap">グループで絞り込み</label>
+        <select id="venue-group-filter">
+          <option value="">(すべて)</option>
+          ${groups.map(g=>`<option value="${g.id}" ${String(st.groupFilter)===String(g.id)?'selected':''}>${h(g.name)}(${g.members.length}件)</option>`).join('')}
+        </select>
+        ${canRename ? `<button type="button" class="btn ghost sm" id="venue-group-manage">${icon('tag',{size:'12px'})} グループ管理</button>` : ''}
+      </div>
       <div class="row" id="venue-bulk-bar" style="margin-bottom:0;gap:8px;align-items:center;background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:8px 10px;flex-wrap:wrap"></div>
     </div>
     <div id="venue-list" class="st-sites"></div>
@@ -2971,6 +3108,9 @@ async function pageVenues(app){
   $('#venue-q').oninput = (e) => { st.q = e.target.value; renderList(); };
   $('#venue-sort').onchange = (e) => { st.sort = e.target.value; renderList(); };
   $('#venue-manual-only').onchange = (e) => { st.manualOnly = e.target.checked; renderList(); };
+  $('#venue-group-filter').onchange = (e) => { st.groupFilter = e.target.value; renderList(); };
+  const groupManageBtn = $('#venue-group-manage');
+  if(groupManageBtn) groupManageBtn.onclick = () => openGroupManage('venue', '会場', () => pageVenues(app));
 }
 
 // 現場一覧の一括改名と同様、選択した複数の会場名をまとめて統一名称に変更する。
@@ -3080,18 +3220,23 @@ async function pageVenueManual(app, hash){
    「【セクション等】」を除いた本体名を公演名とみなして集計・一覧表示する。 ===== */
 async function pageArtists(app){
   if(!has('sites_view')){ notFound(app); return; }
-  const st = PAGE_STATE.artists || (PAGE_STATE.artists = { q:'', selected: new Set(), sort:'name' });
+  const st = PAGE_STATE.artists || (PAGE_STATE.artists = { q:'', selected: new Set(), sort:'name', groupFilter:'', openFolder:'' });
   if(!st.sort) st.sort = 'name'; // 古い保存状態との互換
   if(!st.selected) st.selected = new Set();
+  if(st.groupFilter === undefined) st.groupFilter = '';
+  if(st.openFolder === undefined) st.openFolder = '';
   const artistSortOptions = { name:'公演名順(あ→ん)', cnt:'使用回数が多い順', recent:'最近使った順' };
-  const canRename = has('site_manage'); // 公演名のまとめて変更(手配者以上)
+  const canRename = has('site_manage'); // 公演名のまとめて変更・グループ/フォルダ作成(手配者以上)
   app.innerHTML = `<h2>${icon('megaphone')} 公演一覧</h2><div class="card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>`;
-  let artists;
-  try{ artists = await api('/artists'); }
+  let artists, groups, folders;
+  try{ [artists, groups, folders] = await Promise.all([api('/artists'), api('/site-groups?kind=artist'), api('/artist-folders')]); }
   catch(e){ app.innerHTML = `<h2>${icon('megaphone')} 公演一覧</h2><div class="card"><div class="msg err">${h(e.message)}</div></div>`; return; }
   // 前回の検索結果に無くなった公演の選択は解除しておく(有り得ないはずだが念のため)
   const allArtists = new Set(artists.map(a => a.artist));
   for(const a of [...st.selected]) if(!allArtists.has(a)) st.selected.delete(a);
+  if(st.groupFilter && !groups.some(g=>String(g.id)===String(st.groupFilter))) st.groupFilter = '';
+  if(st.openFolder && !folders.some(f=>String(f.id)===String(st.openFolder))) st.openFolder = '';
+  const byArtistName = {}; artists.forEach(a => byArtistName[a.artist] = a);
 
   const renderBulkBar = () => {
     const bar = $('#artist-bulk-bar');
@@ -3099,10 +3244,20 @@ async function pageArtists(app){
     bar.innerHTML = canRename && st.selected.size ? `
       <span class="muted" style="font-weight:600">${st.selected.size}件選択中</span>
       <button class="btn gold sm" id="artist-bulk-rename">${icon('edit',{size:'12px'})} まとめて名前を変更</button>
+      <button class="btn ghost sm" id="artist-bulk-group">${icon('tag',{size:'12px'})} グループに追加</button>
+      ${!st.openFolder ? `<button class="btn ghost sm" id="artist-bulk-folder">${icon('package',{size:'12px'})} フォルダにまとめる</button>` : ''}
       <button class="btn ghost sm" id="artist-bulk-clear">選択解除</button>` : '';
     const brBtn = $('#artist-bulk-rename');
     if(brBtn) brBtn.onclick = () => {
       openArtistBulkRename([...st.selected], () => { st.selected = new Set(); pageArtists(app); });
+    };
+    const bgBtn = $('#artist-bulk-group');
+    if(bgBtn) bgBtn.onclick = () => {
+      openGroupPicker('artist', '公演', groups, [...st.selected], () => { st.selected = new Set(); pageArtists(app); });
+    };
+    const bfBtn = $('#artist-bulk-folder');
+    if(bfBtn) bfBtn.onclick = () => {
+      openArtistFolderPicker(folders, [...st.selected], () => { st.selected = new Set(); pageArtists(app); });
     };
     const bcBtn = $('#artist-bulk-clear');
     if(bcBtn) bcBtn.onclick = () => { st.selected = new Set(); renderList(); renderBulkBar(); };
@@ -3118,18 +3273,81 @@ async function pageArtists(app){
 
   const renderList = () => {
     const q = st.q.trim();
-    let filtered = q ? artists.filter(a => (a.artist||'').includes(q)) : artists;
-    filtered = sortList(filtered);
     const listEl = $('#artist-list');
     if(!listEl) return;
-    listEl.innerHTML = filtered.length ? filtered.map(a => `<div class="st-site-row">
+
+    // フォルダの中を開いている場合は、そのフォルダのメンバーだけをフラットに表示する
+    if(st.openFolder){
+      const folder = folders.find(f=>String(f.id)===String(st.openFolder));
+      let members = (folder ? folder.members : []).map(name => byArtistName[name]).filter(Boolean);
+      if(q) members = members.filter(a => (a.artist||'').includes(q));
+      if(st.groupFilter){
+        const g = groups.find(g=>String(g.id)===String(st.groupFilter));
+        if(g) members = members.filter(a => g.members.includes(a.artist));
+      }
+      members = sortList(members);
+      listEl.innerHTML = members.length ? members.map(a => `<div class="st-site-row">
+          ${canRename ? `<input type="checkbox" class="st-site-check" data-artist="${h(a.artist)}" ${st.selected.has(a.artist)?'checked':''}>` : ''}
+          <button type="button" class="st-site artist-item" data-artist="${h(a.artist)}">
+            <span class="st-site-name">${h(a.artist)}</span>
+            <span class="st-site-cnt">${a.dateCnt}日</span>
+          </button>
+        </div>`).join('') : `<div class="muted" style="padding:20px 0;text-align:center">該当する公演はありません</div>`;
+      listEl.querySelectorAll('.artist-item').forEach(b => b.onclick = () => openArtistModal(b.dataset.artist));
+      if(canRename){
+        listEl.querySelectorAll('.st-site-check').forEach(cb => cb.onclick = (e) => {
+          e.stopPropagation();
+          if(cb.checked) st.selected.add(cb.dataset.artist); else st.selected.delete(cb.dataset.artist);
+          renderBulkBar();
+        });
+      }
+      return;
+    }
+
+    // 通常表示: フォルダに入っている公演はフォルダ1行にまとめ、それ以外はそのまま表示する
+    const folderedNames = new Set();
+    folders.forEach(f => f.members.forEach(m => folderedNames.add(m)));
+    let flat = artists.filter(a => !folderedNames.has(a.artist));
+    if(q) flat = flat.filter(a => (a.artist||'').includes(q));
+    if(st.groupFilter){
+      const g = groups.find(g=>String(g.id)===String(st.groupFilter));
+      if(g) flat = flat.filter(a => g.members.includes(a.artist));
+    }
+    let folderRows = folders.map(f => {
+      let members = f.members.map(name => byArtistName[name]).filter(Boolean);
+      if(st.groupFilter){
+        const g = groups.find(g=>String(g.id)===String(st.groupFilter));
+        if(g) members = members.filter(a => g.members.includes(a.artist));
+      }
+      const dateCnt = members.reduce((s,a)=>s+(a.dateCnt||0), 0);
+      const cnt = members.reduce((s,a)=>s+(a.cnt||0), 0);
+      return { id:f.id, name:f.name, dateCnt, cnt, memberCount: members.length };
+    }).filter(f => f.memberCount > 0 && (!q || f.name.includes(q)));
+
+    flat = sortList(flat);
+    folderRows.sort((a,b) => String(a.name||'').localeCompare(String(b.name||''), 'ja'));
+
+    if(!folderRows.length && !flat.length){
+      listEl.innerHTML = `<div class="muted" style="padding:20px 0;text-align:center">${q||st.groupFilter?'該当する公演はありません':'まだ現場のデータがありません'}</div>`;
+      return;
+    }
+    listEl.innerHTML =
+      folderRows.map(f => `<div class="st-site-row">
+        <button type="button" class="st-site folder-item" data-folder="${f.id}">
+          ${icon('package',{size:'14px'})} <span class="st-site-name">${h(f.name)}</span>
+          <span class="muted" style="font-size:11px">(${f.memberCount}件)</span>
+          <span class="st-site-cnt">${f.dateCnt}日</span>
+        </button>
+      </div>`).join('') +
+      flat.map(a => `<div class="st-site-row">
         ${canRename ? `<input type="checkbox" class="st-site-check" data-artist="${h(a.artist)}" ${st.selected.has(a.artist)?'checked':''}>` : ''}
         <button type="button" class="st-site artist-item" data-artist="${h(a.artist)}">
           <span class="st-site-name">${h(a.artist)}</span>
           <span class="st-site-cnt">${a.dateCnt}日</span>
         </button>
-      </div>`).join('') : `<div class="muted" style="padding:20px 0;text-align:center">${q?'該当する公演はありません':'まだ現場のデータがありません'}</div>`;
+      </div>`).join('');
     listEl.querySelectorAll('.artist-item').forEach(b => b.onclick = () => openArtistModal(b.dataset.artist));
+    listEl.querySelectorAll('.folder-item').forEach(b => b.onclick = () => { st.openFolder = b.dataset.folder; st.selected = new Set(); renderList(); renderBulkBar(); renderFolderBar(); });
     if(canRename){
       listEl.querySelectorAll('.st-site-check').forEach(cb => cb.onclick = (e) => {
         e.stopPropagation(); // 親のartist-itemボタン(公演詳細を開く)を誤って発火させない
@@ -3137,6 +3355,16 @@ async function pageArtists(app){
         renderBulkBar();
       });
     }
+  };
+
+  const renderFolderBar = () => {
+    const bar = $('#artist-folder-bar');
+    if(!bar) return;
+    if(!st.openFolder){ bar.innerHTML = ''; return; }
+    const folder = folders.find(f=>String(f.id)===String(st.openFolder));
+    bar.innerHTML = `<button type="button" class="btn ghost sm" id="artist-folder-back">${icon('arrowLeft',{size:'12px'})} フォルダ一覧へ戻る</button>
+      <span class="muted" style="font-weight:600">${icon('package',{size:'12px'})} ${h(folder?folder.name:'')}</span>`;
+    $('#artist-folder-back').onclick = () => { st.openFolder = ''; st.selected = new Set(); renderList(); renderBulkBar(); renderFolderBar(); };
   };
 
   app.innerHTML = `
@@ -3150,14 +3378,167 @@ async function pageArtists(app){
           ${Object.entries(artistSortOptions).map(([k,l])=>`<option value="${k}" ${k===st.sort?'selected':''}>${l}</option>`).join('')}
         </select>
       </div>
+      <div class="row" style="margin-bottom:12px;gap:10px;flex-wrap:wrap;align-items:center">
+        <label class="muted" style="font-size:12px;white-space:nowrap">グループで絞り込み</label>
+        <select id="artist-group-filter">
+          <option value="">(すべて)</option>
+          ${groups.map(g=>`<option value="${g.id}" ${String(st.groupFilter)===String(g.id)?'selected':''}>${h(g.name)}(${g.members.length}件)</option>`).join('')}
+        </select>
+        ${canRename ? `<button type="button" class="btn ghost sm" id="artist-group-manage">${icon('tag',{size:'12px'})} グループ管理</button>` : ''}
+        ${canRename ? `<button type="button" class="btn ghost sm" id="artist-folder-manage">${icon('package',{size:'12px'})} フォルダ管理</button>` : ''}
+        ${canRename ? `<button type="button" class="btn ghost sm" id="artist-find-replace">${icon('repeat',{size:'12px'})} 文字の一部を置換</button>` : ''}
+      </div>
+      <div class="row" id="artist-folder-bar" style="margin-bottom:0;gap:8px;align-items:center"></div>
       <div class="row" id="artist-bulk-bar" style="margin-bottom:0;gap:8px;align-items:center;background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:8px 10px;flex-wrap:wrap"></div>
     </div>
     <div id="artist-list" class="st-sites" style="margin-top:10px"></div>
   </div>`;
   renderList();
   renderBulkBar();
+  renderFolderBar();
   $('#artist-q').oninput = (e) => { st.q = e.target.value; renderList(); };
   $('#artist-sort').onchange = (e) => { st.sort = e.target.value; renderList(); };
+  $('#artist-group-filter').onchange = (e) => { st.groupFilter = e.target.value; renderList(); };
+  const groupManageBtn = $('#artist-group-manage');
+  if(groupManageBtn) groupManageBtn.onclick = () => openGroupManage('artist', '公演', () => pageArtists(app));
+  const folderManageBtn = $('#artist-folder-manage');
+  if(folderManageBtn) folderManageBtn.onclick = () => openArtistFolderManage(() => pageArtists(app));
+  const findReplaceBtn = $('#artist-find-replace');
+  if(findReplaceBtn) findReplaceBtn.onclick = () => openArtistFindReplace(() => pageArtists(app));
+}
+
+// 選択中の公演をフォルダに追加する(既存フォルダに追加 or 新規フォルダを作成)。openGroupPickerと同じ操作感。
+function openArtistFolderPicker(folders, selectedArtists, onDone){
+  if(!selectedArtists.length) return;
+  modal(`<h3>${icon('package',{size:'15px'})} フォルダにまとめる</h3>
+    <div class="muted" style="font-size:12px;margin-bottom:10px">対象(${selectedArtists.length}件):</div>
+    <div style="max-height:20vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-bottom:12px">
+      ${selectedArtists.map(a=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:#faf9f6;border:1px solid var(--line);border-radius:6px">${h(a)}</div>`).join('')}
+    </div>
+    ${folders.length ? `<label style="display:block;margin-bottom:10px">既存のフォルダに追加<br>
+      <select id="afp-existing" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;margin-top:4px">
+        <option value="">選択してください</option>
+        ${folders.map(f=>`<option value="${f.id}">${h(f.name)}(${f.members.length}件)</option>`).join('')}
+      </select>
+    </label>
+    <div class="muted" style="text-align:center;margin:8px 0">または</div>` : ''}
+    <label style="display:block;margin-bottom:10px">新しいフォルダを作る<br>
+      <input type="text" id="afp-new" placeholder="例:G大阪" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;margin-top:4px">
+    </label>
+    <button class="btn gold" id="afp-run">追加する</button>
+    <div id="afp-msg" class="muted" style="margin-top:10px"></div>`);
+  $('#afp-run').onclick = async () => {
+    const existingSel = $('#afp-existing');
+    const existingId = existingSel ? existingSel.value : '';
+    const newName = $('#afp-new').value.trim();
+    if(!existingId && !newName){ $('#afp-msg').textContent = '既存フォルダを選ぶか、新しいフォルダ名を入力してください'; return; }
+    await withLoading($('#afp-run'), async () => {
+      try{
+        if(existingId){
+          const f = folders.find(f=>String(f.id)===String(existingId));
+          const merged = [...new Set([...(f?f.members:[]), ...selectedArtists])];
+          await api(`/artist-folders/${existingId}`, { method:'PUT', body:{ members: merged } });
+        }else{
+          await api('/artist-folders', { method:'POST', body:{ name:newName, members:selectedArtists } });
+        }
+        closeModal();
+        popup('フォルダに追加しました');
+        if(onDone) onDone();
+      }catch(e){ $('#afp-msg').textContent = e.message; }
+    });
+  };
+}
+
+// フォルダ管理モーダル。グループ管理と同じ操作感で、名前変更・メンバー個別削除・フォルダ削除ができる。
+async function openArtistFolderManage(onDone){
+  let folders;
+  try{ folders = await api('/artist-folders'); }
+  catch(e){ popup(e.message,'error'); return; }
+  const render = () => {
+    modal(`<h3>${icon('package',{size:'15px'})} フォルダ管理</h3>
+      ${folders.length ? folders.map(f=>`<div class="card" style="padding:10px 12px;margin-bottom:8px">
+        <div class="row" style="align-items:center;gap:8px;margin-bottom:6px">
+          <input type="text" class="fld-name-edit" data-id="${f.id}" value="${h(f.name)}" style="flex:1;padding:6px 8px;border:1px solid var(--line);border-radius:6px">
+          <button type="button" class="btn ghost xs fld-del" data-id="${f.id}" style="color:#b03030;border-color:#e0b0b0">削除</button>
+        </div>
+        <div class="muted" style="font-size:11px;margin-bottom:4px">${f.members.length}件</div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px">
+          ${f.members.map(m=>`<span class="ka-pill ka-2" style="display:inline-flex;align-items:center;gap:4px">${h(m)}<button type="button" class="fld-member-del" data-id="${f.id}" data-member="${h(m)}" style="border:none;background:none;cursor:pointer;padding:0;line-height:1;color:inherit">${icon('x',{size:'10px'})}</button></span>`).join('') || '<span class="muted" style="font-size:12px">メンバーなし</span>'}
+        </div>
+      </div>`).join('') : `<div class="muted" style="text-align:center;padding:16px">まだフォルダがありません</div>`}
+      `);
+    document.querySelectorAll('#modal-layer .fld-name-edit').forEach(inp => inp.onchange = async () => {
+      const name = inp.value.trim();
+      if(!name){ popup('フォルダ名は空にできません','error'); return; }
+      try{ await api(`/artist-folders/${inp.dataset.id}`, { method:'PUT', body:{ name } }); popup('変更しました'); if(onDone) onDone(); }
+      catch(e){ popup(e.message,'error'); }
+    });
+    document.querySelectorAll('#modal-layer .fld-del').forEach(btn => btn.onclick = async () => {
+      if(!confirm('このフォルダを削除しますか?(フォルダ分けの解除のみで、公演のデータ自体は変更されません)')) return;
+      try{
+        await api(`/artist-folders/${btn.dataset.id}`, { method:'DELETE' });
+        folders = folders.filter(f=>String(f.id)!==String(btn.dataset.id));
+        render();
+        if(onDone) onDone();
+      }catch(e){ popup(e.message,'error'); }
+    });
+    document.querySelectorAll('#modal-layer .fld-member-del').forEach(btn => btn.onclick = async () => {
+      const f = folders.find(f=>String(f.id)===String(btn.dataset.id));
+      if(!f) return;
+      const merged = f.members.filter(m=>m!==btn.dataset.member);
+      try{
+        await api(`/artist-folders/${f.id}`, { method:'PUT', body:{ members: merged } });
+        f.members = merged;
+        render();
+        if(onDone) onDone();
+      }catch(e){ popup(e.message,'error'); }
+    });
+  };
+  render();
+}
+
+// 公演名の一部を置換する(例:「vs」→「VS」)。プレビューで変更対象を確認してから適用する。
+function openArtistFindReplace(onDone){
+  modal(`<h3>${icon('repeat',{size:'15px'})} 公演名の一部を置換</h3>
+    <div class="muted" style="font-size:12px;margin-bottom:10px">公演名に含まれる文字列を一括で置き換えます(例:「vs」→「VS」)。各行の【セクション等】表記は対象外です。</div>
+    <div class="form-grid" style="grid-template-columns:90px 1fr;max-width:420px">
+      <label>置換前</label><input type="text" id="afr-find" placeholder="例:vs">
+      <label>置換後</label><input type="text" id="afr-replace" placeholder="例:VS">
+    </div>
+    <div class="row" style="margin-top:14px"><button class="btn ghost" id="afr-preview" style="flex:1">プレビュー</button></div>
+    <div id="afr-preview-area" style="margin-top:10px"></div>
+    <div id="afr-msg" class="muted" style="margin-top:10px"></div>`);
+  $('#afr-preview').onclick = async () => {
+    const find = $('#afr-find').value;
+    const replace = $('#afr-replace').value;
+    if(!find){ $('#afr-msg').textContent = '置換前の文字列を入力してください'; return; }
+    await withLoading($('#afr-preview'), async () => {
+      try{
+        const r = await api('/artists/find-replace', { method:'POST', body:{ find, replace, preview:true } });
+        const area = $('#afr-preview-area');
+        if(!r.changes.length){
+          area.innerHTML = '<div class="muted">対象の公演名が見つかりませんでした</div>';
+          return;
+        }
+        area.innerHTML = `<div class="muted" style="font-size:12px;margin-bottom:6px">${r.changes.length}件が変更されます:</div>
+          <div style="max-height:30vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-bottom:10px">
+            ${r.changes.map(c=>`<div style="font-size:12px;padding:5px 8px;background:#faf9f6;border:1px solid var(--line);border-radius:6px">${h(c.from)} → <b>${h(c.to)}</b></div>`).join('')}
+          </div>
+          <button class="btn gold" id="afr-apply" style="width:100%">この内容で適用する</button>`;
+        $('#afr-apply').onclick = async () => {
+          if(!confirm(`${r.changes.length}件の公演名を変更します。よろしいですか?`)) return;
+          await withLoading($('#afr-apply'), async () => {
+            try{
+              const ar = await api('/artists/find-replace', { method:'POST', body:{ find, replace } });
+              closeModal();
+              popup(`${ar.updatedDays}件を変更しました`);
+              if(onDone) onDone();
+            }catch(e){ $('#afr-msg').textContent = e.message; }
+          });
+        };
+      }catch(e){ $('#afr-msg').textContent = e.message; }
+    });
+  };
 }
 
 // 選択した複数の公演名(現場名の本体部分)をまとめて統一名称に変更する。会場一覧の一括改名と同様、
@@ -5449,31 +5830,13 @@ async function pageMemberSummarySearch(app){
   $('#mss-q').oninput = renderList;
 }
 
-async function pageMemberYearSummary(app, hash){
-  if(!has('member_summary_view')){ notFound(app); return; }
-  const uid = Number(hash.split('/')[2]);
-  if(!uid){ notFound(app); return; }
-
-  const st = PAGE_STATE.memberSummary || (PAGE_STATE.memberSummary = {});
-  if(st.uid !== uid){ st.uid = uid; st.year = Number(jstToday().slice(0,4)) - (Number(jstToday().slice(5,7)) < 12 ? 1 : 0); }
-
-  app.innerHTML = `<h2>${icon('barChart')} 年間サマリー</h2><div class="card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>`;
-  let data, notesData;
-  try{
-    [data, notesData] = await Promise.all([
-      api(`/member-year-summary?uid=${uid}&year=${st.year}`),
-      api(`/member-notes?uid=${uid}`),
-    ]);
-  }catch(e){ notFound(app); return; }
-
+// 年間サマリーのカード群(年間トータル・月別の内訳・備考欄)の共通HTML。マイスケジュール下部への
+// 埋め込み(renderScheduleYearSummary)と、個人の年間サマリー単独ページ(pageMemberYearSummary)の
+// 両方から使う。
+function yearSummaryCardsHtml(data, notesData, canPay){
   const monthShort = ym => ym.slice(5,7) + '月' + (ym.slice(5,7)==='12'||ym.slice(5,7)==='01'?`(${ym.slice(0,4)})`:'');
   const maxHours = Math.max(1, ...data.months.map(m=>m.hours));
-  const canPay = has('site_pay');
-
-  app.innerHTML = `
-  <h2 style="margin-bottom:4px">${icon('barChart')} ${h(data.target.name)} さんの年間サマリー</h2>
-  <div class="muted" style="margin-bottom:14px">${h(data.target.regno)} ${data.target.rank?`/ ${h(data.target.rank)}ランク`:''} ${data.target.han?`/ ${h(data.target.han)}`:''}</div>
-
+  return `
   <div class="card" style="margin-bottom:14px">
     <div class="row" style="align-items:center;justify-content:center;gap:14px">
       <button class="btn ghost sm" id="ys-prev">${icon('arrowLeft',{size:'13px'})} 前年度</button>
@@ -5542,17 +5905,16 @@ async function pageMemberYearSummary(app, hash){
         <div style="font-size:13px;white-space:pre-wrap;word-break:break-word">${h(n.content)}</div>
       </div>`).join('') || '<div class="muted" style="text-align:center;padding:14px 0">まだ記入はありません</div>'}
     </div>
-  </div>
-  `;
-
-  // 棒グラフを0からアニメーションさせる
+  </div>`;
+}
+// 年間サマリーのカード群の共通イベント配線(年送り・備考の追加/削除)。呼び出し元がonYearDelta/onRerenderで
+// 自分のstate更新・再描画方法を渡す(単独ページとマイスケジュール埋め込みでstateの持ち方が異なるため)。
+function wireYearSummaryCards(uid, onYearDelta, onRerender){
   requestAnimationFrame(() => {
     document.querySelectorAll('.ys-bar').forEach(b => { b.style.height = b.dataset.h + 'px'; });
   });
-
-  $('#ys-prev').onclick = () => { st.year -= 1; pageMemberYearSummary(app, hash); };
-  $('#ys-next').onclick = () => { st.year += 1; pageMemberYearSummary(app, hash); };
-
+  $('#ys-prev').onclick = () => onYearDelta(-1);
+  $('#ys-next').onclick = () => onYearDelta(1);
   $('#ys-note-add').onclick = async () => {
     const content = $('#ys-note-input').value.trim();
     if(!content){ popup('内容を入力してください','error'); return; }
@@ -5560,7 +5922,7 @@ async function pageMemberYearSummary(app, hash){
       try{
         await api('/member-notes', { method:'POST', body:{ uid, content } });
         popup('備考を追加しました');
-        pageMemberYearSummary(app, hash);
+        onRerender();
       }catch(e){ popup(e.message,'error'); }
     });
   };
@@ -5570,10 +5932,36 @@ async function pageMemberYearSummary(app, hash){
       try{
         await api(`/member-notes/${b.dataset.id}`, { method:'DELETE' });
         popup('削除しました');
-        pageMemberYearSummary(app, hash);
+        onRerender();
       }catch(e){ popup(e.message,'error'); }
     });
   });
+}
+
+async function pageMemberYearSummary(app, hash){
+  if(!has('member_summary_view')){ notFound(app); return; }
+  const uid = Number(hash.split('/')[2]);
+  if(!uid){ notFound(app); return; }
+
+  const st = PAGE_STATE.memberSummary || (PAGE_STATE.memberSummary = {});
+  if(st.uid !== uid){ st.uid = uid; st.year = Number(jstToday().slice(0,4)) - (Number(jstToday().slice(5,7)) < 12 ? 1 : 0); }
+
+  app.innerHTML = `<h2>${icon('barChart')} 年間サマリー</h2><div class="card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>`;
+  let data, notesData;
+  try{
+    [data, notesData] = await Promise.all([
+      api(`/member-year-summary?uid=${uid}&year=${st.year}`),
+      api(`/member-notes?uid=${uid}`),
+    ]);
+  }catch(e){ notFound(app); return; }
+
+  const canPay = has('site_pay');
+  app.innerHTML = `
+  <h2 style="margin-bottom:4px">${icon('barChart')} ${h(data.target.name)} さんの年間サマリー</h2>
+  <div class="muted" style="margin-bottom:14px">${h(data.target.regno)} ${data.target.rank?`/ ${h(data.target.rank)}ランク`:''} ${data.target.han?`/ ${h(data.target.han)}`:''}</div>
+  ${yearSummaryCardsHtml(data, notesData, canPay)}`;
+
+  wireYearSummaryCards(uid, (delta)=>{ st.year += delta; pageMemberYearSummary(app, hash); }, ()=>pageMemberYearSummary(app, hash));
 }
 
 /* ===== 個別権限の編集(管理者のみ・専用ページ) ===== */

@@ -421,3 +421,36 @@ CREATE TABLE IF NOT EXISTS legacy_import_shifts(
 CREATE INDEX IF NOT EXISTS idx_legacy_import_ym ON legacy_import_shifts(ym);
 CREATE INDEX IF NOT EXISTS idx_legacy_import_user_date ON legacy_import_shifts(user_id, date);
 
+-- 会場一覧・公演一覧共通の「グループ」機能。手配者以上(site_manage権限)が自由に作成し、
+-- 一覧のフィルタに使う。グループ分けしただけではフィルタをかけない限り一覧表示は変わらない。
+CREATE TABLE IF NOT EXISTS site_groups(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,            -- 'venue'(会場一覧) / 'artist'(公演一覧)
+  name TEXT NOT NULL,
+  created_by INTEGER,
+  created_at TEXT,
+  UNIQUE(kind, name)
+);
+CREATE TABLE IF NOT EXISTS site_group_members(
+  group_id INTEGER NOT NULL,
+  member TEXT NOT NULL,          -- venue名 または 公演名(現場名から【】を除いた本体名)
+  UNIQUE(group_id, member)
+);
+CREATE INDEX IF NOT EXISTS idx_site_group_members_group ON site_group_members(group_id);
+
+-- 公演一覧限定の「フォルダ」機能。グループよりも大きな括りで、複数の公演(例:
+-- 「G大阪vs浦和」「G大阪vs鹿島」等)を1つの見出し(例:「G大阪」)にまとめて一覧表示し、
+-- タップすると中の個別公演一覧に展開できる。
+CREATE TABLE IF NOT EXISTS artist_folders(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  created_by INTEGER,
+  created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS artist_folder_members(
+  folder_id INTEGER NOT NULL,
+  artist TEXT NOT NULL,          -- 公演名(現場名から【】を除いた本体名)
+  UNIQUE(folder_id, artist)
+);
+CREATE INDEX IF NOT EXISTS idx_artist_folder_members_folder ON artist_folder_members(folder_id);
+

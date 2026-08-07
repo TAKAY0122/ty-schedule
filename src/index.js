@@ -1362,6 +1362,59 @@ function rebuildSiteName(site, newArtist) {
   return newArtist;
 }
 
+// 公演一覧の一括改名・一部置換の共通適用処理。renameMap(旧site→新site)を受け取り、
+// 該当する(user_id,date)ごとに全スロットを取得してDELETE→INSERTし直し、schedule_historyに記録する。
+// site_registryのsite列も同時に更新する。venues/bulk-renameと同じ手順だが、venue列ではなくsite列、
+// かつ「複数の旧名→1つの新名」ではなく「複数の旧site→それぞれ異なる新site」という1対1マッピングを扱う点が異なる。
+// artistRenameMap(旧公演名→新公演名)を渡すと、その公演名をメンバーに含むグループ(site_group_members、
+// kind='artist')・フォルダ(artist_folder_members)のメンバー名も同時に付け替える(渡さなければスキップ)。
+async function applyArtistRenameMap(env, me, renameMap, srcLabel, artistRenameMap) {
+  const oldSites = Object.keys(renameMap);
+  if (!oldSites.length) return { updatedDays: 0 };
+
+  const ts = jstTs();
+  const batch = [];
+  const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
+  const ph = oldSites.map(() => '?').join(',');
+  const targets = (await env.DB.prepare(
+    `SELECT DISTINCT user_id, date FROM schedule WHERE type='work' AND site IN (${ph})`
+  ).bind(...oldSites).all()).results;
+
+  let updatedDays = 0;
+  for (const { user_id, date } of targets) {
+    const before = (await env.DB.prepare('SELECT * FROM schedule WHERE user_id=? AND date=? ORDER BY slot').bind(user_id, date).all()).results;
+    const beforeJson = JSON.stringify(before.map(stripRow));
+    const afterRows = before.map(r => (r.type === 'work' && renameMap[r.site]) ? { ...r, site: renameMap[r.site] } : r);
+    const afterJson = JSON.stringify(afterRows.map(stripRow));
+    if (beforeJson === afterJson) continue;
+    batch.push(env.DB.prepare('DELETE FROM schedule WHERE user_id=? AND date=?').bind(user_id, date));
+    let slot = 0;
+    for (const r of afterRows) {
+      batch.push(env.DB.prepare('INSERT INTO schedule(user_id,date,slot,type,site,venue,tin,tout,hours,overtime,pay,note,duty,load_end,show_end,multi) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+        .bind(user_id, date, slot, r.type, r.site, r.venue, r.tin, r.tout, r.hours || 0, r.overtime || 0, r.pay || 0, r.note || '', r.duty || '', r.load_end || '', r.show_end || '', r.multi ? 1 : 0));
+      slot++;
+    }
+    batch.push(env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
+      .bind(ts, me.id, user_id, date, beforeJson, JSON.stringify({ slots: afterRows.map(stripRow), _src: srcLabel })));
+    updatedDays++;
+  }
+  if (batch.length) for (const part of chunk(batch, 200)) await env.DB.batch(part);
+
+  for (const oldSite of oldSites) {
+    await env.DB.prepare('UPDATE site_registry SET site=? WHERE site=?').bind(renameMap[oldSite], oldSite).run();
+  }
+  if (artistRenameMap) {
+    for (const oldArtist of Object.keys(artistRenameMap)) {
+      const newArtist = artistRenameMap[oldArtist];
+      if (!newArtist || newArtist === oldArtist) continue;
+      // OR IGNOREで、同じグループ/フォルダに既に新名が存在する場合(まれ)は静かにスキップする
+      await env.DB.prepare("UPDATE OR IGNORE site_group_members SET member=? WHERE member=? AND group_id IN (SELECT id FROM site_groups WHERE kind='artist')").bind(newArtist, oldArtist).run();
+      await env.DB.prepare('UPDATE OR IGNORE artist_folder_members SET artist=? WHERE artist=?').bind(newArtist, oldArtist).run();
+    }
+  }
+  return { updatedDays, ts };
+}
+
 // 日付文字列を YYYY-MM-DD に正規化。基準年月(ym='2026-06')を補完に使う
 function normSheetDate(v, ym) {
   const s = String(v == null ? '' : v).trim();
@@ -3698,45 +3751,136 @@ async function api(req, env, url) {
         if (newSite && newSite !== r.site) renameMap[r.site] = newSite;
       }
     }
-    const oldSites = Object.keys(renameMap);
-    if (!oldSites.length) return J({ ok: 1, updatedDays: 0 });
+    const artistRenameMap = Object.fromEntries(artists.map(a => [a, newArtist]));
+    const result = await applyArtistRenameMap(env, me, renameMap, `公演一覧の一括変更(→${newArtist})`, artistRenameMap);
+    return J({ ok: 1, ...result });
+  }
 
-    const ts = jstTs();
-    const batch = [];
-    const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
-    const ph = oldSites.map(() => '?').join(',');
-    const targets = (await env.DB.prepare(
-      `SELECT DISTINCT user_id, date FROM schedule WHERE type='work' AND site IN (${ph})`
-    ).bind(...oldSites).all()).results;
+  // ---- 公演一覧限定: 公演名の一部を置換(手配者以上)。例:「vs」→「VS」のような表記統一。
+  //      preview=trueの場合はDBを変更せず、変更対象の一覧(旧名→新名)だけを返す。 ----
+  if (method === 'POST' && path === '/artists/find-replace') {
+    if (!has(me, 'site_manage')) return ERR('権限がありません', 403);
+    const find = typeof body.find === 'string' ? body.find : '';
+    const replace = typeof body.replace === 'string' ? body.replace : '';
+    if (!find) return ERR('置換前の文字列を入力してください');
 
-    let updatedDays = 0;
-    for (const { user_id, date } of targets) {
-      // その人・その日の全スロットを取得し、対象の公演名と一致するスロットだけ改名する
-      // (同じ日に他の予定が混在していても、それらは変更しない)
-      const before = (await env.DB.prepare('SELECT * FROM schedule WHERE user_id=? AND date=? ORDER BY slot').bind(user_id, date).all()).results;
-      const beforeJson = JSON.stringify(before.map(stripRow));
-      const afterRows = before.map(r => (r.type === 'work' && renameMap[r.site]) ? { ...r, site: renameMap[r.site] } : r);
-      const afterJson = JSON.stringify(afterRows.map(stripRow));
-      if (beforeJson === afterJson) continue;
-      batch.push(env.DB.prepare('DELETE FROM schedule WHERE user_id=? AND date=?').bind(user_id, date));
-      let slot = 0;
-      for (const r of afterRows) {
-        batch.push(env.DB.prepare('INSERT INTO schedule(user_id,date,slot,type,site,venue,tin,tout,hours,overtime,pay,note,duty,load_end,show_end,multi) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-          .bind(user_id, date, slot, r.type, r.site, r.venue, r.tin, r.tout, r.hours || 0, r.overtime || 0, r.pay || 0, r.note || '', r.duty || '', r.load_end || '', r.show_end || '', r.multi ? 1 : 0));
-        slot++;
-      }
-      batch.push(env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
-        .bind(ts, me.id, user_id, date, beforeJson, JSON.stringify({ slots: afterRows.map(stripRow), _src: `公演一覧の一括変更(→${newArtist})` })));
-      updatedDays++;
+    const siteRows = (await env.DB.prepare("SELECT DISTINCT site FROM schedule WHERE type='work' AND site<>''").all()).results;
+    const renameMap = {};
+    const artistChanges = {};
+    for (const r of siteRows) {
+      const artist = extractArtistName(r.site);
+      if (!artist.includes(find)) continue;
+      const newArtist = artist.split(find).join(replace);
+      if (newArtist === artist) continue;
+      artistChanges[artist] = newArtist;
+      const newSite = rebuildSiteName(r.site, newArtist);
+      if (newSite && newSite !== r.site) renameMap[r.site] = newSite;
     }
-    if (batch.length) for (const part of chunk(batch, 200)) await env.DB.batch(part);
-
-    // 未配置のまま登録だけされている現場(site_registry)も、対象の現場名なら更新する
-    for (const oldSite of oldSites) {
-      await env.DB.prepare('UPDATE site_registry SET site=? WHERE site=?').bind(renameMap[oldSite], oldSite).run();
+    if (body.preview) {
+      return J({ ok: 1, changes: Object.entries(artistChanges).map(([from, to]) => ({ from, to })) });
     }
+    const result = await applyArtistRenameMap(env, me, renameMap, `公演一覧の一部置換(${find}→${replace})`, artistChanges);
+    return J({ ok: 1, ...result });
+  }
 
-    return J({ ok: 1, updatedDays, ts });
+  // ---- グループ(会場一覧・公演一覧共通)。手配者以上(site_manage)が自由に作成し、
+  //      一覧のフィルタに使う。閲覧(GET)はsites_view権限があれば誰でも可。 ----
+  if (method === 'GET' && path === '/site-groups') {
+    if (!has(me, 'sites_view')) return ERR('ページが見つかりません', 404);
+    const kind = url.searchParams.get('kind');
+    if (!['venue', 'artist'].includes(kind)) return ERR('不正なkindです');
+    const groups = (await env.DB.prepare('SELECT id,name FROM site_groups WHERE kind=? ORDER BY name').bind(kind).all()).results;
+    const members = (await env.DB.prepare(
+      `SELECT gm.group_id, gm.member FROM site_group_members gm JOIN site_groups g ON g.id=gm.group_id WHERE g.kind=?`
+    ).bind(kind).all()).results;
+    const byGroup = {};
+    for (const m of members) (byGroup[m.group_id] ||= []).push(m.member);
+    return J(groups.map(g => ({ id: g.id, name: g.name, members: byGroup[g.id] || [] })));
+  }
+  if (method === 'POST' && path === '/site-groups') {
+    if (!has(me, 'site_manage')) return ERR('権限がありません', 403);
+    const kind = String(body.kind || '');
+    if (!['venue', 'artist'].includes(kind)) return ERR('不正なkindです');
+    const name = String(body.name || '').trim();
+    if (!name) return ERR('グループ名を入力してください');
+    const members = Array.isArray(body.members) ? [...new Set(body.members.map(m => String(m || '').trim()).filter(Boolean))] : [];
+    let groupId;
+    try {
+      const r = await env.DB.prepare('INSERT INTO site_groups(kind,name,created_by,created_at) VALUES(?,?,?,?)').bind(kind, name, me.id, jstTs()).run();
+      groupId = r.meta.last_row_id;
+    } catch (e) { return ERR('同じ名前のグループが既に存在します'); }
+    for (const m of members) await env.DB.prepare('INSERT OR IGNORE INTO site_group_members(group_id,member) VALUES(?,?)').bind(groupId, m).run();
+    return J({ ok: 1, id: groupId });
+  }
+  let sgm;
+  if (method === 'PUT' && (sgm = path.match(/^\/site-groups\/(\d+)$/))) {
+    if (!has(me, 'site_manage')) return ERR('権限がありません', 403);
+    const id = Number(sgm[1]);
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    const members = Array.isArray(body.members) ? [...new Set(body.members.map(m => String(m || '').trim()).filter(Boolean))] : null;
+    if (name) {
+      try { await env.DB.prepare('UPDATE site_groups SET name=? WHERE id=?').bind(name, id).run(); }
+      catch (e) { return ERR('同じ名前のグループが既に存在します'); }
+    }
+    if (members) {
+      await env.DB.prepare('DELETE FROM site_group_members WHERE group_id=?').bind(id).run();
+      for (const m of members) await env.DB.prepare('INSERT OR IGNORE INTO site_group_members(group_id,member) VALUES(?,?)').bind(id, m).run();
+    }
+    return J({ ok: 1 });
+  }
+  if (method === 'DELETE' && (sgm = path.match(/^\/site-groups\/(\d+)$/))) {
+    if (!has(me, 'site_manage')) return ERR('権限がありません', 403);
+    const id = Number(sgm[1]);
+    await env.DB.prepare('DELETE FROM site_group_members WHERE group_id=?').bind(id).run();
+    await env.DB.prepare('DELETE FROM site_groups WHERE id=?').bind(id).run();
+    return J({ ok: 1 });
+  }
+
+  // ---- フォルダ(公演一覧限定)。グループより大きな括りで、複数の公演を1つの見出しにまとめて
+  //      表示する。作成は手配者以上(site_manage)、閲覧はsites_view権限があれば誰でも可。 ----
+  if (method === 'GET' && path === '/artist-folders') {
+    if (!has(me, 'sites_view')) return ERR('ページが見つかりません', 404);
+    const folders = (await env.DB.prepare('SELECT id,name FROM artist_folders ORDER BY name').all()).results;
+    const members = (await env.DB.prepare('SELECT folder_id, artist FROM artist_folder_members').all()).results;
+    const byFolder = {};
+    for (const m of members) (byFolder[m.folder_id] ||= []).push(m.artist);
+    return J(folders.map(f => ({ id: f.id, name: f.name, members: byFolder[f.id] || [] })));
+  }
+  if (method === 'POST' && path === '/artist-folders') {
+    if (!has(me, 'site_manage')) return ERR('権限がありません', 403);
+    const name = String(body.name || '').trim();
+    if (!name) return ERR('フォルダ名を入力してください');
+    const members = Array.isArray(body.members) ? [...new Set(body.members.map(m => String(m || '').trim()).filter(Boolean))] : [];
+    let folderId;
+    try {
+      const r = await env.DB.prepare('INSERT INTO artist_folders(name,created_by,created_at) VALUES(?,?,?)').bind(name, me.id, jstTs()).run();
+      folderId = r.meta.last_row_id;
+    } catch (e) { return ERR('同じ名前のフォルダが既に存在します'); }
+    for (const m of members) await env.DB.prepare('INSERT OR IGNORE INTO artist_folder_members(folder_id,artist) VALUES(?,?)').bind(folderId, m).run();
+    return J({ ok: 1, id: folderId });
+  }
+  let afm;
+  if (method === 'PUT' && (afm = path.match(/^\/artist-folders\/(\d+)$/))) {
+    if (!has(me, 'site_manage')) return ERR('権限がありません', 403);
+    const id = Number(afm[1]);
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    const members = Array.isArray(body.members) ? [...new Set(body.members.map(m => String(m || '').trim()).filter(Boolean))] : null;
+    if (name) {
+      try { await env.DB.prepare('UPDATE artist_folders SET name=? WHERE id=?').bind(name, id).run(); }
+      catch (e) { return ERR('同じ名前のフォルダが既に存在します'); }
+    }
+    if (members) {
+      await env.DB.prepare('DELETE FROM artist_folder_members WHERE folder_id=?').bind(id).run();
+      for (const m of members) await env.DB.prepare('INSERT OR IGNORE INTO artist_folder_members(folder_id,artist) VALUES(?,?)').bind(id, m).run();
+    }
+    return J({ ok: 1 });
+  }
+  if (method === 'DELETE' && (afm = path.match(/^\/artist-folders\/(\d+)$/))) {
+    if (!has(me, 'site_manage')) return ERR('権限がありません', 403);
+    const id = Number(afm[1]);
+    await env.DB.prepare('DELETE FROM artist_folder_members WHERE folder_id=?').bind(id).run();
+    await env.DB.prepare('DELETE FROM artist_folders WHERE id=?').bind(id).run();
+    return J({ ok: 1 });
   }
 
   // ---- 会場マニュアルの有無フラグ(手配者以上)。マニュアル本文自体はまだ実装していないが、
@@ -3802,6 +3946,13 @@ async function api(req, env, url) {
     const hadManual = await env.DB.prepare(`SELECT 1 FROM venue_manuals WHERE venue IN (${ph}) LIMIT 1`).bind(...venues).first();
     await env.DB.prepare(`DELETE FROM venue_manuals WHERE venue IN (${ph})`).bind(...venues).run();
     if (hadManual) await env.DB.prepare('INSERT OR REPLACE INTO venue_manuals(venue,updated_by,updated_at) VALUES(?,?,?)').bind(newVenue, me.id, ts).run();
+
+    // 会場グループのメンバー名も、統合後の新しい会場名に付け替える(OR IGNOREで、同じグループに
+    // 既に新名が存在する場合はそのまま=静かにスキップする)
+    for (const oldVenue of venues) {
+      if (oldVenue === newVenue) continue;
+      await env.DB.prepare("UPDATE OR IGNORE site_group_members SET member=? WHERE member=? AND group_id IN (SELECT id FROM site_groups WHERE kind='venue')").bind(newVenue, oldVenue).run();
+    }
 
     return J({ ok: 1, updatedDays, ts });
   }
