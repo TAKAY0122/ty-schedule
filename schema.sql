@@ -397,3 +397,27 @@ CREATE TABLE IF NOT EXISTS rank_history(
   ts TEXT NOT NULL
 );
 
+-- 過去データ(手配帳から外部で再構築した2024〜2025年分の給与実績)の取込ステージング。
+-- 管理者だけが閲覧できる「デモデータ」として一旦ここに保管し、月単位でOK(scheduleへ反映)/NG(削除)を判断する。
+-- 名簿との照合に失敗した行はuser_id=NULLのまま残り、一覧で「要確認」として表示する。
+CREATE TABLE IF NOT EXISTS legacy_import_shifts(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ym TEXT NOT NULL,              -- 'YYYY-MM'(承認/却下の単位)
+  date TEXT NOT NULL,
+  user_id INTEGER,               -- 名簿(users.regno)と一致した場合のみ設定。NULL=要確認
+  regno TEXT DEFAULT '',         -- 元データのlist_regno(参考情報。user_id特定後も保持)
+  name TEXT DEFAULT '',          -- 元データの氏名(参考情報。user_id NULL時の手掛かり)
+  rank TEXT DEFAULT '',
+  site TEXT DEFAULT '',
+  venue TEXT DEFAULT '',
+  duty TEXT DEFAULT '',
+  tin TEXT DEFAULT '',
+  tout TEXT DEFAULT '',
+  hours REAL DEFAULT 0,
+  pay INTEGER DEFAULT 0,         -- 外部で計算済みの金額をそのまま保持(当時の賃金改定を反映済みのため、現在のcalcPay()では再計算しない)
+  note TEXT DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending'  -- pending / approved(scheduleへ反映済み) / skipped(承認時、その日に既存データがあり反映されなかった)
+);
+CREATE INDEX IF NOT EXISTS idx_legacy_import_ym ON legacy_import_shifts(ym);
+CREATE INDEX IF NOT EXISTS idx_legacy_import_user_date ON legacy_import_shifts(user_id, date);
+

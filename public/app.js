@@ -127,7 +127,7 @@ const PAGE_LABELS = {
   'blacklist':'ブラックリスト','report-export':'スプレッドシート貼り付け用コピー','admin':'アカウント管理','admin-settings':'システム設定',
   'role-permissions':'権限の一括設定','handler-status':'ログイン中・編集履歴','import':'スプレッドシート取り込み','sched-sources':'予定表ソース管理',
   'daicho':'台帳保管','permissions':'権限の個人設定','calendar-guide':'カレンダー連携のやり方','version-history':'アップデート履歴',
-  'password':'パスワード変更','login':'ログイン画面',
+  'password':'パスワード変更','login':'ログイン画面','venues':'会場一覧','legacy-import':'過去データ取込確認',
 };
 function pageLabelFromHash(hash){
   if(!hash) return '';
@@ -156,7 +156,7 @@ let UPDATE_NOTICE_SHOWN = false; // 1セッション中に一度だけ表示す�
 // アップデートのお知らせに表示する項目。新機能を追加したら、ここに { v: 新しいバージョン番号, ... } で
 // 追記し、CURRENT_UPDATE_VERSION(この下)をインクリメントする。過去の項目はそのまま残しておいてよい
 // (各ユーザーは自分がまだ見ていないバージョン分の項目だけを見るため、勝手に重複表示されることはない)。
-const CURRENT_UPDATE_VERSION = 10;
+const CURRENT_UPDATE_VERSION = 11;
 const UPDATE_ITEMS = [
   { v:1, icon:'home', title:'ホーム画面を追加', desc:'ログイン後、今日・明日の現場や通知が一目で見られるようになりました。', show: () => true },
   { v:1, icon:'handRaise', title:'休み希望・稼働時間の提出', desc:'マイスケジュールから、休み希望や「この時間なら動ける」を手配担当者に伝えられます。', show: () => true },
@@ -178,6 +178,7 @@ const UPDATE_ITEMS = [
   { v:8, icon:'circleFilled', title:'ログイン中メンバーの閲覧中ページを確認できるように', desc:'「ログイン中・編集履歴」画面で、ログイン中の各メンバーが今どの画面を見ているかを確認できるようになりました(管理者以上)。あわせて、アカウント管理の全データ閲覧「ログインセッション」にも、そのセッションが最後に見ていたページを表示するようになりました。', show: () => has('activity_view') },
   { v:9, icon:'edit', title:'現場詳細画面から、同会場・同アーティストの公演をまとめて編集できるように', desc:'現場詳細画面の「同会場の公演」「同アーティストの公演」一覧から、それぞれ「まとめて編集」で一覧全体をまとめて変更できるようになりました(手配者以上)。「同会場の公演」は会場のみ、「同アーティストの公演」は現場名のみが対象で、一覧内の他の項目まで誤って書き換わることはありません。', show: () => LV[ME.role] >= 2 },
   { v:10, icon:'mapPin', title:'会場一覧を追加', desc:'現場一覧と同じ感覚で使える「会場一覧」を追加しました。会場ごとに、過去・今後どちらもまとめてその会場の現場を確認でき、タップすると現場の詳細も見られます。各会場に「会場マニュアル」を用意する予定ですが、まだ準備中です。手配者以上であれば、チェックボックスで複数の会場を選んでまとめて、または会場詳細画面から1件だけでも、会場名を変更できます。会場マニュアルを用意済みの会場には、一覧で目立つ色とバッジが付き、「マニュアルがある会場のみ」で絞り込むこともできます(マニュアルあり/なしのチェックも手配者以上が設定可能)。', show: () => LV[ME.role] >= 1 },
+  { v:11, icon:'inbox', title:'過去データ取込確認を追加', desc:'手配帳から再構築した過去2年分の給与実績を、管理者だけが閲覧できる確認用データとして取り込みました。「システム管理」→「過去データ取込確認」で月ごとに内容を確認し、問題なければ「公開する」でスケジュールへ反映、誤りがあれば「削除する」で取り消せます(公開するまで本番データには一切影響しません)。', show: () => ME.role==='admin' },
 ];
 // 機能公開設定の対象画面。バックエンドのFEATURE_KEYSと必ず一致させる。
 // 新しい画面を追加したら、ここと src/index.js の FEATURE_KEYS の両方に追記する。
@@ -209,6 +210,7 @@ const FEATURE_LABELS = {
   'member-summary': { icon:'barChart', label:'個人の年間サマリー' },
   'venues': { icon:'mapPin', label:'会場一覧' },
   'venue-manual': { icon:'bookOpen', label:'会場マニュアル' },
+  'legacy-import': { icon:'inbox', label:'過去データ取込確認' },
 };
 const FEATURE_KEYS = Object.keys(FEATURE_LABELS);
 // 給与計算区分コード → 表示用の日本語ラベル(業務名対応表の表示に使う)
@@ -1137,6 +1139,7 @@ async function render(){
     else if(hash === '#/report-export') await pageReportExport(app);
     else if(hash.startsWith('#/import')) await pageImport(app, hash);
     else if(hash === '#/handler-status') await pageHandlerStatus(app);
+    else if(hash.startsWith('#/legacy-import')) await pageLegacyImport(app, hash);
     else if(hash === '#/self-reports') await pageSelfReports(app);
     else if(hash === '#/admin') await pageAdmin(app);
     else if(hash === '#/admin-settings') await pageAdminSettings(app);
@@ -1244,7 +1247,7 @@ function renderShell(hash){
   const canImport = has('import_data');
   const canSchedSrc = has('wage_settings');
   const canDaicho = has('daicho_manage');
-  const showSystemGroup = canAccountAdmin || canSystemSettings || canRolePerm || canHandlerStatus;
+  const showSystemGroup = canAccountAdmin || canSystemSettings || canRolePerm || canHandlerStatus || ME.role==='admin';
   const showSpreadGroup = canImport || canSchedSrc || canDaicho;
   const canSummaryView = has('summary_view');
   const canDayScheduleView = has('day_schedule_view');
@@ -1294,6 +1297,7 @@ function renderShell(hash){
       ...(canSystemSettings ? [{ path:'#/admin-settings', icon:'wrench', label:'システム設定', role:'admin' }] : []),
       ...(canRolePerm ? [{ path:'#/role-permissions', icon:'shield', label:'権限の一括設定', role:'admin' }] : []),
       ...(canHandlerStatus ? [{ path:'#/handler-status', icon:'circleFilled', label:'ログイン中・編集履歴', role:'handler' }] : []),
+      ...(ME.role==='admin' ? [{ path:'#/legacy-import', icon:'inbox', label:'過去データ取込確認', role:'admin' }] : []),
     ]},
     { icon:'upload', label:'スプレッド読み込み', show: showSpreadGroup, children:[
       ...(canImport ? [{ path:'#/import', icon:'download', label:'スプレッドシート取り込み', role:'handler' }] : []),
@@ -5742,6 +5746,135 @@ async function pageSchedSources(app, hash){
     const target = sources.find(s => String(s.id) === String(resultId));
     if(target && target.lastResult && target.lastResult.changes && target.lastResult.changes.length) showChanges(target);
   }
+}
+
+// 過去データ取込確認: 手配帳から外部で再構築した2024〜2025年分の給与実績を、管理者だけが閲覧できる
+// 「デモデータ」として月単位で確認し、OK(schedule本体へ反映)/NG(削除)を判断する。
+const ymLabel = ym => `${ym.slice(0,4)}年${Number(ym.slice(5,7))}月`;
+async function pageLegacyImport(app, hash){
+  if(ME.role !== 'admin'){ notFound(app); return; }
+  const seg = hash.replace(/^#\/legacy-import\/?/, '').trim();
+  if(seg) return pageLegacyImportDetail(app, seg);
+  app.innerHTML = `<h2>${icon('inbox')} 過去データ取込確認</h2><div class="card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>`;
+  let months;
+  try{ months = await api('/legacy-import/months'); }
+  catch(e){ app.innerHTML = `<h2>${icon('inbox')} 過去データ取込確認</h2><div class="card"><div class="msg err">${h(e.message)}</div></div>`; return; }
+  if(!months.length){
+    app.innerHTML = `<h2>${icon('inbox')} 過去データ取込確認</h2><div class="card"><div class="muted" style="padding:20px 0;text-align:center">確認待ちのデータはありません。</div></div>`;
+    return;
+  }
+  const stateInfo = mo => {
+    if(mo.pendingCnt === mo.total) return { label:'未確認', cls:'li-pending' };
+    if(mo.pendingCnt === 0) return { label:`確認済み(公開${mo.approvedCnt}件${mo.skippedCnt?` / スキップ${mo.skippedCnt}件`:''})`, cls:'li-done' };
+    return { label:'一部確認済み', cls:'li-partial' };
+  };
+  app.innerHTML = `
+  <h2>${icon('inbox')} 過去データ取込確認</h2>
+  <div class="muted" style="margin-bottom:10px">手配帳から外部で再構築した過去の給与実績です。管理者だけが閲覧でき、月単位の内容を確認のうえ「公開する」か「削除する」かを決められます(まだ本番のスケジュールには一切反映されていません)。</div>
+  <div class="card">
+    <div id="li-list" style="display:flex;flex-direction:column;gap:10px"></div>
+  </div>`;
+  const listEl = $('#li-list');
+  const render = () => {
+    listEl.innerHTML = months.map(mo => {
+      const st = stateInfo(mo);
+      return `<div class="li-month-row ${st.cls}">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:700;font-size:15px">${ymLabel(mo.ym)}</div>
+          <div class="muted" style="font-size:12.5px;margin-top:2px">${mo.total}件(一致${mo.matched}件${mo.unmatched?` / <span style="color:#b03030;font-weight:700">要確認${mo.unmatched}件</span>`:''}) / 合計${yen(mo.totalPay)}</div>
+          <div class="li-state-badge">${st.label}</div>
+        </div>
+        <div class="row" style="gap:6px;flex-wrap:wrap;justify-content:flex-end">
+          <button type="button" class="btn ghost sm li-detail" data-ym="${mo.ym}">詳細を見る</button>
+          ${mo.pendingCnt>0?`<button type="button" class="btn gold sm li-approve" data-ym="${mo.ym}">公開する</button>
+          <button type="button" class="btn ghost sm li-reject" data-ym="${mo.ym}" style="color:#b03030;border-color:#e0b0b0">削除する</button>`:''}
+        </div>
+      </div>`;
+    }).join('');
+    listEl.querySelectorAll('.li-detail').forEach(b => b.onclick = () => goTo('#/legacy-import/' + b.dataset.ym));
+    listEl.querySelectorAll('.li-approve').forEach(b => b.onclick = () => runLegacyApprove(b.dataset.ym, months, render));
+    listEl.querySelectorAll('.li-reject').forEach(b => b.onclick = () => runLegacyReject(b.dataset.ym, months, render));
+  };
+  render();
+}
+
+async function runLegacyApprove(ym, months, onDone){
+  if(!confirm(`${ymLabel(ym)}分を公開します。一致した人のうち、既にその日にデータがある人はスキップされます。よろしいですか?`)) return;
+  try{
+    const r = await api(`/legacy-import/months/${ym}/approve`, { method:'POST' });
+    popup(`${r.approved}件を公開しました${r.skipped?`(${r.skipped}件は既存データがありスキップ)`:''}${r.unmatched?`。要確認(未一致)${r.unmatched}件は反映されていません`:''}。`);
+    const fresh = await api('/legacy-import/months');
+    months.length = 0; months.push(...fresh);
+    onDone();
+  }catch(e){ popup(e.message, 'error'); }
+}
+async function runLegacyReject(ym, months, onDone){
+  if(!confirm(`${ymLabel(ym)}分のデータを削除します。この操作は元に戻せません。よろしいですか?`)) return;
+  try{
+    const r = await api(`/legacy-import/months/${ym}/reject`, { method:'POST' });
+    popup(`${r.deleted}件を削除しました。`);
+    const fresh = await api('/legacy-import/months');
+    months.length = 0; months.push(...fresh);
+    onDone();
+  }catch(e){ popup(e.message, 'error'); }
+}
+
+async function pageLegacyImportDetail(app, ym){
+  app.innerHTML = `<h2>${icon('inbox')} ${ymLabel(ym)}の過去データ</h2><div class="card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>`;
+  let rows;
+  try{ rows = await api(`/legacy-import/months/${ym}`); }
+  catch(e){ app.innerHTML = `<h2>${icon('inbox')} ${ymLabel(ym)}の過去データ</h2><div class="card"><div class="msg err">${h(e.message)}</div></div>`; return; }
+  const st = PAGE_STATE.legacyImportDetail || (PAGE_STATE.legacyImportDetail = { unmatchedOnly:false });
+  const total = rows.length, unmatched = rows.filter(r => !r.user_id).length, pending = rows.filter(r => r.status==='pending').length;
+  const totalPay = rows.reduce((s,r) => s + (r.pay||0), 0);
+  const rowClass = r => !r.user_id ? 'li-row-unmatched' : (r.status==='approved' ? 'li-row-approved' : r.status==='skipped' ? 'li-row-skipped' : '');
+  const rowStatusLabel = r => !r.user_id ? '要確認' : r.status==='approved' ? '公開済み' : r.status==='skipped' ? '既存データありスキップ' : '未確認';
+  app.innerHTML = `
+  <button type="button" class="btn ghost sm" id="li-back" style="margin-bottom:10px">${icon('arrowLeft',{size:'14px'})} 月一覧へ戻る</button>
+  <h2>${icon('inbox')} ${ymLabel(ym)}の過去データ</h2>
+  <div class="muted" style="margin-bottom:10px">${total}件(一致${total-unmatched}件 / 要確認${unmatched}件) / 合計${yen(totalPay)}</div>
+  <div class="card">
+    <div class="sticky-filters">
+      <div class="row" style="gap:10px;flex-wrap:wrap;align-items:center">
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+          <input type="checkbox" id="li-unmatched-only" ${st.unmatchedOnly?'checked':''}> 要確認のみ表示
+        </label>
+        <div style="flex:1"></div>
+        ${pending>0?`<button type="button" class="btn gold sm" id="li-detail-approve">この月を公開する</button>
+        <button type="button" class="btn ghost sm" id="li-detail-reject" style="color:#b03030;border-color:#e0b0b0">この月を削除する</button>`:''}
+      </div>
+    </div>
+    <div style="overflow-x:auto">
+      <table class="list li-table" id="li-table">
+        <thead><tr>
+          <th>日付</th><th>氏名(登録番号)</th><th>ランク</th><th>現場</th><th>会場</th><th>業務</th><th>IN〜OUT</th><th>時間</th><th>金額</th><th>状態</th>
+        </tr></thead>
+        <tbody id="li-tbody"></tbody>
+      </table>
+    </div>
+  </div>`;
+  $('#li-back').onclick = () => goTo('#/legacy-import');
+  const renderRows = () => {
+    const filtered = st.unmatchedOnly ? rows.filter(r => !r.user_id) : rows;
+    $('#li-tbody').innerHTML = filtered.length ? filtered.map(r => `<tr class="${rowClass(r)}">
+      <td>${h(r.date)}</td>
+      <td>${h(r.matched_name || r.name)}${r.matched_name && r.matched_name!==r.name?` <span class="muted">(元データ:${h(r.name)})</span>`:''}<div class="muted" style="font-size:11px">${h(r.matched_regno || r.regno)}</div></td>
+      <td>${h(r.rank)}</td>
+      <td>${h(r.site)}</td>
+      <td>${h(r.venue)}</td>
+      <td>${h(r.duty)}</td>
+      <td>${h(r.tin)}〜${h(r.tout)}</td>
+      <td>${r.hours}h</td>
+      <td>${yen(r.pay)}</td>
+      <td>${rowStatusLabel(r)}</td>
+    </tr>`).join('') : `<tr><td colspan="10" class="muted" style="text-align:center;padding:20px 0">該当する行がありません</td></tr>`;
+  };
+  renderRows();
+  $('#li-unmatched-only').onchange = (e) => { st.unmatchedOnly = e.target.checked; renderRows(); };
+  const appBtn = $('#li-detail-approve');
+  if(appBtn) appBtn.onclick = () => runLegacyApprove(ym, [], () => pageLegacyImportDetail(app, ym));
+  const rejBtn = $('#li-detail-reject');
+  if(rejBtn) rejBtn.onclick = () => runLegacyReject(ym, [], () => goTo('#/legacy-import'));
 }
 
 async function pageDaicho(app){

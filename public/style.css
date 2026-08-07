@@ -367,6 +367,16 @@ table.list tr.click:hover{background:#fdf6e0;cursor:pointer}
 .st-rookie-list{display:flex;flex-direction:column;gap:4px;margin:4px 0 8px;padding-left:8px}
 .st-rookie-item{display:flex;align-items:center;gap:6px;width:fit-content;max-width:100%;background:#e7f6ec;color:#1f7a3d;border:none;border-radius:8px;padding:5px 10px;font-size:12px;font-weight:700;cursor:pointer;text-align:left;transition:background .15s ease}
 .st-rookie-item:hover{background:#d5efdc}
+
+.li-month-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 14px;border:1px solid var(--line);border-radius:8px;background:#fff}
+.li-state-badge{display:inline-block;margin-top:4px;font-size:11px;font-weight:700;border-radius:10px;padding:2px 8px}
+.li-pending .li-state-badge{background:#fdf2d8;color:#8a6d12}
+.li-done .li-state-badge{background:#e7f6ec;color:#1f7a3d}
+.li-partial .li-state-badge{background:#eef0fb;color:#3a4bb0}
+table.li-table td{font-size:12.5px}
+tr.li-row-unmatched td{background:#fdecea}
+tr.li-row-approved td{background:#eef7ef}
+tr.li-row-skipped td{background:#f2f2f2;color:#888}
 .st-rookie-item:active{transform:scale(.98)}
 .st-rookie-item .muted{font-weight:400;color:#4a8a5f}
 
