@@ -1335,14 +1335,31 @@ function normalizeSiteName(site) {
   return s;
 }
 
-// アーティスト一覧(準備中)用: 現場名からセクション等の分類「【...】」を除いた本体名を抽出する。
-// 末尾「〇〇【△△】」・先頭「【△△】〇〇」のどちらの表記でも対応する(表記統一前のデータもあるため)。
-// 除去した結果が空文字になる場合(現場名自体が【】だけ等)は元の文字列を返す(安全策)。
+// 公演一覧(旧アーティスト一覧)用: 現場名を「本体(公演名)」と「【セクション等】表記」に分解する。
+// 末尾「〇〇【△△】」・先頭「【△△】〇〇」のどちらの表記にも対応する(表記統一前のデータもあるため)。
+// どちらでもない場合はbracket=''。extractArtistName()とrebuildSiteName()はこれを介した逆関係にある
+// (rebuildSiteName(site, extractArtistName(site)) === site が常に成り立つ)。
+function splitSiteBracket(site) {
+  const s = String(site || '').trim();
+  let m = s.match(/^(.*?)\s*(【[^】]*】)\s*$/); // 末尾の「【...】」を検出
+  if (m && m[1].trim()) return { base: m[1].trim(), bracket: m[2], pos: 'suffix' };
+  m = s.match(/^(【[^】]*】)\s*(.*)$/); // 先頭の「【...】」を検出
+  if (m && m[2].trim()) return { base: m[2].trim(), bracket: m[1], pos: 'prefix' };
+  return { base: s, bracket: '', pos: 'none' };
+}
+// 現場名から【】部分を除いた本体名(公演名)を抽出する。除去結果が空文字になる場合
+// (現場名自体が【】だけ等)は元の文字列を返す(安全策)。
 function extractArtistName(site) {
   const s = String(site || '').trim();
   if (!s) return s;
-  let core = s.replace(/\s*【[^】]*】\s*$/, '').replace(/^\s*【[^】]*】\s*/, '').trim();
-  return core || s;
+  return splitSiteBracket(s).base || s;
+}
+// 現場名の本体名(公演名)だけを新しい名前に差し替え、【セクション等】表記はそのまま維持する。
+function rebuildSiteName(site, newArtist) {
+  const { bracket, pos } = splitSiteBracket(site);
+  if (pos === 'suffix') return `${newArtist}${bracket}`;
+  if (pos === 'prefix') return `${bracket}${newArtist}`;
+  return newArtist;
 }
 
 // 日付文字列を YYYY-MM-DD に正規化。基準年月(ym='2026-06')を補完に使う
@@ -3661,6 +3678,65 @@ async function api(req, env, url) {
       env.DB.prepare(`SELECT date, site, venue, COUNT(*) AS cnt FROM schedule WHERE type='work' AND site IN (${ph}) AND date>=? GROUP BY date, site, venue ORDER BY date ASC LIMIT 200`).bind(...variants, today).all(),
     ]);
     return J({ artist, past: pastRes.results, future: futureRes.results });
+  }
+
+  // ---- 公演一覧(旧アーティスト一覧、準備中)の一括改名(手配者以上)。会場一覧の一括改名と違い、
+  //      対象は「公演名(本体名)が一致する現場名」の集合で、改名後も各行の【セクション等】表記は
+  //      そのまま維持する(rebuildSiteName)。複数の旧公演名を1つの新しい公演名にまとめられる。 ----
+  if (method === 'POST' && path === '/artists/bulk-rename') {
+    if (!has(me, 'site_manage')) return ERR('権限がありません', 403);
+    const artists = Array.isArray(body.artists) ? [...new Set(body.artists.map(a => String(a || '').trim()).filter(Boolean))] : [];
+    const newArtist = typeof body.newArtist === 'string' ? body.newArtist.trim() : '';
+    if (!artists.length) return ERR('対象の公演が選択されていません');
+    if (!newArtist) return ERR('新しい名前を入力してください');
+
+    const siteRows = (await env.DB.prepare("SELECT DISTINCT site FROM schedule WHERE type='work' AND site<>''").all()).results;
+    const renameMap = {};
+    for (const r of siteRows) {
+      if (artists.includes(extractArtistName(r.site))) {
+        const newSite = rebuildSiteName(r.site, newArtist);
+        if (newSite && newSite !== r.site) renameMap[r.site] = newSite;
+      }
+    }
+    const oldSites = Object.keys(renameMap);
+    if (!oldSites.length) return J({ ok: 1, updatedDays: 0 });
+
+    const ts = jstTs();
+    const batch = [];
+    const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
+    const ph = oldSites.map(() => '?').join(',');
+    const targets = (await env.DB.prepare(
+      `SELECT DISTINCT user_id, date FROM schedule WHERE type='work' AND site IN (${ph})`
+    ).bind(...oldSites).all()).results;
+
+    let updatedDays = 0;
+    for (const { user_id, date } of targets) {
+      // その人・その日の全スロットを取得し、対象の公演名と一致するスロットだけ改名する
+      // (同じ日に他の予定が混在していても、それらは変更しない)
+      const before = (await env.DB.prepare('SELECT * FROM schedule WHERE user_id=? AND date=? ORDER BY slot').bind(user_id, date).all()).results;
+      const beforeJson = JSON.stringify(before.map(stripRow));
+      const afterRows = before.map(r => (r.type === 'work' && renameMap[r.site]) ? { ...r, site: renameMap[r.site] } : r);
+      const afterJson = JSON.stringify(afterRows.map(stripRow));
+      if (beforeJson === afterJson) continue;
+      batch.push(env.DB.prepare('DELETE FROM schedule WHERE user_id=? AND date=?').bind(user_id, date));
+      let slot = 0;
+      for (const r of afterRows) {
+        batch.push(env.DB.prepare('INSERT INTO schedule(user_id,date,slot,type,site,venue,tin,tout,hours,overtime,pay,note,duty,load_end,show_end,multi) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+          .bind(user_id, date, slot, r.type, r.site, r.venue, r.tin, r.tout, r.hours || 0, r.overtime || 0, r.pay || 0, r.note || '', r.duty || '', r.load_end || '', r.show_end || '', r.multi ? 1 : 0));
+        slot++;
+      }
+      batch.push(env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
+        .bind(ts, me.id, user_id, date, beforeJson, JSON.stringify({ slots: afterRows.map(stripRow), _src: `公演一覧の一括変更(→${newArtist})` })));
+      updatedDays++;
+    }
+    if (batch.length) for (const part of chunk(batch, 200)) await env.DB.batch(part);
+
+    // 未配置のまま登録だけされている現場(site_registry)も、対象の現場名なら更新する
+    for (const oldSite of oldSites) {
+      await env.DB.prepare('UPDATE site_registry SET site=? WHERE site=?').bind(renameMap[oldSite], oldSite).run();
+    }
+
+    return J({ ok: 1, updatedDays, ts });
   }
 
   // ---- 会場マニュアルの有無フラグ(手配者以上)。マニュアル本文自体はまだ実装していないが、

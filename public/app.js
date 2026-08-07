@@ -127,7 +127,7 @@ const PAGE_LABELS = {
   'blacklist':'ブラックリスト','report-export':'スプレッドシート貼り付け用コピー','admin':'アカウント管理','admin-settings':'システム設定',
   'role-permissions':'権限の一括設定','handler-status':'ログイン中・編集履歴','import':'スプレッドシート取り込み','sched-sources':'予定表ソース管理',
   'daicho':'台帳保管','permissions':'権限の個人設定','calendar-guide':'カレンダー連携のやり方','version-history':'アップデート履歴',
-  'password':'パスワード変更','login':'ログイン画面','venues':'会場一覧','legacy-import':'過去データ取込確認','artists':'アーティスト一覧',
+  'password':'パスワード変更','login':'ログイン画面','venues':'会場一覧','legacy-import':'過去データ取込確認','artists':'公演一覧',
 };
 function pageLabelFromHash(hash){
   if(!hash) return '';
@@ -210,7 +210,7 @@ const FEATURE_LABELS = {
   'venues': { icon:'mapPin', label:'会場一覧' },
   'venue-manual': { icon:'bookOpen', label:'会場マニュアル' },
   'legacy-import': { icon:'inbox', label:'過去データ取込確認' },
-  'artists': { icon:'megaphone', label:'アーティスト一覧' },
+  'artists': { icon:'megaphone', label:'公演一覧' },
 };
 const FEATURE_KEYS = Object.keys(FEATURE_LABELS);
 // 給与計算区分コード → 表示用の日本語ラベル(業務名対応表の表示に使う)
@@ -1286,7 +1286,7 @@ function renderShell(hash){
     ]},
     { path:'#/sites', icon:'stadium', label:'現場一覧', show:canSitesView },
     { path:'#/venues', icon:'mapPin', label:'会場一覧', show:canSitesView },
-    { path:'#/artists', icon:'megaphone', label:'アーティスト一覧', show:canSitesView },
+    { path:'#/artists', icon:'megaphone', label:'公演一覧', show:canSitesView },
     { icon:'users', label:'メンバー', show:showMemberGroup, children:[
       ...(isHandlerRole ? [{ path:'#/members/mine', icon:'briefcase', label:`${ME.name}手配`, role:'handler' }] : []),
       ...(canMembersView ? [{ path:'#/members', icon:'users', label:'メンバー一覧' }] : []),
@@ -3076,42 +3076,124 @@ async function pageVenueManual(app, hash){
   renderFeatureBlocked(app, 'hidden', { icon:'bookOpen', label: venue ? `${venue} マニュアル` : '会場マニュアル' });
 }
 
-/* ===== アーティスト一覧(準備中、chief以上)。会場一覧と同じ操作感で、現場名から
-   「【セクション等】」を除いた本体名をアーティスト名とみなして集計・一覧表示する。 ===== */
+/* ===== 公演一覧(旧アーティスト一覧。準備中、chief以上)。会場一覧と同じ操作感で、現場名から
+   「【セクション等】」を除いた本体名を公演名とみなして集計・一覧表示する。 ===== */
 async function pageArtists(app){
   if(!has('sites_view')){ notFound(app); return; }
-  const st = PAGE_STATE.artists || (PAGE_STATE.artists = { q:'' });
-  app.innerHTML = `<h2>${icon('megaphone')} アーティスト一覧</h2><div class="card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>`;
+  const st = PAGE_STATE.artists || (PAGE_STATE.artists = { q:'', selected: new Set(), sort:'name' });
+  if(!st.sort) st.sort = 'name'; // 古い保存状態との互換
+  if(!st.selected) st.selected = new Set();
+  const artistSortOptions = { name:'公演名順(あ→ん)', cnt:'使用回数が多い順', recent:'最近使った順' };
+  const canRename = has('site_manage'); // 公演名のまとめて変更(手配者以上)
+  app.innerHTML = `<h2>${icon('megaphone')} 公演一覧</h2><div class="card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>`;
   let artists;
   try{ artists = await api('/artists'); }
-  catch(e){ app.innerHTML = `<h2>${icon('megaphone')} アーティスト一覧</h2><div class="card"><div class="msg err">${h(e.message)}</div></div>`; return; }
+  catch(e){ app.innerHTML = `<h2>${icon('megaphone')} 公演一覧</h2><div class="card"><div class="msg err">${h(e.message)}</div></div>`; return; }
+  // 前回の検索結果に無くなった公演の選択は解除しておく(有り得ないはずだが念のため)
+  const allArtists = new Set(artists.map(a => a.artist));
+  for(const a of [...st.selected]) if(!allArtists.has(a)) st.selected.delete(a);
+
+  const renderBulkBar = () => {
+    const bar = $('#artist-bulk-bar');
+    if(!bar) return;
+    bar.innerHTML = canRename && st.selected.size ? `
+      <span class="muted" style="font-weight:600">${st.selected.size}件選択中</span>
+      <button class="btn gold sm" id="artist-bulk-rename">${icon('edit',{size:'12px'})} まとめて名前を変更</button>
+      <button class="btn ghost sm" id="artist-bulk-clear">選択解除</button>` : '';
+    const brBtn = $('#artist-bulk-rename');
+    if(brBtn) brBtn.onclick = () => {
+      openArtistBulkRename([...st.selected], () => { st.selected = new Set(); pageArtists(app); });
+    };
+    const bcBtn = $('#artist-bulk-clear');
+    if(bcBtn) bcBtn.onclick = () => { st.selected = new Set(); renderList(); renderBulkBar(); };
+  };
+
+  const sortList = (list) => {
+    const sorted = [...list];
+    if(st.sort === 'cnt') sorted.sort((a,b) => b.cnt - a.cnt || String(a.artist||'').localeCompare(String(b.artist||''), 'ja'));
+    else if(st.sort === 'recent') sorted.sort((a,b) => String(b.lastDate||'').localeCompare(String(a.lastDate||'')) || String(a.artist||'').localeCompare(String(b.artist||''), 'ja'));
+    else sorted.sort((a,b) => String(a.artist||'').localeCompare(String(b.artist||''), 'ja'));
+    return sorted;
+  };
+
   const renderList = () => {
     const q = st.q.trim();
-    const filtered = q ? artists.filter(a => (a.artist||'').includes(q)) : artists;
+    let filtered = q ? artists.filter(a => (a.artist||'').includes(q)) : artists;
+    filtered = sortList(filtered);
     const listEl = $('#artist-list');
     if(!listEl) return;
     listEl.innerHTML = filtered.length ? filtered.map(a => `<div class="st-site-row">
+        ${canRename ? `<input type="checkbox" class="st-site-check" data-artist="${h(a.artist)}" ${st.selected.has(a.artist)?'checked':''}>` : ''}
         <button type="button" class="st-site artist-item" data-artist="${h(a.artist)}">
           <span class="st-site-name">${h(a.artist)}</span>
           <span class="st-site-cnt">${a.dateCnt}日</span>
         </button>
-      </div>`).join('') : `<div class="muted" style="padding:20px 0;text-align:center">${q?'該当するアーティストはありません':'まだ現場のデータがありません'}</div>`;
+      </div>`).join('') : `<div class="muted" style="padding:20px 0;text-align:center">${q?'該当する公演はありません':'まだ現場のデータがありません'}</div>`;
     listEl.querySelectorAll('.artist-item').forEach(b => b.onclick = () => openArtistModal(b.dataset.artist));
+    if(canRename){
+      listEl.querySelectorAll('.st-site-check').forEach(cb => cb.onclick = (e) => {
+        e.stopPropagation(); // 親のartist-itemボタン(公演詳細を開く)を誤って発火させない
+        if(cb.checked) st.selected.add(cb.dataset.artist); else st.selected.delete(cb.dataset.artist);
+        renderBulkBar();
+      });
+    }
   };
+
   app.innerHTML = `
-  <h2 style="margin-bottom:8px">${icon('megaphone')} アーティスト一覧</h2>
+  <h2 style="margin-bottom:8px">${icon('megaphone')} 公演一覧</h2>
   <div class="card">
     <div class="sticky-filters">
-      <input id="artist-q" placeholder="アーティスト名で検索" value="${h(st.q)}" style="width:100%">
+      <div class="row" style="margin-bottom:12px;gap:10px;flex-wrap:wrap;align-items:center">
+        <input id="artist-q" placeholder="公演名で検索" value="${h(st.q)}" style="flex:1;min-width:140px">
+        <label class="muted" style="font-size:12px;white-space:nowrap">並び替え</label>
+        <select id="artist-sort">
+          ${Object.entries(artistSortOptions).map(([k,l])=>`<option value="${k}" ${k===st.sort?'selected':''}>${l}</option>`).join('')}
+        </select>
+      </div>
+      <div class="row" id="artist-bulk-bar" style="margin-bottom:0;gap:8px;align-items:center;background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:8px 10px;flex-wrap:wrap"></div>
     </div>
     <div id="artist-list" class="st-sites" style="margin-top:10px"></div>
   </div>`;
   renderList();
+  renderBulkBar();
   $('#artist-q').oninput = (e) => { st.q = e.target.value; renderList(); };
+  $('#artist-sort').onchange = (e) => { st.sort = e.target.value; renderList(); };
 }
 
-// アーティスト詳細モーダル。過去・今後の公演を今日を境に分けて表示する(会場詳細と同じ形式)。
+// 選択した複数の公演名(現場名の本体部分)をまとめて統一名称に変更する。会場一覧の一括改名と同様、
+// 各行の【セクション等】表記はそのまま維持される(バックエンドのrebuildSiteNameが処理する)。
+function openArtistBulkRename(artists, onDone){
+  if(!artists.length) return;
+  const title = artists.length === 1 ? `${h(artists[0])} の名前を変更` : `選択した${artists.length}件の公演名をまとめて変更`;
+  modal(`<h3>${icon('edit',{size:'15px'})} ${title}</h3>
+    ${artists.length > 1 ? `<div class="muted" style="font-size:12px;margin-bottom:10px">対象(${artists.length}件):</div>
+    <div style="max-height:30vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-bottom:12px">
+      ${artists.map(a=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:#faf9f6;border:1px solid var(--line);border-radius:6px">${h(a)}</div>`).join('')}
+    </div>` : ''}
+    <label style="display:block;margin-bottom:10px">新しい公演名<br>
+      <input type="text" id="abr-artist" value="${h(artists[0])}" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;margin-top:4px">
+    </label>
+    <div class="muted" style="font-size:12px;margin-bottom:10px">各現場の【セクション等】の表記はそのまま維持されます。</div>
+    <button class="btn gold" id="abr-run">変更を適用する</button>
+    <div id="abr-msg" class="muted" style="margin-top:10px"></div>`);
+  $('#abr-run').onclick = async () => {
+    const newArtist = $('#abr-artist').value.trim();
+    if(!newArtist){ $('#abr-msg').textContent = '新しい公演名を入力してください'; return; }
+    if(!confirm(artists.length === 1 ? '公演名を変更します。よろしいですか?' : `選択した${artists.length}件を、まとめて変更します。よろしいですか?`)) return;
+    await withLoading($('#abr-run'), async () => {
+      try{
+        const r = await api('/artists/bulk-rename', { method:'POST', body:{ artists, newArtist } });
+        closeModal();
+        popup(`${r.updatedDays}件を変更しました`);
+        if(onDone) onDone();
+      }catch(e){ $('#abr-msg').textContent = e.message; }
+    });
+  };
+}
+
+// 公演詳細モーダル。過去・今後の公演を今日を境に分けて表示する(会場詳細と同じ形式)。
 async function openArtistModal(artist){
+  const canRename = has('site_manage'); // 公演名の変更(手配者以上)
   let data;
   try{ data = await api(`/artist-history?artist=${encodeURIComponent(artist)}`); }
   catch(e){ popup(e.message, 'error'); return; }
@@ -3119,9 +3201,14 @@ async function openArtistModal(artist){
     ${h(r.date)} ${h(r.site)}${r.venue?` <span class="muted">(${h(r.venue)})</span>`:''} <span class="muted">${r.cnt}名</span>
   </button>`;
   modal(`<h3>${icon('megaphone',{size:'15px'})} ${h(artist)}</h3>
+    ${canRename ? `<div class="row" style="gap:8px;margin:2px 0 10px">
+      <button type="button" class="btn ghost sm" id="artist-rename-btn">${icon('edit',{size:'13px'})} 名前を変更</button>
+    </div>` : ''}
     ${data.past.length ? `<div class="section-label" style="margin-top:6px">${icon('arrowLeft',{size:'10px'})} 過去の公演</div><div>${data.past.map(item).join('')}</div>` : ''}
     ${data.future.length ? `<div class="section-label" style="margin-top:12px">今後の公演 ${icon('arrowRight',{size:'10px'})}</div><div>${data.future.map(item).join('')}</div>` : ''}
-    ${(!data.past.length && !data.future.length) ? '<div class="muted">このアーティストの現場情報はまだありません</div>' : ''}`);
+    ${(!data.past.length && !data.future.length) ? '<div class="muted">この公演の現場情報はまだありません</div>' : ''}`);
+  const renameBtn = $('#artist-rename-btn');
+  if(renameBtn) renameBtn.onclick = (e) => { e.stopPropagation(); openArtistBulkRename([artist], () => openArtistModal(artist)); };
   document.querySelectorAll('#modal-layer .artist-hist-item').forEach(el => {
     el.onclick = () => { closeModal(); openSiteModal(el.dataset.date, el.dataset.site); };
   });
