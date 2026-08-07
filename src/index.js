@@ -3545,14 +3545,15 @@ async function api(req, env, url) {
     if (!date || !site) return ERR('date/site が必要です');
     const { venue, from, to } = await findGigDateRange(env, date, site);
 
-    const [sameVenuePastRes, sameVenueFutureRes, sameSitePastRes, sameSiteFutureRes, currentRes] = await Promise.all([
-      venue
-        ? env.DB.prepare("SELECT date, site, venue, COUNT(*) AS cnt FROM schedule WHERE type='work' AND venue=? AND date<? GROUP BY date, site, venue ORDER BY date DESC LIMIT 15").bind(venue, from).all()
-        : Promise.resolve({ results: [] }),
+    // 過去(このデータより前)は、現場名・会場名の表記ゆれで誤って別公演を結合しないよう、
+    // 完全一致(site AND venue)でのみ1つの公演として結合する(2026年8月、過去データ取込に伴い変更)。
+    // 未来は入力者がまだ自由に表記を統一していない段階のため、従来通り現場名/会場名どちらかの
+    // 一致で緩く候補を拾う(同会場の公演/同アーティストの公演の2系統のまま)。
+    const [samePastRes, sameVenueFutureRes, sameSiteFutureRes, currentRes] = await Promise.all([
+      env.DB.prepare("SELECT date, site, venue, COUNT(*) AS cnt FROM schedule WHERE type='work' AND site=? AND venue=? AND date<? GROUP BY date, site, venue ORDER BY date DESC LIMIT 15").bind(site, venue, from).all(),
       venue
         ? env.DB.prepare("SELECT date, site, venue, COUNT(*) AS cnt FROM schedule WHERE type='work' AND venue=? AND date>? GROUP BY date, site, venue ORDER BY date ASC LIMIT 15").bind(venue, to).all()
         : Promise.resolve({ results: [] }),
-      env.DB.prepare("SELECT date, site, venue, COUNT(*) AS cnt FROM schedule WHERE type='work' AND site=? AND date<? GROUP BY date, site, venue ORDER BY date DESC LIMIT 15").bind(site, from).all(),
       env.DB.prepare("SELECT date, site, venue, COUNT(*) AS cnt FROM schedule WHERE type='work' AND site=? AND date>? GROUP BY date, site, venue ORDER BY date ASC LIMIT 15").bind(site, to).all(),
       // 現在閲覧中の現場自体(from〜to、この現場名の日すべて)。同会場・同アーティストの一覧は
       // これを意図的に除外しているため、一括編集の対象に含めたい場合はここから取得する。
@@ -3560,8 +3561,8 @@ async function api(req, env, url) {
     ]);
     return J({
       site, venue, from, to,
-      sameVenuePast: sameVenuePastRes.results, sameVenueFuture: sameVenueFutureRes.results,
-      sameSitePast: sameSitePastRes.results, sameSiteFuture: sameSiteFutureRes.results,
+      samePast: samePastRes.results,
+      sameVenueFuture: sameVenueFutureRes.results, sameSiteFuture: sameSiteFutureRes.results,
       current: currentRes.results,
     });
   }

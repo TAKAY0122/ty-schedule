@@ -757,12 +757,16 @@ async function openSiteModal(date, site){
       ${past.length ? `<div class="muted" style="font-size:11px;margin:6px 0 3px">${icon('arrowLeft',{size:'10px'})} 過去</div><div>${past.map(histItem).join('')}</div>` : ''}
       ${future.length ? `<div class="muted" style="font-size:11px;margin:${past.length?'10':'6'}px 0 3px">今後 ${icon('arrowRight',{size:'10px'})}</div><div>${future.map(histItem).join('')}</div>` : ''}`;
   };
-  const sameVenuePast = (history && history.sameVenuePast) || [];
+  // 過去(本日より前)は現場名・会場名の完全一致でのみ1つの公演として結合する(表記ゆれの
+  // 誤結合を防ぐため。2026年8月、過去データ取込に伴い変更)。既に完全一致した実績のみなので
+  // 表記統一の必要が無く、まとめて編集ボタンは出さない。
+  const samePast = (history && history.samePast) || [];
+  // 未来はまだ入力者が表記を統一していない段階のため、従来通り現場名/会場名どちらかの一致で
+  // 緩く候補を拾う(同会場の公演/同アーティストの公演の2系統)。
   const sameVenueFuture = (history && history.sameVenueFuture) || [];
-  const sameSitePast = (history && history.sameSitePast) || [];
   const sameSiteFuture = (history && history.sameSiteFuture) || [];
   // 同会場/同アーティストの一覧は、現在閲覧中の現場自体をわざと除外している(別公演として
-  // 誤って過去/今後に混ぜないため)。まとめて編集の対象には、その現在閲覧中の現場自体も
+  // 誤って混ぜないため)。まとめて編集の対象には、その現在閲覧中の現場自体も
   // 含めないと「選択したのに自分の日だけ変わらない」ことになるため、別途取得したcurrentを加える
   const currentGig = (history && history.current) || [];
   modal(`<h3>現場情報</h3>
@@ -787,18 +791,20 @@ async function openSiteModal(date, site){
       <button class="btn gold" id="site-add-btn">＋ メンバーを追加</button>
       ${list.length?`<button class="btn ghost" id="site-edit-btn">${icon('edit')} 全員まとめて一括編集</button>`:''}
     </div>` : ''}
-    ${venue ? histSection('同会場の公演', sameVenuePast, sameVenueFuture, 'venue') : ''}
-    ${histSection('同アーティストの公演', sameSitePast, sameSiteFuture, 'site')}`);
+    ${samePast.length ? `<div class="section-label" style="margin-top:14px">過去の公演(現場名・会場名が完全一致)</div>
+      <div>${samePast.map(histItem).join('')}</div>` : ''}
+    ${venue ? histSection('今後の同会場の公演', [], sameVenueFuture, 'venue') : ''}
+    ${histSection('今後の同アーティストの公演', [], sameSiteFuture, 'site')}`);
   const rosterBtn = $('#site-roster-btn');
   if(rosterBtn) rosterBtn.onclick = () => openSiteRoster(date, site);
   document.querySelectorAll('#modal-layer .site-hist-bulk-edit').forEach(btn => {
     btn.onclick = (e) => {
       e.stopPropagation();
       if(btn.dataset.key === 'venue'){
-        openSiteBulkRename([...sameVenuePast, ...currentGig, ...sameVenueFuture], () => openSiteModal(date, site),
+        openSiteBulkRename([...currentGig, ...sameVenueFuture], () => openSiteModal(date, site),
           { fieldsMode:'venue', title:'同会場の公演の会場をまとめて変更' });
       } else {
-        openSiteBulkRename([...sameSitePast, ...currentGig, ...sameSiteFuture], () => openSiteModal(date, site),
+        openSiteBulkRename([...currentGig, ...sameSiteFuture], () => openSiteModal(date, site),
           { fieldsMode:'site', title:'同アーティストの公演名をまとめて変更' });
       }
     };
