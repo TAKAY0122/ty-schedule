@@ -773,7 +773,7 @@ async function openSiteModal(date, site){
   modal(`<h3>現場情報</h3>
     <dl class="kv">
       <dt>現場名</dt><dd><b>${h(site)}</b></dd>
-      <dt>会場</dt><dd>${venue ? `<a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(venue)}" target="_blank">${h(venue)}</a>` : '<span class="muted">未登録</span>'}</dd>
+      <dt>会場</dt><dd>${venue ? `<span class="name-link venue-detail-link" data-venue="${h(venue)}">${h(venue)}</span>` : '<span class="muted">未登録</span>'}</dd>
       ${loadEnd?`<dt>搬入終了</dt><dd>${h(loadEnd)}</dd>`:''}
       ${showEnd?`<dt>終演</dt><dd>${h(showEnd)}</dd>`:''}
       <dt>日付</dt><dd>${h(date)}</dd>
@@ -798,6 +798,8 @@ async function openSiteModal(date, site){
     ${histSection('今後の同アーティストの公演', [], sameSiteFuture, 'site')}`);
   const rosterBtn = $('#site-roster-btn');
   if(rosterBtn) rosterBtn.onclick = () => openSiteRoster(date, site);
+  const venueLink = $('#modal-layer .venue-detail-link');
+  if(venueLink) venueLink.onclick = () => { closeModal(); openVenueModal(venueLink.dataset.venue); };
   document.querySelectorAll('#modal-layer .site-hist-bulk-edit').forEach(btn => {
     btn.onclick = (e) => {
       e.stopPropagation();
