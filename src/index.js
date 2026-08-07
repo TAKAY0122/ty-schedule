@@ -1335,6 +1335,16 @@ function normalizeSiteName(site) {
   return s;
 }
 
+// アーティスト一覧(準備中)用: 現場名からセクション等の分類「【...】」を除いた本体名を抽出する。
+// 末尾「〇〇【△△】」・先頭「【△△】〇〇」のどちらの表記でも対応する(表記統一前のデータもあるため)。
+// 除去した結果が空文字になる場合(現場名自体が【】だけ等)は元の文字列を返す(安全策)。
+function extractArtistName(site) {
+  const s = String(site || '').trim();
+  if (!s) return s;
+  let core = s.replace(/\s*【[^】]*】\s*$/, '').replace(/^\s*【[^】]*】\s*/, '').trim();
+  return core || s;
+}
+
 // 日付文字列を YYYY-MM-DD に正規化。基準年月(ym='2026-06')を補完に使う
 function normSheetDate(v, ym) {
   const s = String(v == null ? '' : v).trim();
@@ -2104,7 +2114,7 @@ async function api(req, env, url) {
     'report', 'reports', 'draft', 'blacklist', 'report-export',
     'admin', 'admin-settings', 'role-permissions', 'handler-status',
     'import', 'sched-sources', 'daicho', 'member-summary',
-    'venues', 'venue-manual', 'legacy-import',
+    'venues', 'venue-manual', 'legacy-import', 'artists',
   ];
   if (method === 'GET' && path === '/settings/feature-status') {
     const status = {};
@@ -3595,6 +3605,62 @@ async function api(req, env, url) {
       env.DB.prepare('SELECT 1 FROM venue_manuals WHERE venue=?').bind(venue).first(),
     ]);
     return J({ venue, past: pastRes.results, future: futureRes.results, hasManual: !!manualRow });
+  }
+
+  // ---- 会場を経験したことのあるメンバー一覧(チーフ以上)。この会場でtype='work'の実績が
+  //      1件でもある人を、経験回数の多い順に抽出する。停止中アカウントも含む(過去の実績のため)。 ----
+  if (method === 'GET' && path === '/venue-members') {
+    if (!has(me, 'sites_view')) return ERR('ページが見つかりません', 404);
+    const venue = url.searchParams.get('venue');
+    if (!venue) return ERR('venue が必要です');
+    const rows = (await env.DB.prepare(
+      `SELECT u.id, u.name, u.regno, u.rank, u.role, u.suspended, COUNT(*) AS cnt, MAX(s.date) AS lastDate
+       FROM schedule s JOIN users u ON u.id = s.user_id
+       WHERE s.type='work' AND s.venue=?
+       GROUP BY u.id ORDER BY cnt DESC, u.regno`
+    ).bind(venue).all()).results;
+    return J(rows);
+  }
+
+  // ---- アーティスト一覧(準備中、chief以上)。現場名から「【セクション等】」を除いた本体名を
+  //      アーティスト名とみなして集計する。1つの現場名に対応するSQL列が無いため、
+  //      (現場名,日付)単位で取得しWorker側でアーティスト名ごとに再集計する。 ----
+  if (method === 'GET' && path === '/artists') {
+    if (!has(me, 'sites_view')) return ERR('ページが見つかりません', 404);
+    const rows = (await env.DB.prepare(
+      "SELECT site, date, COUNT(*) AS cnt FROM schedule WHERE type='work' AND site<>'' GROUP BY site, date"
+    ).all()).results;
+    const byArtist = {};
+    for (const r of rows) {
+      const artist = extractArtistName(r.site);
+      (byArtist[artist] ||= { artist, cnt: 0, dates: new Set() });
+      byArtist[artist].cnt += r.cnt;
+      byArtist[artist].dates.add(r.date);
+    }
+    const result = Object.values(byArtist).map(a => {
+      const sorted = [...a.dates].sort();
+      return { artist: a.artist, cnt: a.cnt, dateCnt: a.dates.size, firstDate: sorted[0], lastDate: sorted[sorted.length - 1] };
+    }).sort((x, y) => x.artist.localeCompare(y.artist, 'ja'));
+    return J(result);
+  }
+
+  // ---- アーティストごとの現場一覧(準備中、chief以上)。会場一覧のGET /venue-historyと同じ形式で、
+  //      今日を境に過去・今後に分けて返す。対象の現場名は、アーティスト名が一致する全ての表記ゆれ
+  //      (【セクション】の有無・前後違い)を含める。 ----
+  if (method === 'GET' && path === '/artist-history') {
+    if (!has(me, 'sites_view')) return ERR('ページが見つかりません', 404);
+    const artist = url.searchParams.get('artist');
+    if (!artist) return ERR('artist が必要です');
+    const siteRows = (await env.DB.prepare("SELECT DISTINCT site FROM schedule WHERE type='work' AND site<>''").all()).results;
+    const variants = siteRows.map(r => r.site).filter(s => extractArtistName(s) === artist);
+    if (!variants.length) return J({ artist, past: [], future: [] });
+    const ph = variants.map(() => '?').join(',');
+    const today = jstDate();
+    const [pastRes, futureRes] = await Promise.all([
+      env.DB.prepare(`SELECT date, site, venue, COUNT(*) AS cnt FROM schedule WHERE type='work' AND site IN (${ph}) AND date<? GROUP BY date, site, venue ORDER BY date DESC LIMIT 200`).bind(...variants, today).all(),
+      env.DB.prepare(`SELECT date, site, venue, COUNT(*) AS cnt FROM schedule WHERE type='work' AND site IN (${ph}) AND date>=? GROUP BY date, site, venue ORDER BY date ASC LIMIT 200`).bind(...variants, today).all(),
+    ]);
+    return J({ artist, past: pastRes.results, future: futureRes.results });
   }
 
   // ---- 会場マニュアルの有無フラグ(手配者以上)。マニュアル本文自体はまだ実装していないが、

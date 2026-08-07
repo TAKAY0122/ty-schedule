@@ -127,7 +127,7 @@ const PAGE_LABELS = {
   'blacklist':'ブラックリスト','report-export':'スプレッドシート貼り付け用コピー','admin':'アカウント管理','admin-settings':'システム設定',
   'role-permissions':'権限の一括設定','handler-status':'ログイン中・編集履歴','import':'スプレッドシート取り込み','sched-sources':'予定表ソース管理',
   'daicho':'台帳保管','permissions':'権限の個人設定','calendar-guide':'カレンダー連携のやり方','version-history':'アップデート履歴',
-  'password':'パスワード変更','login':'ログイン画面','venues':'会場一覧','legacy-import':'過去データ取込確認',
+  'password':'パスワード変更','login':'ログイン画面','venues':'会場一覧','legacy-import':'過去データ取込確認','artists':'アーティスト一覧',
 };
 function pageLabelFromHash(hash){
   if(!hash) return '';
@@ -210,6 +210,7 @@ const FEATURE_LABELS = {
   'venues': { icon:'mapPin', label:'会場一覧' },
   'venue-manual': { icon:'bookOpen', label:'会場マニュアル' },
   'legacy-import': { icon:'inbox', label:'過去データ取込確認' },
+  'artists': { icon:'megaphone', label:'アーティスト一覧' },
 };
 const FEATURE_KEYS = Object.keys(FEATURE_LABELS);
 // 給与計算区分コード → 表示用の日本語ラベル(業務名対応表の表示に使う)
@@ -1130,6 +1131,7 @@ async function render(){
     else if(hash === '#/members') await pageMembers(app);
     else if(hash === '#/sites') await pageSites(app);
     else if(hash === '#/venues') await pageVenues(app);
+    else if(hash === '#/artists') await pageArtists(app);
     else if(hash.startsWith('#/venue-manual')) await pageVenueManual(app, hash);
     else if(hash === '#/day-schedule') await pageDaySchedule(app);
     else if(hash === '#/summary') await pageSummary(app);
@@ -1282,6 +1284,7 @@ function renderShell(hash){
     ]},
     { path:'#/sites', icon:'stadium', label:'現場一覧', show:canSitesView },
     { path:'#/venues', icon:'mapPin', label:'会場一覧', show:canSitesView },
+    { path:'#/artists', icon:'megaphone', label:'アーティスト一覧', show:canSitesView },
     { icon:'users', label:'メンバー', show:showMemberGroup, children:[
       ...(isHandlerRole ? [{ path:'#/members/mine', icon:'briefcase', label:`${ME.name}手配`, role:'handler' }] : []),
       ...(canMembersView ? [{ path:'#/members', icon:'users', label:'メンバー一覧' }] : []),
@@ -3014,6 +3017,7 @@ async function openVenueModal(venue){
     <div class="row" style="gap:8px;margin:2px 0 10px;flex-wrap:wrap;align-items:center">
       <a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(venue)}" target="_blank" class="btn ghost sm">${icon('mapPin',{size:'13px'})} 地図で見る</a>
       <button type="button" class="btn ghost sm" id="venue-manual-btn">${icon('bookOpen',{size:'13px'})} 会場マニュアル</button>
+      <button type="button" class="btn ghost sm" id="venue-members-btn">${icon('users',{size:'13px'})} メンバーリスト</button>
       ${canRename ? `<button type="button" class="btn ghost sm" id="venue-rename-btn">${icon('edit',{size:'13px'})} 名前を変更</button>` : ''}
     </div>
     ${(canRename || data.hasManual) ? `<div class="row" style="margin:0 0 10px;align-items:center">
@@ -3029,6 +3033,8 @@ async function openVenueModal(venue){
   });
   const manualBtn = $('#venue-manual-btn');
   if(manualBtn) manualBtn.onclick = () => { closeModal(); goTo('#/venue-manual/' + encodeURIComponent(venue)); };
+  const membersBtn = $('#venue-members-btn');
+  if(membersBtn) membersBtn.onclick = () => openVenueMemberList(venue);
   const renameBtn = $('#venue-rename-btn');
   if(renameBtn) renameBtn.onclick = (e) => { e.stopPropagation(); openVenueBulkRename([venue], () => openVenueModal(venue)); };
   const manualFlag = $('#venue-manual-flag');
@@ -3039,12 +3045,84 @@ async function openVenueModal(venue){
   };
 }
 
+// 会場を経験したことのあるメンバー一覧。経験回数の多い順に表示し、名前を押すと個人スケジュールへ遷移する。
+async function openVenueMemberList(venue){
+  let rows;
+  try{ rows = await api(`/venue-members?venue=${encodeURIComponent(venue)}`); }
+  catch(e){ popup(e.message, 'error'); return; }
+  modal(`<h3>${icon('users',{size:'15px'})} ${h(venue)} を経験したメンバー</h3>
+    <div class="muted" style="margin-bottom:10px">${rows.length}名</div>
+    <div style="max-height:60vh;overflow-y:auto">
+      ${rows.length ? rows.map(r=>`<div class="mgr-row venue-member-row" style="cursor:pointer" data-uid="${r.id}">
+        <div class="mgr-name">
+          ${h(r.name)}
+          <span class="muted">${h(r.regno)} ${h(r.rank)||''} ${roleLabel(r)}</span>
+        </div>
+        <div class="muted" style="font-size:12.5px;white-space:nowrap">${r.cnt}回 <span style="font-size:11px">(最終:${h(r.lastDate)})</span></div>
+      </div>`).join('') : '<div class="muted" style="text-align:center;padding:16px">この会場を経験したメンバーはいません</div>'}
+    </div>`);
+  document.querySelectorAll('#modal-layer .venue-member-row').forEach(el => {
+    el.onclick = () => { closeModal(); location.hash = '#/schedule/' + el.dataset.uid; };
+  });
+}
+
 // 会場マニュアル(準備中)。中身はまだ無いため、機能公開設定を「準備中」で登録し、通常は
 // render()の共通ゲートで自動的に案内される。管理者はゲートを常にスキップするため、
 // プレビューできるようここでも同じ準備中メッセージを表示する。
 async function pageVenueManual(app, hash){
   const venue = decodeURIComponent(hash.split('/')[2] || '');
   renderFeatureBlocked(app, 'hidden', { icon:'bookOpen', label: venue ? `${venue} マニュアル` : '会場マニュアル' });
+}
+
+/* ===== アーティスト一覧(準備中、chief以上)。会場一覧と同じ操作感で、現場名から
+   「【セクション等】」を除いた本体名をアーティスト名とみなして集計・一覧表示する。 ===== */
+async function pageArtists(app){
+  if(!has('sites_view')){ notFound(app); return; }
+  const st = PAGE_STATE.artists || (PAGE_STATE.artists = { q:'' });
+  app.innerHTML = `<h2>${icon('megaphone')} アーティスト一覧</h2><div class="card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>`;
+  let artists;
+  try{ artists = await api('/artists'); }
+  catch(e){ app.innerHTML = `<h2>${icon('megaphone')} アーティスト一覧</h2><div class="card"><div class="msg err">${h(e.message)}</div></div>`; return; }
+  const renderList = () => {
+    const q = st.q.trim();
+    const filtered = q ? artists.filter(a => (a.artist||'').includes(q)) : artists;
+    const listEl = $('#artist-list');
+    if(!listEl) return;
+    listEl.innerHTML = filtered.length ? filtered.map(a => `<div class="st-site-row">
+        <button type="button" class="st-site artist-item" data-artist="${h(a.artist)}">
+          <span class="st-site-name">${h(a.artist)}</span>
+          <span class="st-site-cnt">${a.dateCnt}日</span>
+        </button>
+      </div>`).join('') : `<div class="muted" style="padding:20px 0;text-align:center">${q?'該当するアーティストはありません':'まだ現場のデータがありません'}</div>`;
+    listEl.querySelectorAll('.artist-item').forEach(b => b.onclick = () => openArtistModal(b.dataset.artist));
+  };
+  app.innerHTML = `
+  <h2 style="margin-bottom:8px">${icon('megaphone')} アーティスト一覧</h2>
+  <div class="card">
+    <div class="sticky-filters">
+      <input id="artist-q" placeholder="アーティスト名で検索" value="${h(st.q)}" style="width:100%">
+    </div>
+    <div id="artist-list" class="st-sites" style="margin-top:10px"></div>
+  </div>`;
+  renderList();
+  $('#artist-q').oninput = (e) => { st.q = e.target.value; renderList(); };
+}
+
+// アーティスト詳細モーダル。過去・今後の公演を今日を境に分けて表示する(会場詳細と同じ形式)。
+async function openArtistModal(artist){
+  let data;
+  try{ data = await api(`/artist-history?artist=${encodeURIComponent(artist)}`); }
+  catch(e){ popup(e.message, 'error'); return; }
+  const item = r => `<button type="button" class="btn ghost sm artist-hist-item" data-date="${r.date}" data-site="${h(r.site)}" style="display:block;width:100%;text-align:left;margin-bottom:4px;white-space:normal">
+    ${h(r.date)} ${h(r.site)}${r.venue?` <span class="muted">(${h(r.venue)})</span>`:''} <span class="muted">${r.cnt}名</span>
+  </button>`;
+  modal(`<h3>${icon('megaphone',{size:'15px'})} ${h(artist)}</h3>
+    ${data.past.length ? `<div class="section-label" style="margin-top:6px">${icon('arrowLeft',{size:'10px'})} 過去の公演</div><div>${data.past.map(item).join('')}</div>` : ''}
+    ${data.future.length ? `<div class="section-label" style="margin-top:12px">今後の公演 ${icon('arrowRight',{size:'10px'})}</div><div>${data.future.map(item).join('')}</div>` : ''}
+    ${(!data.past.length && !data.future.length) ? '<div class="muted">このアーティストの現場情報はまだありません</div>' : ''}`);
+  document.querySelectorAll('#modal-layer .artist-hist-item').forEach(el => {
+    el.onclick = () => { closeModal(); openSiteModal(el.dataset.date, el.dataset.site); };
+  });
 }
 
 /* ===== 稼働サマリー(チーフ以上)。月間の出勤日数・シフト数・連勤・手配偏りを一覧できる。
@@ -3199,6 +3277,7 @@ async function pageSummary(app){
   animateCounts(app);
   animateBars(app);
   staggerRows(app, '.sum-row, .sum-card');
+  wireNameLinks(app); // フィルタ・並び替えでの再描画はrender()を経由しないため個別に配線する
 }
 // 日付×人のマトリックス表(スケジュール一覧・現場の稼働表で共通利用)。
 // rows[].days は dates と同じ長さ・順序({status, detail, sites, note})を持つ配列。
