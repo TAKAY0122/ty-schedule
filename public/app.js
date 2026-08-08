@@ -2375,9 +2375,9 @@ async function pageSchedule(app, hash){
       ${histBtn}
       ${calSyncBtn}
     </div>
-    ${has('sites_view') ? `<div class="row" style="margin-bottom:6px">
-      <input id="sched-search-q" placeholder="現場名・会場名・公演名で検索" style="flex:2;min-width:160px;box-sizing:border-box">
-      <input id="sched-search-date" placeholder="日付(例:8/15、8月、2024-08)" style="flex:1;min-width:140px;box-sizing:border-box">
+    ${has('sites_view') ? `<div class="row" style="margin-bottom:6px;gap:8px;flex-wrap:wrap">
+      <input id="sched-search-q" placeholder="現場名・会場名・公演名で検索" style="flex:2;min-width:100%;box-sizing:border-box">
+      <input id="sched-search-date" placeholder="日付(例:8/15、8月、2024-08)" style="flex:1;min-width:100%;box-sizing:border-box">
     </div>
     <div id="sched-search-results" style="margin-bottom:12px"></div>` : ''}
     <div class="sched-wrap pc-only">
