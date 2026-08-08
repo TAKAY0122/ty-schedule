@@ -180,6 +180,8 @@ const UPDATE_ITEMS = [
   { v:10, icon:'mapPin', title:'会場一覧を追加', desc:'現場一覧と同じ感覚で使える「会場一覧」を追加しました。会場ごとに、過去・今後どちらもまとめてその会場の現場を確認でき、タップすると現場の詳細も見られます。各会場に「会場マニュアル」を用意する予定ですが、まだ準備中です。手配者以上であれば、チェックボックスで複数の会場を選んでまとめて、または会場詳細画面から1件だけでも、会場名を変更できます。会場マニュアルを用意済みの会場には、一覧で目立つ色とバッジが付き、「マニュアルがある会場のみ」で絞り込むこともできます(マニュアルあり/なしのチェックも手配者以上が設定可能)。', show: () => LV[ME.role] >= 1 },
   { v:11, icon:'barChart', title:'マイスケジュールの下部に個人の年間サマリーを表示', desc:'個人の年間サマリーを閲覧できる方(手配担当者以上)は、マイスケジュール画面をスクロールした一番下でも、その人の年間の稼働状況・備考欄をそのまま確認できるようになりました。', show: () => LV[ME.role] >= 2 },
   { v:11, icon:'mapPin', title:'会場一覧にグループ分け・絞り込みを追加', desc:'似た会場・関連する会場をグループとしてまとめておけるようになりました(手配者以上が作成)。会場一覧の絞り込み欄でグループを選ぶと、そのグループの会場だけに絞り込めます。グループ分けをしただけでは、これまで通りの表示のままです。', show: () => LV[ME.role] >= 1 },
+  { v:12, icon:'mapPin', title:'個人スケジュールに「行った会場」「行った公演」を追加', desc:'マイスケジュール画面から「行った会場」「行った公演」ボタンを押すと、その人が実際に行ったことのある会場・公演の一覧と、それぞれの回数を確認できるようになりました。項目をタップすると、その会場・公演の詳細をすぐに開けます。', show: () => LV[ME.role] >= 1 },
+  { v:12, icon:'users', title:'会場・公演のメンバーリストに並び替えを追加', desc:'会場詳細・公演詳細の「メンバーリスト」で、回数が多い順・最近行った人・ランク順(A→E)に並び替えられるようになりました。', show: () => LV[ME.role] >= 1 },
 ];
 // 機能公開設定の対象画面。バックエンドのFEATURE_KEYSと必ず一致させる。
 // 新しい画面を追加したら、ここと src/index.js の FEATURE_KEYS の両方に追記する。
@@ -2349,6 +2351,8 @@ async function pageSchedule(app, hash){
   const others = LV[ME.role]>=1 ? `<button class="btn ghost sm" id="pick-user">他のメンバーを見る ▾</button>` : '';
   const histBtn = LV[ME.role]>=2 ? `<button class="btn ghost sm" id="view-history">${icon('fileText')} 変更履歴</button>` : '';
   const calSyncBtn = uid===ME.id ? `<button class="btn ghost sm" id="cal-sync">${icon('calendar')} カレンダー連携</button>` : '';
+  const venueListBtn = has('sites_view') ? `<button class="btn ghost sm" id="member-venue-list">${icon('mapPin')} 行った会場</button>` : '';
+  const artistListBtn = has('sites_view') ? `<button class="btn ghost sm" id="member-artist-list">${icon('megaphone')} 行った公演</button>` : '';
   app.innerHTML = `
   <h2>${h(u.name)} のスケジュール ${uid!==ME.id?'<span class="muted">(閲覧中)</span>':''}</h2>
   <div class="card">
@@ -2359,6 +2363,8 @@ async function pageSchedule(app, hash){
         <button class="btn ghost sm" id="next-m">▶</button>
       </div>
       <div class="muted">${h(u.regno)} / ${h(u.rank)} / ${h(u.han)} / ${h(u.station)}</div>
+      ${venueListBtn}
+      ${artistListBtn}
       ${others}
       ${histBtn}
       ${calSyncBtn}
@@ -2395,6 +2401,10 @@ async function pageSchedule(app, hash){
   if(vh) vh.onclick = () => openScheduleHistory(uid, u.name);
   const cs = $('#cal-sync');
   if(cs) cs.onclick = () => openCalendarSync();
+  const mvl = $('#member-venue-list');
+  if(mvl) mvl.onclick = () => openMemberVenueList(uid, u.name);
+  const mal = $('#member-artist-list');
+  if(mal) mal.onclick = () => openMemberArtistList(uid, u.name);
   const pk = $('#pick-user');
   if(pk) pk.onclick = async () => {
     const [users, managers] = await Promise.all([getUsers(true), api('/managers')]);
@@ -3189,25 +3199,71 @@ async function openVenueModal(venue){
   };
 }
 
-// 会場を経験したことのあるメンバー一覧。経験回数の多い順に表示し、名前を押すと個人スケジュールへ遷移する。
-async function openVenueMemberList(venue){
+// 会場・公演を経験したことのあるメンバー一覧の共通描画。並び替え(回数順/最近行った順/ランク順)に対応し、
+// 選択のたびにサーバーへ再取得する(並び替えロジックをバックエンドと二重実装しないため)。
+const memberListSortOptions = { cnt:'回数が多い順', recent:'最近行った人', rank:'ランク順(A→E)' };
+async function openMemberVisitList(title, iconName, fetchUrl){
+  let sort = 'cnt';
+  const render = async () => {
+    let rows;
+    try{ rows = await api(`${fetchUrl}&sort=${sort}`); }
+    catch(e){ popup(e.message, 'error'); return; }
+    modal(`<h3>${icon(iconName,{size:'15px'})} ${title}</h3>
+      <div class="row" style="gap:8px;margin-bottom:10px;align-items:center">
+        <span class="muted">${rows.length}名</span>
+        <select id="mvl-sort" style="margin-left:auto">
+          ${Object.entries(memberListSortOptions).map(([k,l])=>`<option value="${k}" ${k===sort?'selected':''}>${l}</option>`).join('')}
+        </select>
+      </div>
+      <div style="max-height:60vh;overflow-y:auto">
+        ${rows.length ? rows.map(r=>`<div class="mgr-row venue-member-row" style="cursor:pointer" data-uid="${r.id}">
+          <div class="mgr-name">
+            ${h(r.name)}
+            <span class="muted">${h(r.regno)} ${h(r.rank)||''} ${roleLabel(r)}</span>
+          </div>
+          <div class="muted" style="font-size:12.5px;white-space:nowrap">${r.cnt}回 <span style="font-size:11px">(最終:${h(r.lastDate)})</span></div>
+        </div>`).join('') : '<div class="muted" style="text-align:center;padding:16px">経験したメンバーはいません</div>'}
+      </div>`);
+    document.querySelectorAll('#modal-layer .venue-member-row').forEach(el => {
+      el.onclick = () => { closeModal(); location.hash = '#/schedule/' + el.dataset.uid; };
+    });
+    $('#mvl-sort').onchange = (e) => { sort = e.target.value; render(); };
+  };
+  await render();
+}
+// 会場を経験したことのあるメンバー一覧。名前を押すと個人スケジュールへ遷移する。
+function openVenueMemberList(venue){
+  return openMemberVisitList(`${h(venue)} を経験したメンバー`, 'users', `/venue-members?venue=${encodeURIComponent(venue)}`);
+}
+// 公演を経験したことのあるメンバー一覧(準備中)。会場版と同じ操作感。
+function openArtistMemberList(artist){
+  return openMemberVisitList(`${h(artist)} を経験したメンバー`, 'users', `/artist-members?artist=${encodeURIComponent(artist)}`);
+}
+
+// 個人が行ったことのある会場・公演一覧の共通描画。個人スケジュール画面のボタンから開く。
+async function openMemberVisitedList(title, iconName, apiPath, uid, emptyMsg, dataKey, onItemClick){
   let rows;
-  try{ rows = await api(`/venue-members?venue=${encodeURIComponent(venue)}`); }
+  try{ rows = await api(`${apiPath}?uid=${uid}`); }
   catch(e){ popup(e.message, 'error'); return; }
-  modal(`<h3>${icon('users',{size:'15px'})} ${h(venue)} を経験したメンバー</h3>
-    <div class="muted" style="margin-bottom:10px">${rows.length}名</div>
+  modal(`<h3>${icon(iconName,{size:'15px'})} ${title}</h3>
+    <div class="muted" style="margin-bottom:10px">${rows.length}件</div>
     <div style="max-height:60vh;overflow-y:auto">
-      ${rows.length ? rows.map(r=>`<div class="mgr-row venue-member-row" style="cursor:pointer" data-uid="${r.id}">
-        <div class="mgr-name">
-          ${h(r.name)}
-          <span class="muted">${h(r.regno)} ${h(r.rank)||''} ${roleLabel(r)}</span>
-        </div>
-        <div class="muted" style="font-size:12.5px;white-space:nowrap">${r.cnt}回 <span style="font-size:11px">(最終:${h(r.lastDate)})</span></div>
-      </div>`).join('') : '<div class="muted" style="text-align:center;padding:16px">この会場を経験したメンバーはいません</div>'}
+      ${rows.length ? rows.map(r=>`<div class="mgr-row member-visited-row" style="cursor:pointer" data-key="${h(r[dataKey])}">
+        <div class="mgr-name">${h(r[dataKey])}</div>
+        <div class="muted" style="font-size:12.5px;white-space:nowrap">${r.cnt}回(${r.dateCnt}日) <span style="font-size:11px">(最終:${h(r.lastDate)})</span></div>
+      </div>`).join('') : `<div class="muted" style="text-align:center;padding:16px">${emptyMsg}</div>`}
     </div>`);
-  document.querySelectorAll('#modal-layer .venue-member-row').forEach(el => {
-    el.onclick = () => { closeModal(); location.hash = '#/schedule/' + el.dataset.uid; };
+  document.querySelectorAll('#modal-layer .member-visited-row').forEach(el => {
+    el.onclick = () => { closeModal(); onItemClick(el.dataset.key); };
   });
+}
+// 個人が行ったことのある会場一覧。タップで会場詳細へ。
+function openMemberVenueList(uid, name){
+  return openMemberVisitedList(`${h(name)} さんが行った会場`, 'mapPin', '/member-venues', uid, 'まだ会場の記録がありません', 'venue', openVenueModal);
+}
+// 個人が行ったことのある公演一覧(準備中)。タップで公演詳細へ。
+function openMemberArtistList(uid, name){
+  return openMemberVisitedList(`${h(name)} さんが行った公演`, 'megaphone', '/member-artists', uid, 'まだ公演の記録がありません', 'artist', openArtistModal);
 }
 
 // 会場マニュアル(準備中)。中身はまだ無いため、機能公開設定を「準備中」で登録し、通常は
@@ -3584,12 +3640,15 @@ async function openArtistModal(artist){
     ${h(r.date)} ${h(r.site)}${r.venue?` <span class="muted">(${h(r.venue)})</span>`:''} <span class="muted">${r.cnt}名</span>
   </button>`;
   modal(`<h3>${icon('megaphone',{size:'15px'})} ${h(artist)}</h3>
-    ${canRename ? `<div class="row" style="gap:8px;margin:2px 0 10px">
-      <button type="button" class="btn ghost sm" id="artist-rename-btn">${icon('edit',{size:'13px'})} 名前を変更</button>
-    </div>` : ''}
+    <div class="row" style="gap:8px;margin:2px 0 10px">
+      <button type="button" class="btn ghost sm" id="artist-members-btn">${icon('users',{size:'13px'})} メンバーリスト</button>
+      ${canRename ? `<button type="button" class="btn ghost sm" id="artist-rename-btn">${icon('edit',{size:'13px'})} 名前を変更</button>` : ''}
+    </div>
     ${data.past.length ? `<div class="section-label" style="margin-top:6px">${icon('arrowLeft',{size:'10px'})} 過去の公演</div><div>${data.past.map(item).join('')}</div>` : ''}
     ${data.future.length ? `<div class="section-label" style="margin-top:12px">今後の公演 ${icon('arrowRight',{size:'10px'})}</div><div>${data.future.map(item).join('')}</div>` : ''}
     ${(!data.past.length && !data.future.length) ? '<div class="muted">この公演の現場情報はまだありません</div>' : ''}`);
+  const membersBtn = $('#artist-members-btn');
+  if(membersBtn) membersBtn.onclick = () => openArtistMemberList(artist);
   const renameBtn = $('#artist-rename-btn');
   if(renameBtn) renameBtn.onclick = (e) => { e.stopPropagation(); openArtistBulkRename([artist], () => openArtistModal(artist)); };
   document.querySelectorAll('#modal-layer .artist-hist-item').forEach(el => {

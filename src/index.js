@@ -127,7 +127,7 @@ async function pbkdf2(pw, salt) {
 // アプリの機能アップデートのお知らせに使うバージョン番号。新しいお知らせを追加したら値を増やし、
 // updateNoticeContent()にも内容を追記する。既にパスワードを変更済み(must_change=0)の既存ユーザーが
 // ログインした際、seen_update_version がこれより小さければ「アップデートのお知らせ」を表示する。
-const CURRENT_UPDATE_VERSION = 11;
+const CURRENT_UPDATE_VERSION = 12;
 
 const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0, must_change: u.must_change ? 1 : 0, extra_perms: getPerms(u), revoked_perms: getRevokedPerms(u), notify_rookie: u.notify_rookie === null || u.notify_rookie === undefined ? null : (u.notify_rookie ? 1 : 0), manner_done: u.manner_done ? 1 : 0, team2_done: u.team2_done ? 1 : 0, su_done: u.su_done ? 1 : 0, graduate_flag: u.graduate_flag ? 1 : 0, promotion_pending_date: u.promotion_pending_date || null, promotion_pending_rank: u.promotion_pending_rank || null, needsUpdateNotice: !u.must_change && (u.seen_update_version || 0) < CURRENT_UPDATE_VERSION, seenUpdateVersion: u.seen_update_version || 0 });
 
@@ -3677,6 +3677,12 @@ async function api(req, env, url) {
     return J({ venue, past: pastRes.results, future: futureRes.results, hasManual: !!manualRow });
   }
 
+  // ---- 会場・公演のメンバー一覧の並び替え。回数順(既定)/最近行った順/ランク順(A→E)の3種。
+  //      ランクはA〜Eの1文字表記のため、文字列としての昇順ソートがそのままA→Eの順になる。 ----
+  const memberSortClause = (sort) => sort === 'recent' ? 'ORDER BY lastDate DESC, u.regno'
+    : sort === 'rank' ? 'ORDER BY (u.rank IS NULL OR u.rank=\'\'), u.rank ASC, cnt DESC'
+    : 'ORDER BY cnt DESC, u.regno';
+
   // ---- 会場を経験したことのあるメンバー一覧(チーフ以上)。この会場でtype='work'の実績が
   //      1件でもある人を、経験回数の多い順に抽出する。停止中アカウントも含む(過去の実績のため)。 ----
   if (method === 'GET' && path === '/venue-members') {
@@ -3687,9 +3693,63 @@ async function api(req, env, url) {
       `SELECT u.id, u.name, u.regno, u.rank, u.role, u.suspended, COUNT(*) AS cnt, MAX(s.date) AS lastDate
        FROM schedule s JOIN users u ON u.id = s.user_id
        WHERE s.type='work' AND s.venue=?
-       GROUP BY u.id ORDER BY cnt DESC, u.regno`
+       GROUP BY u.id ${memberSortClause(url.searchParams.get('sort'))}`
     ).bind(venue).all()).results;
     return J(rows);
+  }
+
+  // ---- 公演を経験したことのあるメンバー一覧(準備中、チーフ以上)。会場版と同じ形式だが、
+  //      対象は公演名(本体名)が一致する現場名の表記ゆれ全てを含む(artist-historyと同じ絞り込み)。 ----
+  if (method === 'GET' && path === '/artist-members') {
+    if (!has(me, 'sites_view')) return ERR('ページが見つかりません', 404);
+    const artist = url.searchParams.get('artist');
+    if (!artist) return ERR('artist が必要です');
+    const siteRows = (await env.DB.prepare("SELECT DISTINCT site FROM schedule WHERE type='work' AND site<>''").all()).results;
+    const variants = siteRows.map(r => r.site).filter(s => extractArtistName(s) === artist);
+    if (!variants.length) return J([]);
+    const ph = variants.map(() => '?').join(',');
+    const rows = (await env.DB.prepare(
+      `SELECT u.id, u.name, u.regno, u.rank, u.role, u.suspended, COUNT(*) AS cnt, MAX(s.date) AS lastDate
+       FROM schedule s JOIN users u ON u.id = s.user_id
+       WHERE s.type='work' AND s.site IN (${ph})
+       GROUP BY u.id ${memberSortClause(url.searchParams.get('sort'))}`
+    ).bind(...variants).all()).results;
+    return J(rows);
+  }
+
+  // ---- 個人が行ったことのある会場一覧(チーフ以上)。個人スケジュール画面のボタンから開く。
+  //      使用回数の多い順に返す(並び替えはフロント側で行う)。 ----
+  if (method === 'GET' && path === '/member-venues') {
+    if (!has(me, 'sites_view')) return ERR('ページが見つかりません', 404);
+    const uid = Number(url.searchParams.get('uid'));
+    if (!uid) return ERR('uid が必要です');
+    const rows = (await env.DB.prepare(
+      "SELECT venue, COUNT(*) AS cnt, COUNT(DISTINCT date) AS dateCnt, MAX(date) AS lastDate FROM schedule WHERE type='work' AND user_id=? AND venue<>'' GROUP BY venue ORDER BY cnt DESC"
+    ).bind(uid).all()).results;
+    return J(rows);
+  }
+
+  // ---- 個人が行ったことのある公演一覧(準備中、チーフ以上)。GET /artistsと同じく(現場名,日付)単位で
+  //      取得し、Worker側で公演名(本体名)ごとに再集計する。個人スケジュール画面のボタンから開く。 ----
+  if (method === 'GET' && path === '/member-artists') {
+    if (!has(me, 'sites_view')) return ERR('ページが見つかりません', 404);
+    const uid = Number(url.searchParams.get('uid'));
+    if (!uid) return ERR('uid が必要です');
+    const rows = (await env.DB.prepare(
+      "SELECT site, date, COUNT(*) AS cnt FROM schedule WHERE type='work' AND user_id=? AND site<>'' GROUP BY site, date"
+    ).bind(uid).all()).results;
+    const byArtist = {};
+    for (const r of rows) {
+      const artist = extractArtistName(r.site);
+      (byArtist[artist] ||= { artist, cnt: 0, dates: new Set() });
+      byArtist[artist].cnt += r.cnt;
+      byArtist[artist].dates.add(r.date);
+    }
+    const result = Object.values(byArtist).map(a => {
+      const sorted = [...a.dates].sort();
+      return { artist: a.artist, cnt: a.cnt, dateCnt: a.dates.size, lastDate: sorted[sorted.length - 1] };
+    }).sort((x, y) => y.cnt - x.cnt);
+    return J(result);
   }
 
   // ---- アーティスト一覧(準備中、chief以上)。現場名から「【セクション等】」を除いた本体名を
