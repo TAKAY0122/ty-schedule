@@ -182,6 +182,7 @@ const UPDATE_ITEMS = [
   { v:11, icon:'mapPin', title:'会場一覧にグループ分け・絞り込みを追加', desc:'似た会場・関連する会場をグループとしてまとめておけるようになりました(手配者以上が作成)。会場一覧の絞り込み欄でグループを選ぶと、そのグループの会場だけに絞り込めます。グループ分けをしただけでは、これまで通りの表示のままです。', show: () => LV[ME.role] >= 1 },
   { v:12, icon:'mapPin', title:'個人スケジュールに「行った会場」「行った公演」を追加', desc:'マイスケジュール画面から「行った会場」「行った公演」ボタンを押すと、その人が実際に行ったことのある会場・公演の一覧と、それぞれの回数を確認できるようになりました。項目をタップすると、その会場・公演の詳細をすぐに開けます。', show: () => LV[ME.role] >= 1 },
   { v:12, icon:'users', title:'会場・公演のメンバーリストに並び替えを追加', desc:'会場詳細・公演詳細の「メンバーリスト」で、回数が多い順・最近行った人・ランク順(A→E)に並び替えられるようになりました。', show: () => LV[ME.role] >= 1 },
+  { v:13, icon:'calendar', title:'マイスケジュールで表示する年月を直接選べるように', desc:'月の見出し部分をタップすると、カレンダーから年月を直接選んで一気に移動できるようになりました(◀▶ボタンでの1ヶ月ずつの移動も引き続き使えます)。', show: () => true },
 ];
 // 機能公開設定の対象画面。バックエンドのFEATURE_KEYSと必ず一致させる。
 // 新しい画面を追加したら、ここと src/index.js の FEATURE_KEYS の両方に追記する。
@@ -2359,7 +2360,7 @@ async function pageSchedule(app, hash){
     <div class="row sticky-filters" style="justify-content:space-between">
       <div class="month-nav">
         <button class="btn ghost sm" id="prev-m">◀</button>
-        <div class="mtitle">${y}年 ${mo}月</div>
+        <div class="mtitle" id="jump-month-btn" title="タップして年月を選択" style="cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px">${y}年 ${mo}月</div>
         <button class="btn ghost sm" id="next-m">▶</button>
       </div>
       <div class="muted">${h(u.regno)} / ${h(u.rank)} / ${h(u.han)} / ${h(u.station)}</div>
@@ -2397,6 +2398,18 @@ async function pageSchedule(app, hash){
 
   $('#prev-m').onclick = () => { MONTH = shiftMonth(MONTH,-1); render(); };
   $('#next-m').onclick = () => { MONTH = shiftMonth(MONTH, 1); render(); };
+  $('#jump-month-btn').onclick = () => {
+    modal(`<h3>${icon('calendar',{size:'15px'})} 表示する年月を選択</h3>
+      <input type="month" id="jump-month-input" value="${MONTH}" style="width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:16px;box-sizing:border-box">
+      <div class="row" style="margin-top:14px"><button class="btn gold" id="jump-month-go">この年月を表示する</button></div>`);
+    $('#jump-month-go').onclick = () => {
+      const v = $('#jump-month-input').value;
+      if(!v) return;
+      MONTH = v;
+      closeModal();
+      render();
+    };
+  };
   const vh = $('#view-history');
   if(vh) vh.onclick = () => openScheduleHistory(uid, u.name);
   const cs = $('#cal-sync');
@@ -6390,17 +6403,49 @@ async function pageLegacyImport(app, hash){
     if(mo.pendingCnt === 0) return { label:`確認済み(公開${mo.approvedCnt}件${mo.skippedCnt?` / スキップ${mo.skippedCnt}件`:''})`, cls:'li-done' };
     return { label:'一部確認済み', cls:'li-partial' };
   };
+  const selected = new Set();
   app.innerHTML = `
   <h2>${icon('inbox')} 過去データ取込確認</h2>
   <div class="muted" style="margin-bottom:10px">手配帳から外部で再構築した過去の給与実績です。管理者だけが閲覧でき、月単位の内容を確認のうえ「公開する」か「削除する」かを決められます(まだ本番のスケジュールには一切反映されていません)。</div>
   <div class="card">
-    <div id="li-list" style="display:flex;flex-direction:column;gap:10px"></div>
+    <div class="row" id="li-bulk-bar" style="margin-bottom:0;gap:8px;align-items:center;background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:8px 10px;flex-wrap:wrap"></div>
+    <div id="li-list" style="display:flex;flex-direction:column;gap:10px;margin-top:10px"></div>
   </div>`;
   const listEl = $('#li-list');
+  const renderBulkBar = () => {
+    const bar = $('#li-bulk-bar');
+    if(!bar) return;
+    const pendingYms = months.filter(mo => mo.pendingCnt > 0).map(mo => mo.ym);
+    bar.innerHTML = pendingYms.length ? `
+      <button type="button" class="btn ghost sm" id="li-select-all">未確認の月をすべて選択(${pendingYms.length}件)</button>
+      ${selected.size ? `<span class="muted" style="font-weight:600">${selected.size}件選択中</span>
+      <button type="button" class="btn gold sm" id="li-bulk-approve">${icon('checkCircle',{size:'12px'})} まとめて公開する</button>
+      <button type="button" class="btn ghost sm" id="li-bulk-clear">選択解除</button>` : ''}` : '';
+    const sa = $('#li-select-all');
+    if(sa) sa.onclick = () => { pendingYms.forEach(ym => selected.add(ym)); render(); renderBulkBar(); };
+    const ba = $('#li-bulk-approve');
+    if(ba) ba.onclick = async () => {
+      const yms = [...selected];
+      if(!confirm(`選択した${yms.length}件の月をまとめて公開します。一致した人のうち、既にその日にデータがある人はスキップされます。よろしいですか?`)) return;
+      await withLoading(ba, async () => {
+        try{
+          const r = await api('/legacy-import/months/bulk-approve', { method:'POST', body:{ yms } });
+          popup(`${yms.length}件の月をまとめて公開しました(反映${r.approved}件${r.skipped?` / 既存データによりスキップ${r.skipped}件`:''}${r.unmatched?` / 要確認(未一致)${r.unmatched}件は反映されていません`:''})`);
+          selected.clear();
+          const fresh = await api('/legacy-import/months');
+          months.length = 0; months.push(...fresh);
+          render(); renderBulkBar();
+        }catch(e){ popup(e.message, 'error'); }
+      });
+    };
+    const bc = $('#li-bulk-clear');
+    if(bc) bc.onclick = () => { selected.clear(); render(); renderBulkBar(); };
+  };
   const render = () => {
     listEl.innerHTML = months.map(mo => {
       const st = stateInfo(mo);
       return `<div class="li-month-row ${st.cls}">
+        ${mo.pendingCnt>0 ? `<input type="checkbox" class="li-select" data-ym="${mo.ym}" ${selected.has(mo.ym)?'checked':''}>` : ''}
         <div style="flex:1;min-width:0">
           <div style="font-weight:700;font-size:15px">${ymLabel(mo.ym)}</div>
           <div class="muted" style="font-size:12.5px;margin-top:2px">${mo.total}件(一致${mo.matched}件${mo.unmatched?` / <span style="color:#b03030;font-weight:700">要確認${mo.unmatched}件</span>`:''}) / 合計${yen(mo.totalPay)}</div>
@@ -6414,10 +6459,16 @@ async function pageLegacyImport(app, hash){
       </div>`;
     }).join('');
     listEl.querySelectorAll('.li-detail').forEach(b => b.onclick = () => goTo('#/legacy-import/' + b.dataset.ym));
-    listEl.querySelectorAll('.li-approve').forEach(b => b.onclick = () => runLegacyApprove(b.dataset.ym, months, render));
-    listEl.querySelectorAll('.li-reject').forEach(b => b.onclick = () => runLegacyReject(b.dataset.ym, months, render));
+    listEl.querySelectorAll('.li-approve').forEach(b => b.onclick = () => runLegacyApprove(b.dataset.ym, months, () => { render(); renderBulkBar(); }));
+    listEl.querySelectorAll('.li-reject').forEach(b => b.onclick = () => runLegacyReject(b.dataset.ym, months, () => { render(); renderBulkBar(); }));
+    listEl.querySelectorAll('.li-select').forEach(cb => cb.onclick = (e) => {
+      e.stopPropagation();
+      if(cb.checked) selected.add(cb.dataset.ym); else selected.delete(cb.dataset.ym);
+      renderBulkBar();
+    });
   };
   render();
+  renderBulkBar();
 }
 
 async function runLegacyApprove(ym, months, onDone){

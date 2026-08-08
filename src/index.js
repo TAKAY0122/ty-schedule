@@ -127,7 +127,7 @@ async function pbkdf2(pw, salt) {
 // アプリの機能アップデートのお知らせに使うバージョン番号。新しいお知らせを追加したら値を増やし、
 // updateNoticeContent()にも内容を追記する。既にパスワードを変更済み(must_change=0)の既存ユーザーが
 // ログインした際、seen_update_version がこれより小さければ「アップデートのお知らせ」を表示する。
-const CURRENT_UPDATE_VERSION = 12;
+const CURRENT_UPDATE_VERSION = 13;
 
 const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0, must_change: u.must_change ? 1 : 0, extra_perms: getPerms(u), revoked_perms: getRevokedPerms(u), notify_rookie: u.notify_rookie === null || u.notify_rookie === undefined ? null : (u.notify_rookie ? 1 : 0), manner_done: u.manner_done ? 1 : 0, team2_done: u.team2_done ? 1 : 0, su_done: u.su_done ? 1 : 0, graduate_flag: u.graduate_flag ? 1 : 0, promotion_pending_date: u.promotion_pending_date || null, promotion_pending_rank: u.promotion_pending_rank || null, needsUpdateNotice: !u.must_change && (u.seen_update_version || 0) < CURRENT_UPDATE_VERSION, seenUpdateVersion: u.seen_update_version || 0 });
 
@@ -478,6 +478,49 @@ function normRegno(v) {
 }
 function stripRow(r) {
   return { type: r.type, site: r.site, venue: r.venue, tin: r.tin, tout: r.tout, pay: r.pay, note: r.note, duty: r.duty, load_end: r.load_end, show_end: r.show_end, multi: r.multi };
+}
+
+// 過去データ取込確認の「公開する」1ヶ月分の処理。単一月のPOST /legacy-import/months/:ym/approveと、
+// まとめて公開するPOST /legacy-import/months/bulk-approveの両方から呼ばれる共通処理。
+// (user_id,date)単位でグルーピングし、既にその日にscheduleがあればスキップ、無ければ挿入してschedule_historyに記録する。
+async function approveLegacyMonth(env, me, ym) {
+  const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
+  const rows = (await env.DB.prepare("SELECT * FROM legacy_import_shifts WHERE ym=? AND status='pending' ORDER BY user_id, date, id").bind(ym).all()).results;
+  const ts = jstTs();
+  const groups = {};
+  let unmatched = 0;
+  for (const r of rows) {
+    if (!r.user_id) { unmatched++; continue; }
+    (groups[r.user_id + '|' + r.date] ||= []).push(r);
+  }
+  const batch = [];
+  let approved = 0, skipped = 0;
+  for (const key in groups) {
+    const grp = groups[key];
+    const [uidStr, date] = key.split('|');
+    const uid = Number(uidStr);
+    const existing = await env.DB.prepare('SELECT COUNT(*) AS c FROM schedule WHERE user_id=? AND date=?').bind(uid, date).first();
+    if (existing.c > 0) {
+      for (const r of grp) batch.push(env.DB.prepare("UPDATE legacy_import_shifts SET status='skipped' WHERE id=?").bind(r.id));
+      skipped += grp.length;
+      continue;
+    }
+    let slot = 0;
+    const afterSlots = [];
+    for (const r of grp) {
+      const slotData = { type: 'work', site: r.site || '', venue: r.venue || '', tin: r.tin || '', tout: r.tout || '', hours: r.hours || 0, overtime: 0, pay: r.pay || 0, note: r.note || '', duty: r.duty || '', load_end: '', show_end: '', multi: 0 };
+      batch.push(env.DB.prepare('INSERT INTO schedule(user_id,date,slot,type,site,venue,tin,tout,hours,overtime,pay,note,duty,load_end,show_end,multi) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+        .bind(uid, date, slot, slotData.type, slotData.site, slotData.venue, slotData.tin, slotData.tout, slotData.hours, slotData.overtime, slotData.pay, slotData.note, slotData.duty, slotData.load_end, slotData.show_end, slotData.multi));
+      batch.push(env.DB.prepare("UPDATE legacy_import_shifts SET status='approved' WHERE id=?").bind(r.id));
+      afterSlots.push(stripRow(slotData));
+      slot++;
+    }
+    batch.push(env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
+      .bind(ts, me.id, uid, date, JSON.stringify([]), JSON.stringify({ slots: afterSlots, _src: `過去データ取込確認(${ym}を公開)` })));
+    approved += grp.length;
+  }
+  if (batch.length) for (const part of chunk(batch, 100)) await env.DB.batch(part);
+  return { approved, skipped, unmatched };
 }
 
 // 編集履歴1件を取り消す(before_jsonの状態に、対象者のその日のスケジュールを復元する)。
@@ -4737,50 +4780,29 @@ async function api(req, env, url) {
   }
   if (method === 'POST' && (lim = path.match(/^\/legacy-import\/months\/([\d-]+)\/approve$/))) {
     if (me.role !== 'admin') return ERR('ページが見つかりません', 404);
-    const ym = lim[1];
-    const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
-    const rows = (await env.DB.prepare("SELECT * FROM legacy_import_shifts WHERE ym=? AND status='pending' ORDER BY user_id, date, id").bind(ym).all()).results;
-    const ts = jstTs();
-    const groups = {};
-    let unmatched = 0;
-    for (const r of rows) {
-      if (!r.user_id) { unmatched++; continue; }
-      (groups[r.user_id + '|' + r.date] ||= []).push(r);
-    }
-    const batch = [];
-    let approved = 0, skipped = 0;
-    for (const key in groups) {
-      const grp = groups[key];
-      const [uidStr, date] = key.split('|');
-      const uid = Number(uidStr);
-      const existing = await env.DB.prepare('SELECT COUNT(*) AS c FROM schedule WHERE user_id=? AND date=?').bind(uid, date).first();
-      if (existing.c > 0) {
-        for (const r of grp) batch.push(env.DB.prepare("UPDATE legacy_import_shifts SET status='skipped' WHERE id=?").bind(r.id));
-        skipped += grp.length;
-        continue;
-      }
-      let slot = 0;
-      const afterSlots = [];
-      for (const r of grp) {
-        const slotData = { type: 'work', site: r.site || '', venue: r.venue || '', tin: r.tin || '', tout: r.tout || '', hours: r.hours || 0, overtime: 0, pay: r.pay || 0, note: r.note || '', duty: r.duty || '', load_end: '', show_end: '', multi: 0 };
-        batch.push(env.DB.prepare('INSERT INTO schedule(user_id,date,slot,type,site,venue,tin,tout,hours,overtime,pay,note,duty,load_end,show_end,multi) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-          .bind(uid, date, slot, slotData.type, slotData.site, slotData.venue, slotData.tin, slotData.tout, slotData.hours, slotData.overtime, slotData.pay, slotData.note, slotData.duty, slotData.load_end, slotData.show_end, slotData.multi));
-        batch.push(env.DB.prepare("UPDATE legacy_import_shifts SET status='approved' WHERE id=?").bind(r.id));
-        afterSlots.push(stripRow(slotData));
-        slot++;
-      }
-      batch.push(env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
-        .bind(ts, me.id, uid, date, JSON.stringify([]), JSON.stringify({ slots: afterSlots, _src: `過去データ取込確認(${ym}を公開)` })));
-      approved += grp.length;
-    }
-    if (batch.length) for (const part of chunk(batch, 100)) await env.DB.batch(part);
-    return J({ ok: 1, approved, skipped, unmatched });
+    const result = await approveLegacyMonth(env, me, lim[1]);
+    return J({ ok: 1, ...result });
   }
   if (method === 'POST' && (lim = path.match(/^\/legacy-import\/months\/([\d-]+)\/reject$/))) {
     if (me.role !== 'admin') return ERR('ページが見つかりません', 404);
     const ym = lim[1];
     const r = await env.DB.prepare("DELETE FROM legacy_import_shifts WHERE ym=? AND status='pending'").bind(ym).run();
     return J({ ok: 1, deleted: r.meta.changes });
+  }
+  // ---- 過去データ取込確認のまとめて公開(管理者)。指定した複数の月を、1ヶ月ずつ順番にapproveLegacyMonth()で
+  //      処理する(1回のトランザクションにまとめると対象月数によってはD1のバッチ上限に達するため、月ごとに分ける)。 ----
+  if (method === 'POST' && path === '/legacy-import/months/bulk-approve') {
+    if (me.role !== 'admin') return ERR('ページが見つかりません', 404);
+    const yms = Array.isArray(body.yms) ? [...new Set(body.yms.map(y => String(y || '')).filter(Boolean))].sort() : [];
+    if (!yms.length) return ERR('対象の月が選択されていません');
+    let approved = 0, skipped = 0, unmatched = 0;
+    const perMonth = [];
+    for (const ym of yms) {
+      const r = await approveLegacyMonth(env, me, ym);
+      approved += r.approved; skipped += r.skipped; unmatched += r.unmatched;
+      perMonth.push({ ym, ...r });
+    }
+    return J({ ok: 1, approved, skipped, unmatched, months: perMonth });
   }
 
   // ---- 通知 ----
