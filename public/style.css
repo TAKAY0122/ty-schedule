@@ -66,6 +66,7 @@ header{background:rgba(20,26,42,.96);color:#f3f1ea;display:flex;align-items:cent
 .role-dot-admin{background:#c0392b}
 .role-dot-chief{background:#2e6da4}
 .role-dot-handler{background:#2e9c5f}
+.visited-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--gold);flex:none;margin-left:5px;vertical-align:middle}
 .drawer-sep{height:8px;background:#f0eee7}
 .drawer-group{display:flex;align-items:center;justify-content:space-between}
 .drawer-label{display:flex;align-items:center;gap:8px;flex:1;min-width:0}

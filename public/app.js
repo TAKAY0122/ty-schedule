@@ -183,6 +183,8 @@ const UPDATE_ITEMS = [
   { v:12, icon:'mapPin', title:'個人スケジュールに「行った会場」「行った公演」を追加', desc:'マイスケジュール画面から「行った会場」「行った公演」ボタンを押すと、その人が実際に行ったことのある会場・公演の一覧と、それぞれの回数を確認できるようになりました。項目をタップすると、その会場・公演の詳細をすぐに開けます。', show: () => LV[ME.role] >= 1 },
   { v:12, icon:'users', title:'会場・公演のメンバーリストに並び替えを追加', desc:'会場詳細・公演詳細の「メンバーリスト」で、回数が多い順・最近行った人・ランク順(A→E)に並び替えられるようになりました。', show: () => LV[ME.role] >= 1 },
   { v:13, icon:'calendar', title:'マイスケジュールで表示する年月を直接選べるように', desc:'月の見出し部分をタップすると、カレンダーから年月を直接選んで一気に移動できるようになりました(◀▶ボタンでの1ヶ月ずつの移動も引き続き使えます)。', show: () => true },
+  { v:14, icon:'search', title:'マイスケジュールに現場検索バーを追加', desc:'マイスケジュール画面に検索バーが増え、現場名・会場名・公演名や日付(月・日だけでも可)で、過去に行ったことのある現場を検索できるようになりました。', show: () => LV[ME.role] >= 1 },
+  { v:14, icon:'mapPin', title:'会場・公演の履歴に「行ったことがある」マークを追加', desc:'会場詳細・公演詳細・現場詳細の過去/今後の公演一覧で、自分が実際に行ったことのある現場に金色の丸マークが付くようになりました。', show: () => LV[ME.role] >= 1 },
 ];
 // 機能公開設定の対象画面。バックエンドのFEATURE_KEYSと必ず一致させる。
 // 新しい画面を追加したら、ここと src/index.js の FEATURE_KEYS の両方に追記する。
@@ -745,9 +747,10 @@ async function openSiteModal(date, site){
   const row = p => `<tr class="ka-row-${p.ka==='1課'?'1':'2'} ${editable?'sm-edit':''}" ${editable?`data-uid="${p.uid}"`:''}><td style="white-space:nowrap">${nameHtml(p)} ${kaTag(p)}</td><td style="white-space:nowrap"><span class="tag ${p.role}">${roleLabel(p)}</span></td><td style="white-space:nowrap">${h(p.rank)}</td><td style="white-space:nowrap">${h(p.han)}</td>${canPay?`<td style="white-space:nowrap">${h(p.tin)}</td><td style="white-space:nowrap">${h(p.tout)}</td>`:''}<td style="white-space:nowrap">${breakHtml(p)||''}</td><td style="min-width:150px">${h(p.note)}</td>${editable?`<td class="sm-edit-cell">${icon('edit',{size:'12px'})}</td>`:''}</tr>`;
   const tbl = arr => `<table class="list pc-only"><tr><th>氏名</th><th>役割</th><th>ランク</th><th>班</th>${canPay?'<th>IN</th><th>OUT</th>':''}<th>休憩</th><th>備考</th>${editable?'<th></th>':''}</tr>${arr.map(row).join('')}</table>
     <div class="cards sp-only">${arr.map(card).join('')}</div>`;
-  // 過去/今後の公演1件分のボタン(押すとその日・その現場の詳細=このモーダル自体を開き直す)
+  // 過去/今後の公演1件分のボタン(押すとその日・その現場の詳細=このモーダル自体を開き直す)。
+  // 自分自身が実際に入っていた日は、現場名の横に金色丸(visited-dot)を付けてひと目でわかるようにする。
   const histItem = r => `<button type="button" class="btn ghost sm site-hist-item" data-date="${r.date}" data-site="${h(r.site)}" style="display:block;width:100%;text-align:left;margin-bottom:4px;white-space:normal">
-    ${h(r.date)} ${h(r.site)}${r.venue && r.venue!==venue ? ` <span class="muted">(${h(r.venue)})</span>` : ''} <span class="muted">${r.cnt}名</span>
+    ${h(r.date)} ${h(r.site)}${r.venue && r.venue!==venue ? ` <span class="muted">(${h(r.venue)})</span>` : ''} <span class="muted">${r.cnt}名</span>${r.visited ? `<span class="visited-dot" title="行ったことがあります"></span>` : ''}
   </button>`;
   // 過去/今後どちらの範囲かひと目でわかるよう、見出しを分けて表示する(境目=現在閲覧中の現場)。
   // bulkKey('venue'|'site')を指定すると、その一覧全体をまとめて会場/現場名変更できるボタンを出す
@@ -2364,12 +2367,19 @@ async function pageSchedule(app, hash){
         <button class="btn ghost sm" id="next-m">▶</button>
       </div>
       <div class="muted">${h(u.regno)} / ${h(u.rank)} / ${h(u.han)} / ${h(u.station)}</div>
+    </div>
+    <div class="row" style="margin-bottom:12px;gap:8px">
       ${venueListBtn}
       ${artistListBtn}
       ${others}
       ${histBtn}
       ${calSyncBtn}
     </div>
+    ${has('sites_view') ? `<div class="row" style="margin-bottom:6px">
+      <input id="sched-search-q" placeholder="現場名・会場名・公演名で検索" style="flex:2;min-width:160px;box-sizing:border-box">
+      <input id="sched-search-date" placeholder="日付(例:8/15、8月、2024-08)" style="flex:1;min-width:140px;box-sizing:border-box">
+    </div>
+    <div id="sched-search-results" style="margin-bottom:12px"></div>` : ''}
     <div class="sched-wrap pc-only">
       <table class="sched">
         <thead><tr><th>日</th><th>曜</th><th>現場名</th><th>会場</th>${canPay?'<th>業務</th><th>IN</th><th>OUT</th><th>時間</th><th>時間外</th><th>給与</th>':''}<th>備考</th><th>育成計画</th></tr></thead>
@@ -2418,6 +2428,50 @@ async function pageSchedule(app, hash){
   if(mvl) mvl.onclick = () => openMemberVenueList(uid, u.name);
   const mal = $('#member-artist-list');
   if(mal) mal.onclick = () => openMemberArtistList(uid, u.name);
+  if(has('sites_view')){
+    let siteLog = null; // 初回検索時に一括取得してキャッシュ(個人単位のため件数は少ない)
+    // 「8/15」「8月」「15日」「2024-08」等、月/日どちらか一方だけでも緩くマッチさせる
+    const dateMatches = (dateStr, q) => {
+      if(!q.trim()) return true;
+      const nums = (q.match(/\d+/g)||[]).map(Number);
+      if(!nums.length) return false;
+      const [y,m,d] = dateStr.split('-').map(Number);
+      if(nums.length>=2){
+        if(nums[0]>=1900) return y===nums[0] && (nums[1]?m===nums[1]:true);
+        return m===nums[0] && d===nums[1];
+      }
+      const n = nums[0];
+      if(q.includes('月')) return m===n;
+      if(q.includes('日')) return d===n;
+      if(n>=1900) return y===n;
+      return m===n || d===n;
+    };
+    const runSearch = async () => {
+      const q = ($('#sched-search-q')?.value||'').trim().toLowerCase();
+      const dq = ($('#sched-search-date')?.value||'').trim();
+      const resEl = $('#sched-search-results');
+      if(!resEl) return;
+      if(!q && !dq){ resEl.innerHTML = ''; return; }
+      if(!siteLog){
+        resEl.innerHTML = `<div class="loading-box"><span class="spinner"></span>読み込み中…</div>`;
+        try{ siteLog = await api(`/member-site-log?uid=${uid}`); }
+        catch(e){ resEl.innerHTML = `<div class="msg err">${h(e.message)}</div>`; return; }
+      }
+      const matched = siteLog.filter(r =>
+        (!q || r.site.toLowerCase().includes(q) || (r.venue||'').toLowerCase().includes(q) || r.artist.toLowerCase().includes(q)) &&
+        dateMatches(r.date, dq)
+      );
+      resEl.innerHTML = `<div class="muted" style="font-size:12.5px;margin-bottom:6px">${matched.length}件</div>` + (matched.length ? matched.slice(0,200).map(r=>`
+        <button type="button" class="btn ghost sm sched-search-item" data-date="${r.date}" data-site="${h(r.site)}" style="display:block;width:100%;text-align:left;margin-bottom:4px;white-space:normal">
+          ${h(r.date)} ${h(r.site)}${r.venue?` <span class="muted">(${h(r.venue)})</span>`:''}
+        </button>`).join('') : `<div class="muted" style="padding:8px 2px">該当する現場はありません</div>`);
+      resEl.querySelectorAll('.sched-search-item').forEach(b => b.onclick = () => openSiteModal(b.dataset.date, b.dataset.site));
+    };
+    const debouncedSearch = debounce(runSearch, 300);
+    const sq = $('#sched-search-q'), sd = $('#sched-search-date');
+    if(sq) sq.oninput = debouncedSearch;
+    if(sd) sd.oninput = debouncedSearch;
+  }
   const pk = $('#pick-user');
   if(pk) pk.onclick = async () => {
     const [users, managers] = await Promise.all([getUsers(true), api('/managers')]);
@@ -3048,7 +3102,9 @@ async function pageVenues(app){
   const renderBulkBar = () => {
     const bar = $('#venue-bulk-bar');
     if(!bar) return;
-    bar.innerHTML = canRename && st.selected.size ? `
+    const hasBar = canRename && st.selected.size;
+    bar.style.cssText = hasBar ? 'margin-bottom:0;gap:8px;align-items:center;flex-wrap:wrap;background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:8px 10px' : 'margin-bottom:0';
+    bar.innerHTML = hasBar ? `
       <span class="muted" style="font-weight:600">${st.selected.size}件選択中</span>
       <button class="btn gold sm" id="venue-bulk-rename">${icon('edit',{size:'12px'})} まとめて名前を変更</button>
       <button class="btn ghost sm" id="venue-bulk-group">${icon('tag',{size:'12px'})} グループに追加</button>
@@ -3106,8 +3162,10 @@ async function pageVenues(app){
   <h2 style="margin-bottom:8px">${icon('mapPin')} 会場一覧</h2>
   <div class="card">
     <div class="sticky-filters">
+      <div class="row" style="margin-bottom:10px">
+        <input id="venue-q" placeholder="会場名で検索" value="${h(st.q)}" style="width:100%;box-sizing:border-box">
+      </div>
       <div class="row" style="margin-bottom:12px;gap:10px;flex-wrap:wrap;align-items:center">
-        <input id="venue-q" placeholder="会場名で検索" value="${h(st.q)}" style="flex:1;min-width:140px">
         <label class="muted" style="font-size:12px;white-space:nowrap">並び替え</label>
         <select id="venue-sort">
           ${Object.entries(venueSortOptions).map(([k,l])=>`<option value="${k}" ${k===st.sort?'selected':''}>${l}</option>`).join('')}
@@ -3124,7 +3182,7 @@ async function pageVenues(app){
         </select>
         ${canRename ? `<button type="button" class="btn ghost sm" id="venue-group-manage">${icon('tag',{size:'12px'})} グループ管理</button>` : ''}
       </div>
-      <div class="row" id="venue-bulk-bar" style="margin-bottom:0;gap:8px;align-items:center;background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:8px 10px;flex-wrap:wrap"></div>
+      <div class="row" id="venue-bulk-bar" style="margin-bottom:0;gap:8px;align-items:center;flex-wrap:wrap"></div>
     </div>
     <div id="venue-list" class="st-sites"></div>
   </div>`;
@@ -3178,7 +3236,7 @@ async function openVenueModal(venue){
   try{ data = await api(`/venue-history?venue=${encodeURIComponent(venue)}`); }
   catch(e){ popup(e.message, 'error'); return; }
   const item = r => `<button type="button" class="btn ghost sm venue-hist-item" data-date="${r.date}" data-site="${h(r.site)}" style="display:block;width:100%;text-align:left;margin-bottom:4px;white-space:normal">
-    ${h(r.date)} ${h(r.site)} <span class="muted">${r.cnt}名</span>
+    ${h(r.date)} ${h(r.site)} <span class="muted">${r.cnt}名</span>${r.visited ? `<span class="visited-dot" title="行ったことがあります"></span>` : ''}
   </button>`;
   modal(`<h3>${icon('mapPin',{size:'15px'})} ${h(venue)}</h3>
     <div class="row" style="gap:8px;margin:2px 0 10px;flex-wrap:wrap;align-items:center">
@@ -3312,7 +3370,9 @@ async function pageArtists(app){
   const renderBulkBar = () => {
     const bar = $('#artist-bulk-bar');
     if(!bar) return;
-    bar.innerHTML = canRename && st.selected.size ? `
+    const hasBar = canRename && st.selected.size;
+    bar.style.cssText = hasBar ? 'margin-bottom:0;gap:8px;align-items:center;flex-wrap:wrap;background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:8px 10px' : 'margin-bottom:0';
+    bar.innerHTML = hasBar ? `
       <span class="muted" style="font-weight:600">${st.selected.size}件選択中</span>
       <button class="btn gold sm" id="artist-bulk-rename">${icon('edit',{size:'12px'})} まとめて名前を変更</button>
       <button class="btn ghost sm" id="artist-bulk-group">${icon('tag',{size:'12px'})} グループに追加</button>
@@ -3442,8 +3502,10 @@ async function pageArtists(app){
   <h2 style="margin-bottom:8px">${icon('megaphone')} 公演一覧</h2>
   <div class="card">
     <div class="sticky-filters">
+      <div class="row" style="margin-bottom:10px">
+        <input id="artist-q" placeholder="公演名で検索" value="${h(st.q)}" style="width:100%;box-sizing:border-box">
+      </div>
       <div class="row" style="margin-bottom:12px;gap:10px;flex-wrap:wrap;align-items:center">
-        <input id="artist-q" placeholder="公演名で検索" value="${h(st.q)}" style="flex:1;min-width:140px">
         <label class="muted" style="font-size:12px;white-space:nowrap">並び替え</label>
         <select id="artist-sort">
           ${Object.entries(artistSortOptions).map(([k,l])=>`<option value="${k}" ${k===st.sort?'selected':''}>${l}</option>`).join('')}
@@ -3460,7 +3522,7 @@ async function pageArtists(app){
         ${canRename ? `<button type="button" class="btn ghost sm" id="artist-find-replace">${icon('repeat',{size:'12px'})} 文字の一部を置換</button>` : ''}
       </div>
       <div class="row" id="artist-folder-bar" style="margin-bottom:0;gap:8px;align-items:center"></div>
-      <div class="row" id="artist-bulk-bar" style="margin-bottom:0;gap:8px;align-items:center;background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:8px 10px;flex-wrap:wrap"></div>
+      <div class="row" id="artist-bulk-bar" style="margin-bottom:0;gap:8px;align-items:center;flex-wrap:wrap"></div>
     </div>
     <div id="artist-list" class="st-sites" style="margin-top:10px"></div>
   </div>`;
@@ -3650,7 +3712,7 @@ async function openArtistModal(artist){
   try{ data = await api(`/artist-history?artist=${encodeURIComponent(artist)}`); }
   catch(e){ popup(e.message, 'error'); return; }
   const item = r => `<button type="button" class="btn ghost sm artist-hist-item" data-date="${r.date}" data-site="${h(r.site)}" style="display:block;width:100%;text-align:left;margin-bottom:4px;white-space:normal">
-    ${h(r.date)} ${h(r.site)}${r.venue?` <span class="muted">(${h(r.venue)})</span>`:''} <span class="muted">${r.cnt}名</span>
+    ${h(r.date)} ${h(r.site)}${r.venue?` <span class="muted">(${h(r.venue)})</span>`:''} <span class="muted">${r.cnt}名</span>${r.visited ? `<span class="visited-dot" title="行ったことがあります"></span>` : ''}
   </button>`;
   modal(`<h3>${icon('megaphone',{size:'15px'})} ${h(artist)}</h3>
     <div class="row" style="gap:8px;margin:2px 0 10px">
@@ -6408,7 +6470,7 @@ async function pageLegacyImport(app, hash){
   <h2>${icon('inbox')} 過去データ取込確認</h2>
   <div class="muted" style="margin-bottom:10px">手配帳から外部で再構築した過去の給与実績です。管理者だけが閲覧でき、月単位の内容を確認のうえ「公開する」か「削除する」かを決められます(まだ本番のスケジュールには一切反映されていません)。</div>
   <div class="card">
-    <div class="row" id="li-bulk-bar" style="margin-bottom:0;gap:8px;align-items:center;background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:8px 10px;flex-wrap:wrap"></div>
+    <div class="row" id="li-bulk-bar" style="margin-bottom:0;gap:8px;align-items:center;flex-wrap:wrap"></div>
     <div id="li-list" style="display:flex;flex-direction:column;gap:10px;margin-top:10px"></div>
   </div>`;
   const listEl = $('#li-list');
@@ -6416,6 +6478,7 @@ async function pageLegacyImport(app, hash){
     const bar = $('#li-bulk-bar');
     if(!bar) return;
     const pendingYms = months.filter(mo => mo.pendingCnt > 0).map(mo => mo.ym);
+    bar.style.cssText = pendingYms.length ? 'margin-bottom:0;gap:8px;align-items:center;flex-wrap:wrap;background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:8px 10px' : 'margin-bottom:0';
     bar.innerHTML = pendingYms.length ? `
       <button type="button" class="btn ghost sm" id="li-select-all">未確認の月をすべて選択(${pendingYms.length}件)</button>
       ${selected.size ? `<span class="muted" style="font-weight:600">${selected.size}件選択中</span>

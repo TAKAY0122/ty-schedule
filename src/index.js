@@ -127,7 +127,7 @@ async function pbkdf2(pw, salt) {
 // アプリの機能アップデートのお知らせに使うバージョン番号。新しいお知らせを追加したら値を増やし、
 // updateNoticeContent()にも内容を追記する。既にパスワードを変更済み(must_change=0)の既存ユーザーが
 // ログインした際、seen_update_version がこれより小さければ「アップデートのお知らせ」を表示する。
-const CURRENT_UPDATE_VERSION = 13;
+const CURRENT_UPDATE_VERSION = 14;
 
 const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0, must_change: u.must_change ? 1 : 0, extra_perms: getPerms(u), revoked_perms: getRevokedPerms(u), notify_rookie: u.notify_rookie === null || u.notify_rookie === undefined ? null : (u.notify_rookie ? 1 : 0), manner_done: u.manner_done ? 1 : 0, team2_done: u.team2_done ? 1 : 0, su_done: u.su_done ? 1 : 0, graduate_flag: u.graduate_flag ? 1 : 0, promotion_pending_date: u.promotion_pending_date || null, promotion_pending_rank: u.promotion_pending_rank || null, needsUpdateNotice: !u.must_change && (u.seen_update_version || 0) < CURRENT_UPDATE_VERSION, seenUpdateVersion: u.seen_update_version || 0 });
 
@@ -478,6 +478,17 @@ function normRegno(v) {
 }
 function stripRow(r) {
   return { type: r.type, site: r.site, venue: r.venue, tin: r.tin, tout: r.tout, pay: r.pay, note: r.note, duty: r.duty, load_end: r.load_end, show_end: r.show_end, multi: r.multi };
+}
+
+// 会場詳細・現場詳細・公演詳細の履歴一覧に、閲覧中の本人が実際に行ったことのある(date,site)かどうかの
+// visitedフラグを付与する。同じ会場・アーティストでも、その日その現場に本人が入っていなければ対象外。
+async function markVisited(env, meId, rows) {
+  if (!rows.length) return rows;
+  const dates = [...new Set(rows.map(r => r.date))];
+  const ph = dates.map(() => '?').join(',');
+  const myRows = (await env.DB.prepare(`SELECT DISTINCT date, site FROM schedule WHERE user_id=? AND type='work' AND date IN (${ph})`).bind(meId, ...dates).all()).results;
+  const mySet = new Set(myRows.map(r => r.date + '|' + r.site));
+  return rows.map(r => ({ ...r, visited: mySet.has(r.date + '|' + r.site) }));
 }
 
 // 過去データ取込確認の「公開する」1ヶ月分の処理。単一月のPOST /legacy-import/months/:ym/approveと、
@@ -3684,8 +3695,8 @@ async function api(req, env, url) {
     ]);
     return J({
       site, venue, from, to,
-      samePast: samePastRes.results,
-      sameVenueFuture: sameVenueFutureRes.results, sameSiteFuture: sameSiteFutureRes.results,
+      samePast: await markVisited(env, me.id, samePastRes.results),
+      sameVenueFuture: await markVisited(env, me.id, sameVenueFutureRes.results), sameSiteFuture: await markVisited(env, me.id, sameSiteFutureRes.results),
       current: currentRes.results,
     });
   }
@@ -3717,7 +3728,7 @@ async function api(req, env, url) {
       env.DB.prepare("SELECT date, site, venue, COUNT(*) AS cnt FROM schedule WHERE type='work' AND venue=? AND date>=? GROUP BY date, site, venue ORDER BY date ASC LIMIT 200").bind(venue, today).all(),
       env.DB.prepare('SELECT 1 FROM venue_manuals WHERE venue=?').bind(venue).first(),
     ]);
-    return J({ venue, past: pastRes.results, future: futureRes.results, hasManual: !!manualRow });
+    return J({ venue, past: await markVisited(env, me.id, pastRes.results), future: await markVisited(env, me.id, futureRes.results), hasManual: !!manualRow });
   }
 
   // ---- 会場・公演のメンバー一覧の並び替え。回数順(既定)/最近行った順/ランク順(A→E)の3種。
@@ -3795,6 +3806,20 @@ async function api(req, env, url) {
     return J(result);
   }
 
+  // ---- 個人専用の現場ログ検索(チーフ以上)。マイスケジュール画面内の検索バーから使う。
+  //      集計はせず、1回の稼働=1行のまま日付降順で返し、日付・現場名・会場名・公演名(本体名)の
+  //      いずれかの部分一致で絞り込めるようフロント側にそのまま渡す(件数が個人単位で少ないため)。 ----
+  if (method === 'GET' && path === '/member-site-log') {
+    if (!has(me, 'sites_view')) return ERR('ページが見つかりません', 404);
+    const uid = Number(url.searchParams.get('uid'));
+    if (!uid) return ERR('uid が必要です');
+    const rows = (await env.DB.prepare(
+      "SELECT date, site, venue FROM schedule WHERE type='work' AND user_id=? AND site<>'' ORDER BY date DESC"
+    ).bind(uid).all()).results;
+    const result = rows.map(r => ({ date: r.date, site: r.site, venue: r.venue, artist: extractArtistName(r.site) }));
+    return J(result);
+  }
+
   // ---- アーティスト一覧(準備中、chief以上)。現場名から「【セクション等】」を除いた本体名を
   //      アーティスト名とみなして集計する。1つの現場名に対応するSQL列が無いため、
   //      (現場名,日付)単位で取得しWorker側でアーティスト名ごとに再集計する。 ----
@@ -3833,7 +3858,7 @@ async function api(req, env, url) {
       env.DB.prepare(`SELECT date, site, venue, COUNT(*) AS cnt FROM schedule WHERE type='work' AND site IN (${ph}) AND date<? GROUP BY date, site, venue ORDER BY date DESC LIMIT 200`).bind(...variants, today).all(),
       env.DB.prepare(`SELECT date, site, venue, COUNT(*) AS cnt FROM schedule WHERE type='work' AND site IN (${ph}) AND date>=? GROUP BY date, site, venue ORDER BY date ASC LIMIT 200`).bind(...variants, today).all(),
     ]);
-    return J({ artist, past: pastRes.results, future: futureRes.results });
+    return J({ artist, past: await markVisited(env, me.id, pastRes.results), future: await markVisited(env, me.id, futureRes.results) });
   }
 
   // ---- 公演一覧(旧アーティスト一覧、準備中)の一括改名(手配者以上)。会場一覧の一括改名と違い、
