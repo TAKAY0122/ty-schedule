@@ -484,9 +484,13 @@ function stripRow(r) {
 // visitedフラグを付与する。同じ会場・アーティストでも、その日その現場に本人が入っていなければ対象外。
 async function markVisited(env, meId, rows) {
   if (!rows.length) return rows;
-  const dates = [...new Set(rows.map(r => r.date))];
-  const ph = dates.map(() => '?').join(',');
-  const myRows = (await env.DB.prepare(`SELECT DISTINCT date, site FROM schedule WHERE user_id=? AND type='work' AND date IN (${ph})`).bind(meId, ...dates).all()).results;
+  // 対象行のdateをIN句で1件ずつ列挙すると、行数(=会場履歴等ではLIMIT 200まで)がそのまま
+  // バインド変数の数になり、D1のバインド変数上限を超えてサーバーエラーになる事故があった。
+  // 対象はどうせ1人分のscheduleかつ日付範囲は連続しているとは限らないが件数自体は少ないため、
+  // 最小日付〜最大日付の範囲(BETWEEN、常に2変数)で取得してからJS側で絞り込む方式に変更した。
+  let minDate = rows[0].date, maxDate = rows[0].date;
+  for (const r of rows) { if (r.date < minDate) minDate = r.date; if (r.date > maxDate) maxDate = r.date; }
+  const myRows = (await env.DB.prepare("SELECT DISTINCT date, site FROM schedule WHERE user_id=? AND type='work' AND date>=? AND date<=?").bind(meId, minDate, maxDate).all()).results;
   const mySet = new Set(myRows.map(r => r.date + '|' + r.site));
   return rows.map(r => ({ ...r, visited: mySet.has(r.date + '|' + r.site) }));
 }
