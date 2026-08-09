@@ -142,10 +142,7 @@ tr.slot-extra{background:#fcfcfa}
 .msg.ok{background:#e6f4e6;color:var(--ok)}
 .msg.err{background:#fdebeb;color:#b71c1c}
 .tag{display:inline-block;font-size:11px;border-radius:3px;padding:2px 7px;font-weight:700}
-.tag.admin{background:#1b2333;color:var(--gold)}
 .tag.handler{background:var(--gold);color:#1b2333}
-.tag.chief{background:#3b5bdb;color:#fff}
-.tag.member{background:#d8d6cf;color:#444}
 .tag.pending{background:#ffe1b3;color:#8a5300}
 .tag.checked{background:#d7ecd7;color:#2e7d32}
 .tag.acquired{background:#e7f6ec;color:#1f7a3d;font-size:11px}
@@ -647,8 +644,7 @@ tr.stat-row-clickable.stat-row-sel{background:#eef3fb}
 .m-off.m-paid .m-off-label{color:#1d5fa8}
 .m-off.m-off .m-off-label{color:#c0392b}
 .m-off.m-x .m-off-label{color:#c0392b}
-/* ===== アカウント停止 ===== */
-.susp-tag{display:inline-block;font-size:10px;background:#b03030;color:#fff;border-radius:4px;padding:1px 6px;vertical-align:middle}
+/* ===== アカウント停止(行を淡色化するのみ。表記は出さない) ===== */
 tr.is-suspended{background:#fafafa;color:#999}
 tr.is-suspended .nowrap{opacity:.7}
 .dcard.is-suspended{opacity:.7;background:#fafafa}

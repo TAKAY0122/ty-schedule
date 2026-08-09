@@ -117,7 +117,6 @@ function rankOrder(r){
   return m ? RANK_ORDER[m[0].toUpperCase()] : 5;
 }
 const ROLE_JP = { admin:'チーフ(管理者)', handler:'チーフ(手配者)', chief:'チーフ', member:'メンツ' };
-function roleLabel(u){ if(u && u.suspended) return (u.role==='member'?'メンツ':'チーフ')+'(アカウント停止)'; return ROLE_JP[u.role]||u.role; }
 // ログイン中メンバー・セッション一覧で、location.hashを見やすい画面名に変換するための対応表
 const PAGE_LABELS = {
   'home':'ホーム','dashboard':'ダッシュボード','schedule':'マイスケジュール','edit':'スケジュール入力',
@@ -737,15 +736,15 @@ async function openSiteModal(date, site){
     return `<span class="break-tag ${cls}" title="${h(tip)}">${label}</span>`;
   };
   const card = p => `<div class="dcard ka-${p.ka==='1課'?'1':'2'} ${editable?'sm-edit':''}" ${editable?`data-uid="${p.uid}"`:''}>
-    <div class="dcard-head"><span class="dcard-title">${nameHtml(p)} ${kaTag(p)}</span><span class="tag ${p.role}">${roleLabel(p)}</span></div>
+    <div class="dcard-head"><span class="dcard-title">${nameHtml(p)} ${kaTag(p)}</span></div>
     <div class="drow"><span class="dk">ランク/班</span><span class="dv">${h(p.rank)||'—'} / ${h(p.han)||'—'}</span></div>
     ${canPay&&(p.tin||p.tout)?`<div class="drow"><span class="dk">IN/OUT</span><span class="dv">${h(p.tin)}〜${h(p.tout)}</span></div>`:''}
     ${breakHtml(p)?`<div class="drow"><span class="dk">休憩</span><span class="dv">${breakHtml(p)}</span></div>`:''}
     ${p.note?`<div class="drow"><span class="dk">備考</span><span class="dv">${h(p.note)}</span></div>`:''}
     ${editable?`<div class="sm-edit-hint">タップして編集 ${icon('edit',{size:'12px'})}</div>`:''}
   </div>`;
-  const row = p => `<tr class="ka-row-${p.ka==='1課'?'1':'2'} ${editable?'sm-edit':''}" ${editable?`data-uid="${p.uid}"`:''}><td style="white-space:nowrap">${nameHtml(p)} ${kaTag(p)}</td><td style="white-space:nowrap"><span class="tag ${p.role}">${roleLabel(p)}</span></td><td style="white-space:nowrap">${h(p.rank)}</td><td style="white-space:nowrap">${h(p.han)}</td>${canPay?`<td style="white-space:nowrap">${h(p.tin)}</td><td style="white-space:nowrap">${h(p.tout)}</td>`:''}<td style="white-space:nowrap">${breakHtml(p)||''}</td><td style="min-width:150px">${h(p.note)}</td>${editable?`<td class="sm-edit-cell">${icon('edit',{size:'12px'})}</td>`:''}</tr>`;
-  const tbl = arr => `<table class="list pc-only"><tr><th>氏名</th><th>役割</th><th>ランク</th><th>班</th>${canPay?'<th>IN</th><th>OUT</th>':''}<th>休憩</th><th>備考</th>${editable?'<th></th>':''}</tr>${arr.map(row).join('')}</table>
+  const row = p => `<tr class="ka-row-${p.ka==='1課'?'1':'2'} ${editable?'sm-edit':''}" ${editable?`data-uid="${p.uid}"`:''}><td style="white-space:nowrap">${nameHtml(p)} ${kaTag(p)}</td><td style="white-space:nowrap">${h(p.rank)}</td><td style="white-space:nowrap">${h(p.han)}</td>${canPay?`<td style="white-space:nowrap">${h(p.tin)}</td><td style="white-space:nowrap">${h(p.tout)}</td>`:''}<td style="white-space:nowrap">${breakHtml(p)||''}</td><td style="min-width:150px">${h(p.note)}</td>${editable?`<td class="sm-edit-cell">${icon('edit',{size:'12px'})}</td>`:''}</tr>`;
+  const tbl = arr => `<table class="list pc-only"><tr><th>氏名</th><th>ランク</th><th>班</th>${canPay?'<th>IN</th><th>OUT</th>':''}<th>休憩</th><th>備考</th>${editable?'<th></th>':''}</tr>${arr.map(row).join('')}</table>
     <div class="cards sp-only">${arr.map(card).join('')}</div>`;
   // 過去/今後の公演1件分のボタン(押すとその日・その現場の詳細=このモーダル自体を開き直す)。
   // 自分自身が実際に入っていた日は、現場名の横に金色丸(visited-dot)を付けてひと目でわかるようにする。
@@ -1340,7 +1339,7 @@ function renderShell(hash){
     <div class="hright">
       <button class="pin-btn ${ME.handler===1?'active':''}" id="pin-btn" title="${ME.handler===1?'手配者モードを終了':'手配者モードに入る'}">${ME.handler===1?icon('unlock'):icon('key')}</button>
       <button class="bell" id="bell">${icon('bell',{size:'12px'})}<span class="badge" id="bcount" style="display:none"></span></button>
-      <span class="uname">${h(ME.name)}<br><span style="color:var(--gold)">${roleLabel(ME)}${ME.handler?'(手配モード)':''}</span></span>
+      <span class="uname">${h(ME.name)}${ME.handler?'<br><span style="color:var(--gold)">(手配モード)</span>':''}</span>
     </div>
   </header>
   <main id="app"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></main>
@@ -3290,7 +3289,7 @@ async function openMemberVisitList(title, iconName, fetchUrl){
         ${rows.length ? rows.map(r=>`<div class="mgr-row venue-member-row" style="cursor:pointer" data-uid="${r.id}">
           <div class="mgr-name">
             ${h(r.name)}
-            <span class="muted">${h(r.regno)} ${h(r.rank)||''} ${roleLabel(r)}</span>
+            <span class="muted">${h(r.regno)} ${h(r.rank)||''}</span>
           </div>
           <div class="muted" style="font-size:12.5px;white-space:nowrap">${r.cnt}回 <span style="font-size:11px">(最終:${h(r.lastDate)})</span></div>
         </div>`).join('') : '<div class="muted" style="text-align:center;padding:16px">経験したメンバーはいません</div>'}
@@ -4254,20 +4253,19 @@ async function pageMembers(app){
       </div>`:''}
       <div class="list-scroll pc-only">
       <table class="list ka-table ka-${tab==='1課'?'1':'2'}">
-      <tr>${isHandler?'<th><input type="checkbox" id="m-check-all"></th>':''}<th>登録番号</th><th>氏名</th><th>役割</th><th>ランク</th><th>班</th><th>手配担当</th><th>最寄駅</th><th>できること</th><th></th></tr>
+      <tr>${isHandler?'<th><input type="checkbox" id="m-check-all"></th>':''}<th>登録番号</th><th>氏名</th><th>ランク</th><th>班</th><th>手配担当</th><th>最寄駅</th><th>できること</th><th></th></tr>
       ${list.map(u=>`<tr>
         ${isHandler?(u.id===ME.id?'<td></td>':`<td><input type="checkbox" class="m-check" data-id="${u.id}"></td>`):''}
         <td>${h(u.regno)}${baseFromRegno(u.regno)?` <span class="muted" style="font-size:11px">(${baseFromRegno(u.regno)})</span>`:''}</td><td><b class="name-link" data-goto-uid="${u.id}">${h(u.name)}</b></td>
-        <td><span class="tag ${u.role}">${roleLabel(u)}</span></td>
         <td>${h(u.rank)}</td><td>${h(u.han)}</td><td>${h(managerName(u,users))}</td><td>${h(u.station)}</td>
         <td class="wrapcell">${h(u.skills)}</td>
         <td>${editBtn(u)} ${schedBtn(u,'ghost')} ${goEditBtn(u)} ${goSummaryBtn(u)}</td>
-      </tr>`).join('') || `<tr><td colspan="${isHandler?9:8}" class="muted" style="text-align:center;padding:16px">該当するメンバーはいません</td></tr>`}
+      </tr>`).join('') || `<tr><td colspan="${isHandler?8:7}" class="muted" style="text-align:center;padding:16px">該当するメンバーはいません</td></tr>`}
       </table>
       </div>
       <div class="cards sp-only">
       ${list.map(u=>`<div class="dcard ka-${kaOf(u)==='1課'?'1':'2'}">
-        <div class="dcard-head">${isHandler&&u.id!==ME.id?`<input type="checkbox" class="m-check" data-id="${u.id}" style="margin-right:8px">`:''}<span class="dcard-title name-link" data-goto-uid="${u.id}">${h(u.name)}</span><span class="tag ${u.role}">${roleLabel(u)}</span></div>
+        <div class="dcard-head">${isHandler&&u.id!==ME.id?`<input type="checkbox" class="m-check" data-id="${u.id}" style="margin-right:8px">`:''}<span class="dcard-title name-link" data-goto-uid="${u.id}">${h(u.name)}</span></div>
         <div class="drow"><span class="dk">登録番号</span><span class="dv">${h(u.regno)}${baseFromRegno(u.regno)?` (${baseFromRegno(u.regno)})`:''}</span></div>
         <div class="drow"><span class="dk">ランク / 班</span><span class="dv">${h(u.rank)||'—'} / ${h(u.han)||'—'}</span></div>
         <div class="drow"><span class="dk">手配担当</span><span class="dv">${h(managerName(u,users))}</span></div>
@@ -5774,12 +5772,11 @@ async function pageHandlerStatus(app){
       const rows = await api('/online');
       const el = $('#hd-online'); if(!el) return;
       const canSeeActivity = rows.length && rows[0].last_page !== undefined;
-      el.innerHTML = rows.length ? `<table class="list pc-only"><tr><th></th><th>氏名</th><th>役割</th><th>登録番号</th>${canSeeActivity?'<th>閲覧中</th>':''}<th>最終アクセス</th></tr>
-        ${rows.map(r=>`<tr><td class="c"><span class="online-dot pulse"></span></td><td>${r.uid?`<span class="name-link" data-goto-uid="${r.uid}">${h(r.name)}</span>`:h(r.name)}</td>
-        <td><span class="tag ${r.role}">${roleLabel(r)}</span>${r.handler?' <span class="tag handler">手配モード中</span>':''}</td>
+      el.innerHTML = rows.length ? `<table class="list pc-only"><tr><th></th><th>氏名</th><th>登録番号</th>${canSeeActivity?'<th>閲覧中</th>':''}<th>最終アクセス</th></tr>
+        ${rows.map(r=>`<tr><td class="c"><span class="online-dot pulse"></span></td><td>${r.uid?`<span class="name-link" data-goto-uid="${r.uid}">${h(r.name)}</span>`:h(r.name)}${r.handler?' <span class="tag handler">手配モード中</span>':''}</td>
         <td>${h(r.regno)}</td>${canSeeActivity?`<td>${h(pageLabelFromHash(r.last_page))}</td>`:''}<td>${fmtAgo(r.last_seen)}</td></tr>`).join('')}</table>
         <div class="cards sp-only">${rows.map(r=>`<div class="dcard">
-          <div class="dcard-head"><span class="dcard-title"><span class="online-dot pulse"></span> ${r.uid?`<span class="name-link" data-goto-uid="${r.uid}">${h(r.name)}</span>`:h(r.name)}</span><span class="tag ${r.role}">${roleLabel(r)}</span></div>
+          <div class="dcard-head"><span class="dcard-title"><span class="online-dot pulse"></span> ${r.uid?`<span class="name-link" data-goto-uid="${r.uid}">${h(r.name)}</span>`:h(r.name)}</span></div>
           <div class="drow"><span class="dk">登録番号</span><span class="dv">${h(r.regno)}</span></div>
           ${canSeeActivity?`<div class="drow"><span class="dk">閲覧中</span><span class="dv">${h(pageLabelFromHash(r.last_page))}</span></div>`:''}
           <div class="drow"><span class="dk">最終アクセス</span><span class="dv">${fmtAgo(r.last_seen)}${r.handler?' / 手配モード中':''}</span></div>
@@ -6122,7 +6119,7 @@ async function pagePermissions(app, hash){
   app.innerHTML = `
   <div style="margin-bottom:14px"><a href="#/admin" class="btn ghost sm">← アカウント管理に戻る</a></div>
   <h2 style="margin-bottom:4px">権限編集</h2>
-  <div class="muted" style="margin-bottom:16px">${h(baseUser.name)} さん（登録番号 ${h(baseUser.regno)} / ${h(roleLabel({role:roleForDisplay}))}）の設定を行います。</div>
+  <div class="muted" style="margin-bottom:16px">${h(baseUser.name)} さん（登録番号 ${h(baseUser.regno)}）の設定を行います。</div>
 
   ${canPerms ? `
   <div class="card" style="margin-bottom:16px">
@@ -6921,7 +6918,7 @@ async function pageAdmin(app){
       <tr><th><input type="checkbox" id="ad-check-all"></th><th>登録番号</th><th>氏名</th><th>役割(管理者のみ変更可)</th><th>担当手配者</th><th>ランク</th><th>班</th><th>駅</th><th>操作</th></tr>
       ${aList.map(u=>`<tr class="${u.suspended?'is-suspended':''}">
         <td>${u.id===ME.id?'':`<input type="checkbox" class="ad-check" data-id="${u.id}">`}</td>
-        <td class="nowrap">${h(u.regno)}${baseFromRegno(u.regno)?` <span class="muted" style="font-size:11px">(${baseFromRegno(u.regno)})</span>`:''}${ME.role==='admin'?` <button class="btn ghost xs regno-edit" data-id="${u.id}" data-cur="${h(u.regno)}" data-name="${h(u.name)}" title="登録番号を変更">${icon('edit',{size:'12px'})}</button>`:''}</td><td class="nowrap">${h(u.name)}${u.suspended?' <span class="susp-tag">停止</span>':''}</td>
+        <td class="nowrap">${h(u.regno)}${baseFromRegno(u.regno)?` <span class="muted" style="font-size:11px">(${baseFromRegno(u.regno)})</span>`:''}${ME.role==='admin'?` <button class="btn ghost xs regno-edit" data-id="${u.id}" data-cur="${h(u.regno)}" data-name="${h(u.name)}" title="登録番号を変更">${icon('edit',{size:'12px'})}</button>`:''}</td><td class="nowrap">${h(u.name)}</td>
         <td><select data-role="${u.id}">${['member','chief','handler','admin'].map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${ROLE_JP[r]}</option>`).join('')}</select></td>
         <td><select data-mgr="${u.id}"><option value="">(なし)</option>${mgrs.map(m=>`<option value="${m.id}" ${String(u.manager_id)===String(m.id)?'selected':''}>${h(m.name)}手配</option>`).join('')}</select></td>
         <td class="nowrap">${h(u.rank)}</td><td class="nowrap">${h(u.han)}</td><td class="nowrap">${h(u.station)}</td>
@@ -6936,7 +6933,7 @@ async function pageAdmin(app){
         <div class="dcard-head">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
             ${u.id===ME.id?'<span style="width:16px;display:inline-block"></span>':`<input type="checkbox" class="ad-check" data-id="${u.id}">`}
-            <span class="dcard-title">${h(u.name)}${u.suspended?' <span class="susp-tag">停止</span>':''}</span>
+            <span class="dcard-title">${h(u.name)}</span>
           </label>
           <span class="dcard-sub">${h(u.regno)}${baseFromRegno(u.regno)?` (${baseFromRegno(u.regno)})`:''}${ME.role==='admin'?` <button class="btn ghost xs regno-edit" data-id="${u.id}" data-cur="${h(u.regno)}" data-name="${h(u.name)}" title="登録番号を変更">${icon('edit',{size:'12px'})}</button>`:''}</span>
         </div>
