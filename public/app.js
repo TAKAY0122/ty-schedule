@@ -3535,7 +3535,10 @@ async function pageArtists(app){
   const folderManageBtn = $('#artist-folder-manage');
   if(folderManageBtn) folderManageBtn.onclick = () => openArtistFolderManage(() => pageArtists(app));
   const findReplaceBtn = $('#artist-find-replace');
-  if(findReplaceBtn) findReplaceBtn.onclick = () => openArtistFindReplace(() => pageArtists(app));
+  if(findReplaceBtn) findReplaceBtn.onclick = () => {
+    const folder = st.openFolder ? folders.find(f=>String(f.id)===String(st.openFolder)) : null;
+    openArtistFindReplace(() => pageArtists(app), folder ? { artists: folder.members, label: folder.name } : null);
+  };
 }
 
 // 選択中の公演をフォルダに追加する(既存フォルダに追加 or 新規フォルダを作成)。openGroupPickerと同じ操作感。
@@ -3629,9 +3632,11 @@ async function openArtistFolderManage(onDone){
 }
 
 // 公演名の一部を置換する(例:「vs」→「VS」)。プレビューで変更対象を確認してから適用する。
-function openArtistFindReplace(onDone){
+function openArtistFindReplace(onDone, scope){
+  const scopeArtists = scope && scope.artists && scope.artists.length ? scope.artists : null;
   modal(`<h3>${icon('repeat',{size:'15px'})} 公演名の一部を置換</h3>
     <div class="muted" style="font-size:12px;margin-bottom:10px">公演名に含まれる文字列を一括で置き換えます(例:「vs」→「VS」)。各行の【セクション等】表記は対象外です。</div>
+    ${scopeArtists ? `<div class="msg ok" style="font-size:12px;margin-bottom:10px">${icon('package',{size:'12px'})} 「${h(scope.label)}」フォルダ内の公演(${scopeArtists.length}件)のみが対象です。フォルダ外の公演には影響しません。</div>` : ''}
     <div class="form-grid" style="grid-template-columns:90px 1fr;max-width:420px">
       <label>置換前</label><input type="text" id="afr-find" placeholder="例:vs">
       <label>置換後</label><input type="text" id="afr-replace" placeholder="例:VS">
@@ -3645,7 +3650,7 @@ function openArtistFindReplace(onDone){
     if(!find){ $('#afr-msg').textContent = '置換前の文字列を入力してください'; return; }
     await withLoading($('#afr-preview'), async () => {
       try{
-        const r = await api('/artists/find-replace', { method:'POST', body:{ find, replace, preview:true } });
+        const r = await api('/artists/find-replace', { method:'POST', body:{ find, replace, preview:true, artists: scopeArtists || undefined } });
         const area = $('#afr-preview-area');
         if(!r.changes.length){
           area.innerHTML = '<div class="muted">対象の公演名が見つかりませんでした</div>';
@@ -3660,7 +3665,7 @@ function openArtistFindReplace(onDone){
           if(!confirm(`${r.changes.length}件の公演名を変更します。よろしいですか?`)) return;
           await withLoading($('#afr-apply'), async () => {
             try{
-              const ar = await api('/artists/find-replace', { method:'POST', body:{ find, replace } });
+              const ar = await api('/artists/find-replace', { method:'POST', body:{ find, replace, artists: scopeArtists || undefined } });
               closeModal();
               popup(`${ar.updatedDays}件を変更しました`);
               if(onDone) onDone();

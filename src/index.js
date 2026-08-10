@@ -3889,18 +3889,22 @@ async function api(req, env, url) {
   }
 
   // ---- 公演一覧限定: 公演名の一部を置換(手配者以上)。例:「vs」→「VS」のような表記統一。
-  //      preview=trueの場合はDBを変更せず、変更対象の一覧(旧名→新名)だけを返す。 ----
+  //      preview=trueの場合はDBを変更せず、変更対象の一覧(旧名→新名)だけを返す。
+  //      body.artistsを指定すると、その公演名(本体名)の集合だけを対象にする(フォルダを開いた
+  //      状態で実行した場合、フォルダ内の公演だけに絞り込むため)。省略時は全公演が対象。 ----
   if (method === 'POST' && path === '/artists/find-replace') {
     if (!has(me, 'site_manage')) return ERR('権限がありません', 403);
     const find = typeof body.find === 'string' ? body.find : '';
     const replace = typeof body.replace === 'string' ? body.replace : '';
     if (!find) return ERR('置換前の文字列を入力してください');
+    const scopeArtists = Array.isArray(body.artists) ? new Set(body.artists.map(a => String(a || '').trim()).filter(Boolean)) : null;
 
     const siteRows = (await env.DB.prepare("SELECT DISTINCT site FROM schedule WHERE type='work' AND site<>''").all()).results;
     const renameMap = {};
     const artistChanges = {};
     for (const r of siteRows) {
       const artist = extractArtistName(r.site);
+      if (scopeArtists && !scopeArtists.has(artist)) continue;
       if (!artist.includes(find)) continue;
       const newArtist = artist.split(find).join(replace);
       if (newArtist === artist) continue;
