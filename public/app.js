@@ -153,9 +153,13 @@ let TOKEN = localStorage.getItem('tk') || '';
 let ME = null;
 let UPDATE_NOTICE_SHOWN = false; // 1セッション中に一度だけ表示するためのフラグ
 // アップデートのお知らせに表示する項目。新機能を追加したら、ここに { v: 新しいバージョン番号, ... } で
-// 追記し、CURRENT_UPDATE_VERSION(この下)をインクリメントする。過去の項目はそのまま残しておいてよい
+// 追記し、src/index.js の CURRENT_UPDATE_VERSION をインクリメントする(バージョン番号は
+// サーバー側の値が唯一の正としてME.currentUpdateVersionから取得する。以前はここにも同名の定数を
+// 持っていたが、更新のたびに両方をインクリメントし忘れ、片方だけ古いまま残ってお知らせが正しく
+// 出なくなる事故があったため、フロント側の定数は廃止した)。過去の項目はそのまま残しておいてよい
 // (各ユーザーは自分がまだ見ていないバージョン分の項目だけを見るため、勝手に重複表示されることはない)。
-const CURRENT_UPDATE_VERSION = 10;
+// 細かい変更を毎回1つのバージョンとして刻みすぎると、お知らせ・履歴が読みづらくなる。ある程度まとまった
+// タイミングで1バージョンにまとめ、細かい調整点は既存項目の説明文に軽く触れる程度にとどめること。
 const UPDATE_ITEMS = [
   { v:1, icon:'home', title:'ホーム画面を追加', desc:'ログイン後、今日・明日の現場や通知が一目で見られるようになりました。', show: () => true },
   { v:1, icon:'handRaise', title:'休み希望・稼働時間の提出', desc:'マイスケジュールから、休み希望や「この時間なら動ける」を手配担当者に伝えられます。', show: () => true },
@@ -166,8 +170,7 @@ const UPDATE_ITEMS = [
   { v:2, icon:'layoutGrid', title:'スケジュール一覧を追加', desc:'全メンバーの1週間分の予定を、チーフ予定表のような一覧(日付×人のマトリックス表)で確認できます。', show: () => LV[ME.role] >= 1 },
   { v:2, icon:'trendingUp', title:'メンバー分析を追加', desc:'拠点・課・班・ランクの構成を、全体・課ごとにリアルタイムで確認できます。手配担当ごとの内訳も見られます。', show: () => LV[ME.role] >= 1 },
   { v:2, icon:'home', title:'ホーム画面を自由にカスタマイズ', desc:'ホーム画面の「編集」から、ショートカットの並び替え・非表示・追加ができるようになりました(iPhoneのホーム画面のような感覚で使えます)。', show: () => true },
-  { v:3, icon:'star', title:'ランクの自動昇格・査定', desc:'マナー研修を受けると翌日にDランク、チーム研修(2部)とステージアップ研修(SU)の両方を受けると翌月1日にCランクへ自動で昇格します。C→B、B→Aは査定ボタンで昇格でき、昇格した月の給与は月初に遡って新しいランクで再計算されます。', show: () => true },
-  { v:3, icon:'scroll', title:'ランク変更履歴', desc:'メンバー編集画面から、いつ・誰が・どんな理由でランクを変更したかの履歴を確認できるようになりました。', show: () => LV[ME.role] >= 1 },
+  { v:3, icon:'star', title:'ランクの自動昇格・査定', desc:'マナー研修を受けると翌日にDランク、チーム研修(2部)とステージアップ研修(SU)の両方を受けると翌月1日にCランクへ自動で昇格します。C→B、B→Aは査定ボタンで昇格でき、昇格した月の給与は月初に遡って新しいランクで再計算されます。いつ・誰が・どんな理由でランクを変更したかは、メンバー編集画面から履歴を確認できます。', show: () => true },
   { v:4, icon:'barChart', title:'個人の年間サマリー・備考欄を追加', desc:'メンバーごとの月別稼働日数・時間・給料の年間推移や、申し送り事項を記録する備考欄を確認できるようになりました(手配担当者以上)。', show: () => LV[ME.role] >= 2 },
   { v:4, icon:'fileText', title:'台帳Excelファイルの直接取り込みに対応', desc:'手配管理表のExcelファイルをPCから直接アップロードして取り込めるようになりました。複数ファイルの一括取込や、台帳保管に保存済みのファイルからの再取込にも対応しています(常に手動実行)。', show: () => LV[ME.role] >= 2 },
   { v:5, icon:'layoutGrid', title:'複数日の現場に「稼働表」を追加', desc:'現場一覧の現場詳細から「稼働表」を押すと、その現場が行われている期間(前後の連続した日程を自動判定)に入っている人だけを、日付×人の一覧で確認できるようになりました。現場に入っていない日も、休暇・NG・別の現場のどれかが分かります。', show: () => LV[ME.role] >= 1 },
@@ -176,14 +179,10 @@ const UPDATE_ITEMS = [
   { v:7, icon:'plus', title:'現場一覧に、現場情報を先に登録できるように', desc:'これまで現場一覧はメンバーが配置された現場だけを表示していましたが、まだ誰も配置していない現場も先に登録して表示しておけるようになりました(手配者以上・手配モード中)。登録後は他の現場と同じようにタップしてメンバーを追加でき、不要になれば削除もできます。台帳取込で「登場しない人を休暇に変更する」にチェックを入れた際、その現場が台帳に見当たらなくなっていれば自動的に削除されます。', show: () => LV[ME.role] >= 2 },
   { v:8, icon:'circleFilled', title:'ログイン中メンバーの閲覧中ページを確認できるように', desc:'「ログイン中・編集履歴」画面で、ログイン中の各メンバーが今どの画面を見ているかを確認できるようになりました(管理者以上)。あわせて、アカウント管理の全データ閲覧「ログインセッション」にも、そのセッションが最後に見ていたページを表示するようになりました。', show: () => has('activity_view') },
   { v:9, icon:'edit', title:'現場詳細画面から、同会場・同アーティストの公演をまとめて編集できるように', desc:'現場詳細画面の「同会場の公演」「同アーティストの公演」一覧から、それぞれ「まとめて編集」で一覧全体をまとめて変更できるようになりました(手配者以上)。「同会場の公演」は会場のみ、「同アーティストの公演」は現場名のみが対象で、一覧内の他の項目まで誤って書き換わることはありません。', show: () => LV[ME.role] >= 2 },
-  { v:10, icon:'mapPin', title:'会場一覧を追加', desc:'現場一覧と同じ感覚で使える「会場一覧」を追加しました。会場ごとに、過去・今後どちらもまとめてその会場の現場を確認でき、タップすると現場の詳細も見られます。各会場に「会場マニュアル」を用意する予定ですが、まだ準備中です。手配者以上であれば、チェックボックスで複数の会場を選んでまとめて、または会場詳細画面から1件だけでも、会場名を変更できます。会場マニュアルを用意済みの会場には、一覧で目立つ色とバッジが付き、「マニュアルがある会場のみ」で絞り込むこともできます(マニュアルあり/なしのチェックも手配者以上が設定可能)。', show: () => LV[ME.role] >= 1 },
-  { v:11, icon:'barChart', title:'マイスケジュールの下部に個人の年間サマリーを表示', desc:'個人の年間サマリーを閲覧できる方(手配担当者以上)は、マイスケジュール画面をスクロールした一番下でも、その人の年間の稼働状況・備考欄をそのまま確認できるようになりました。', show: () => LV[ME.role] >= 2 },
-  { v:11, icon:'mapPin', title:'会場一覧にグループ分け・絞り込みを追加', desc:'似た会場・関連する会場をグループとしてまとめておけるようになりました(手配者以上が作成)。会場一覧の絞り込み欄でグループを選ぶと、そのグループの会場だけに絞り込めます。グループ分けをしただけでは、これまで通りの表示のままです。', show: () => LV[ME.role] >= 1 },
-  { v:12, icon:'mapPin', title:'個人スケジュールに「行った会場」「行った公演」を追加', desc:'マイスケジュール画面から「行った会場」「行った公演」ボタンを押すと、その人が実際に行ったことのある会場・公演の一覧と、それぞれの回数を確認できるようになりました。項目をタップすると、その会場・公演の詳細をすぐに開けます。', show: () => LV[ME.role] >= 1 },
-  { v:12, icon:'users', title:'会場・公演のメンバーリストに並び替えを追加', desc:'会場詳細・公演詳細の「メンバーリスト」で、回数が多い順・最近行った人・ランク順(A→E)に並び替えられるようになりました。', show: () => LV[ME.role] >= 1 },
-  { v:13, icon:'calendar', title:'マイスケジュールで表示する年月を直接選べるように', desc:'月の見出し部分をタップすると、カレンダーから年月を直接選んで一気に移動できるようになりました(◀▶ボタンでの1ヶ月ずつの移動も引き続き使えます)。', show: () => true },
-  { v:14, icon:'search', title:'マイスケジュールに現場検索バーを追加', desc:'マイスケジュール画面に検索バーが増え、現場名・会場名・公演名や日付(月・日だけでも可)で、過去に行ったことのある現場を検索できるようになりました。', show: () => LV[ME.role] >= 1 },
-  { v:14, icon:'mapPin', title:'会場・公演の履歴に「行ったことがある」マークを追加', desc:'会場詳細・公演詳細・現場詳細の過去/今後の公演一覧で、自分が実際に行ったことのある現場に金色の丸マークが付くようになりました。', show: () => LV[ME.role] >= 1 },
+  { v:10, icon:'mapPin', title:'会場一覧を追加', desc:'現場一覧と同じ感覚で使える「会場一覧」を追加しました。会場ごとに、過去・今後どちらもまとめてその会場の現場を確認でき、タップすると現場の詳細も見られます。手配者以上であれば、会場名をまとめて変更したり、関連する会場をグループにまとめて絞り込んだりもできます。', show: () => LV[ME.role] >= 1 },
+  { v:10, icon:'mapPin', title:'マイスケジュールから「行った会場」「行った公演」を確認できるように', desc:'マイスケジュール画面から「行った会場」「行った公演」ボタンを押すと、実際に行ったことのある会場・公演の一覧と回数を確認できます。会場・公演・現場の詳細画面でも、自分が行ったことのある項目に金色の丸マークが付き、検索バーで現場名・会場名・公演名・日付から探すこともできるようになりました。', show: () => LV[ME.role] >= 1 },
+  { v:10, icon:'barChart', title:'マイスケジュールの下部に個人の年間サマリーを表示', desc:'個人の年間サマリーを閲覧できる方(手配担当者以上)は、マイスケジュール画面をスクロールした一番下でも、その人の年間の稼働状況・備考欄をそのまま確認できるようになりました。', show: () => LV[ME.role] >= 2 },
+  { v:10, icon:'calendar', title:'マイスケジュールで表示する年月を直接選べるように', desc:'月の見出し部分をタップすると、カレンダーから年月を直接選んで一気に移動できるようになりました(◀▶ボタンでの1ヶ月ずつの移動も引き続き使えます)。', show: () => true },
 ];
 // 機能公開設定の対象画面。バックエンドのFEATURE_KEYSと必ず一致させる。
 // 新しい画面を追加したら、ここと src/index.js の FEATURE_KEYS の両方に追記する。
@@ -640,11 +639,11 @@ function conflictModal(conflicts){
 // これにより、前に見た内容が再度表示されることはなく、その時点で追加された機能だけが見える。
 function openUpdateNotice(){
   const items = UPDATE_ITEMS.filter(it =>
-    it.v > (ME.seenUpdateVersion || 0) && it.v <= CURRENT_UPDATE_VERSION && (!it.show || it.show())
+    it.v > (ME.seenUpdateVersion || 0) && it.v <= ME.currentUpdateVersion && (!it.show || it.show())
   );
   const markSeen = async () => {
     ME.needsUpdateNotice = false;
-    ME.seenUpdateVersion = CURRENT_UPDATE_VERSION;
+    ME.seenUpdateVersion = ME.currentUpdateVersion;
     try{ await api('/update-notice/seen', { method:'POST' }); }catch(e){}
   };
   if(!items.length){ markSeen(); return; } // 表示すべき新項目が無ければ、既読化だけして何も出さない
@@ -671,7 +670,7 @@ async function pageVersionHistory(app){
     const itemsHtml = visibleItems.map(it =>
       `<div class="upd-item"><span class="upd-icon">${icon(it.icon)}</span><div><b>${h(it.title)}</b><div class="muted">${h(it.desc)}</div></div></div>`
     ).join('') + (hiddenCount > 0 ? `<div class="upd-item"><span class="upd-icon">${icon('wrench',{size:'12px'})}</span><div><b>細かな修正・改善</b></div></div>` : '');
-    const isLatest = v === CURRENT_UPDATE_VERSION;
+    const isLatest = v === ME.currentUpdateVersion;
     return `<div class="card" style="margin-bottom:14px">
       <h3 style="margin-bottom:10px">v${v}${isLatest?' <span class="tag checked">最新</span>':''}</h3>
       <div class="upd-list">${itemsHtml || '<div class="muted">細かな修正・改善</div>'}</div>
@@ -679,7 +678,7 @@ async function pageVersionHistory(app){
   }).join('');
   app.innerHTML = `
     <h2 style="margin-bottom:4px">${icon('scroll')} バージョン履歴</h2>
-    <div class="muted" style="margin-bottom:16px">現在のバージョン: <b>v${CURRENT_UPDATE_VERSION}</b></div>
+    <div class="muted" style="margin-bottom:16px">現在のバージョン: <b>v${ME.currentUpdateVersion}</b></div>
     ${body}`;
 }
 
