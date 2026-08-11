@@ -6550,7 +6550,7 @@ async function pageLegacyImport(app, hash){
       const st = stateInfo(mo);
       return `<div class="li-month-row ${st.cls}">
         ${mo.pendingCnt>0 ? `<input type="checkbox" class="li-select" data-ym="${mo.ym}" ${selected.has(mo.ym)?'checked':''}>` : ''}
-        <div style="flex:1;min-width:0">
+        <div style="flex:1;min-width:160px">
           <div style="font-weight:700;font-size:15px">${ymLabel(mo.ym)}</div>
           <div class="muted" style="font-size:12.5px;margin-top:2px">${mo.total}件(一致${mo.matched}件${mo.unmatched?` / <span style="color:#b03030;font-weight:700">要確認${mo.unmatched}件</span>`:''}) / 合計${yen(mo.totalPay)}</div>
           <div class="li-state-badge">${st.label}</div>
@@ -6950,7 +6950,7 @@ async function pageDaicho(app){
             <td>${it.sheets!=null?it.sheets:'—'}</td>
             <td style="white-space:nowrap">${fmtSize(it.size)}</td>
             <td style="white-space:nowrap"><button class="btn ghost xs dc-dl" data-id="${it.id}" data-name="${h(it.file_name||'daicho.xlsx')}">${icon('download')} ダウンロード</button></td>
-            <td><button class="btn danger xs dc-del" data-id="${it.id}" data-ts="${h(it.ts)}">削除</button></td>
+            <td style="white-space:nowrap"><button class="btn danger xs dc-del" data-id="${it.id}" data-ts="${h(it.ts)}">削除</button></td>
           </tr>`).join('')}
         </table>
       </div>

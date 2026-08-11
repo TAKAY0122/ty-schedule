@@ -348,10 +348,10 @@ table.list tr.click:hover{background:#fdf6e0;cursor:pointer}
 .st-sites{display:flex;flex-direction:column;gap:8px}
 .st-site-row{display:flex;align-items:center;gap:8px}
 .st-site-check{flex:none;width:18px;height:18px;cursor:pointer}
-.st-site{display:flex;align-items:center;gap:10px;flex:1;min-width:0;text-align:left;background:#fff;border:1px solid var(--line);border-radius:8px;padding:12px 14px;cursor:pointer;font-size:14px}
+.st-site{display:flex;align-items:center;flex-wrap:wrap;gap:2px 10px;flex:1;min-width:0;text-align:left;background:#fff;border:1px solid var(--line);border-radius:8px;padding:12px 14px;cursor:pointer;font-size:14px}
 .st-site:hover{background:#fdf6e0;border-color:#e6cf85}
-.st-site-name{font-weight:700;color:var(--ink);font-size:15px}
-.st-site-venue{color:#777;font-size:13px}
+.st-site-name{font-weight:700;color:var(--ink);font-size:15px;flex:1 1 auto;min-width:120px}
+.st-site-venue{color:#777;font-size:13px;flex:0 1 auto}
 .st-site-cnt{margin-left:auto;background:var(--ink);color:#fff;border-radius:12px;padding:2px 10px;font-size:12px;font-weight:700;flex:0 0 auto}
 .st-site-unregister{flex:none;display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;background:none;border:none;color:#999;cursor:pointer;border-radius:50%;padding:0;transition:background .15s ease,color .15s ease}
 .st-site-unregister:hover{background:#e5e0d0;color:#b03030}
