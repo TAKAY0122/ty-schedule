@@ -116,6 +116,18 @@ function rankOrder(r){
   const m = String(r).match(/[A-Ea-e]/);
   return m ? RANK_ORDER[m[0].toUpperCase()] : 5;
 }
+// ランク進捗タイムライン(E→D→C→B→A)。特殊ランク・未設定の場合は何も返さない(呼び出し側で空文字を弾く)。
+function renderRankTrack(currentRank){
+  const order = ['E','D','C','B','A'];
+  const m = String(currentRank||'').match(/[A-Ea-e]/);
+  if(!m) return '';
+  const cur = m[0].toUpperCase();
+  const curIdx = order.indexOf(cur);
+  return `<ul class="rank-track">${order.map((r,i) => {
+    const cls = i < curIdx ? 'prev' : i === curIdx ? 'current' : '';
+    return `<li class="${cls}" data-rank="${r}">${r}</li>`;
+  }).join('')}</ul>`;
+}
 const ROLE_JP = { admin:'チーフ(管理者)', handler:'チーフ(手配者)', chief:'チーフ', member:'メンツ' };
 // ログイン中メンバー・セッション一覧で、location.hashを見やすい画面名に変換するための対応表
 const PAGE_LABELS = {
@@ -1085,6 +1097,13 @@ document.addEventListener('click', (e) => {
      && !(homeNotifBtn && homeNotifBtn.contains(e.target))){
     dd.innerHTML = '';
   }
+});
+// ツールチップ(.tt)はCSSのhoverだけで動くが、スマホはhoverが無いためタップでも開閉できるようにする。
+// .ttは各ページの再描画のたびに増減するため、個別に配線せず全画面共通のイベント委譲で処理する。
+document.addEventListener('click', (e) => {
+  const tt = e.target.closest ? e.target.closest('.tt') : null;
+  document.querySelectorAll('.tt.tt-open').forEach(o => { if(o !== tt) o.classList.remove('tt-open'); });
+  if(tt){ e.stopPropagation(); tt.classList.toggle('tt-open'); }
 });
 
 // ホーム画面へ移動する。location.hash の代入は、値が変化する場合のみ hashchange イベントを
@@ -2302,7 +2321,7 @@ async function pageSchedule(app, hash){
       const mSites=[];
       for(const e of list){
         sumH+=e.hours; sumOT+=e.overtime; sumPay+=e.pay;
-        const rk = (LV[ME.role]>=1 ? (rookieMap[date+'|'+e.site]||[]) : []).map(n=>`<span class="rookie-badge">${icon('badge',{size:'10px'})}${h(n)}</span>`).join('');
+        const rk = (LV[ME.role]>=1 ? (rookieMap[date+'|'+e.site]||[]) : []).map(n=>`<span class="tt" data-tip="新人報告で、この現場に来る予定と共有されている人です"><span class="rookie-badge">${icon('badge',{size:'10px'})}${h(n)}</span></span>`).join('');
         sites.push(`<span class="site-cell${longCls(e.site,10)}" data-date="${date}" data-site="${h(e.site)}" title="タップで同じ現場のメンバーを表示">${h(e.site)}${rk}</span>${canRecord?` <span class="rec-btn" data-date="${date}" data-site="${h(e.site)}" title="現場記録を記入${e.breakShort?'(休憩時間が目安に届いていません)':''}">${icon('fileText',{size:'12px'})}${e.breakShort?icon('clockWarn',{size:'12px'}):''}</span>`:''}`);
         venues.push(`<span class="venue-cell${longCls(e.venue,12)}" data-venue="${h(e.venue)}" title="タップでGoogleマップ${(e.load_end||e.show_end)?` ／ 搬入終了${h(e.load_end)||'—'} ／ 終演${h(e.show_end)||'—'}`:''}">${h(e.venue)}</span>${(e.load_end||e.show_end)?`<span class="loadshow-tag" title="搬入終了${h(e.load_end)||'—'} ／ 終演${h(e.show_end)||'—'}">${icon('clock',{size:'12px'})}</span>`:''}`);
         dutys.push(e.duty?h(e.duty):'<span class="muted">—</span>');
@@ -4346,7 +4365,7 @@ async function pageMembers(app){
   };
 
   app.innerHTML = `
-  <h2>メンバー一覧 <span class="ka-badge ka-${st.tab==='1課'?'1':'2'}">${st.tab}</span></h2>
+  <h2>メンバー一覧 <span class="tt" data-tip="現在絞り込み中の課"><span class="ka-badge ka-${st.tab==='1課'?'1':'2'}">${st.tab}</span></span></h2>
   <div class="card">
     <div class="sticky-filters">
       <div class="ka-tabs">
@@ -5973,6 +5992,7 @@ async function pageMemberSummarySearch(app){
 function yearSummaryCardsHtml(data, notesData, canPay){
   const monthShort = ym => ym.slice(5,7) + '月' + (ym.slice(5,7)==='12'||ym.slice(5,7)==='01'?`(${ym.slice(0,4)})`:'');
   const maxHours = Math.max(1, ...data.months.map(m=>m.hours));
+  const rankTrack = data.target ? renderRankTrack(data.target.rank) : '';
   return `
   <div class="card" style="margin-bottom:14px">
     <div class="row" style="align-items:center;justify-content:center;gap:14px">
@@ -5980,6 +6000,7 @@ function yearSummaryCardsHtml(data, notesData, canPay){
       <b style="font-size:15px">${h(data.yearLabel)}</b>
       <button class="btn ghost sm" id="ys-next">次年度 ${icon('arrowRight',{size:'13px'})}</button>
     </div>
+    ${rankTrack ? `<div class="muted" style="font-size:11px;text-align:center;margin-top:10px">現在のランク進捗</div>${rankTrack}` : ''}
   </div>
 
   <div class="card" style="margin-bottom:14px">
@@ -6030,17 +6051,19 @@ function yearSummaryCardsHtml(data, notesData, canPay){
     <div class="muted" style="font-size:11.5px;margin-bottom:10px">自由に記入できます。誰が書いたかは全員に表示されます。</div>
     <textarea id="ys-note-input" rows="3" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;font-size:13px" placeholder="気づいたこと・申し送り事項などを記入…"></textarea>
     <div class="row" style="margin-top:8px"><button class="btn gold sm" id="ys-note-add">${icon('plus',{size:'13px'})} 追加する</button></div>
-    <div style="margin-top:14px;display:flex;flex-direction:column;gap:10px">
-      ${notesData.notes.map(n=>`<div style="padding:10px 12px;background:#faf9f6;border:1px solid var(--line);border-radius:9px">
-        <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:4px">
-          <b style="font-size:12.5px">${h(n.author_name||'(不明)')}</b>
-          <span class="row" style="gap:8px;align-items:center">
-            <span class="muted" style="font-size:11px">${h(n.ts)}</span>
-            ${(n.author_id===ME.id || ME.role==='admin') ? `<button class="btn ghost xs ys-note-del" data-id="${n.id}">${icon('trash',{size:'11px'})}</button>` : ''}
-          </span>
-        </div>
-        <div style="font-size:13px;white-space:pre-wrap;word-break:break-word">${h(n.content)}</div>
-      </div>`).join('') || '<div class="muted" style="text-align:center;padding:14px 0">まだ記入はありません</div>'}
+    <div style="margin-top:14px">
+      ${notesData.notes.map((n,i)=>{
+        const colorCls = ['','pink','blue'][i%3];
+        const long = (n.content||'').length > 140;
+        return `<div class="fusen ${colorCls}">
+          <div class="fusen-meta row" style="justify-content:space-between;align-items:center">
+            <span>${h(n.author_name||'(不明)')} ・ ${h(n.ts)}</span>
+            ${(n.author_id===ME.id || ME.role==='admin') ? `<button class="btn ghost xs ys-note-del" data-id="${n.id}" style="display:inline-flex;width:auto;flex:none">${icon('trash',{size:'11px'})}</button>` : ''}
+          </div>
+          <div class="fusen-body${long?' fusen-clamp':''}">${h(n.content)}</div>
+          ${long ? `<span class="fusen-more">続きを読む</span>` : ''}
+        </div>`;
+      }).join('') || '<div class="muted" style="text-align:center;padding:14px 0">まだ記入はありません</div>'}
     </div>
   </div>`;
 }
@@ -6072,6 +6095,12 @@ function wireYearSummaryCards(uid, onYearDelta, onRerender){
         onRerender();
       }catch(e){ popup(e.message,'error'); }
     });
+  });
+  document.querySelectorAll('.fusen-more').forEach(el => el.onclick = () => {
+    const body = el.previousElementSibling;
+    const opening = body.classList.contains('fusen-clamp');
+    body.classList.toggle('fusen-clamp');
+    el.textContent = opening ? '閉じる' : '続きを読む';
   });
 }
 
@@ -6246,7 +6275,7 @@ async function pageSchedSources(app, hash){
       <label>管理者へ通知</label>
       <label style="font-weight:400;display:flex;align-items:center;gap:8px"><input type="checkbox" id="ss-new-notify" checked style="width:auto"> 反映があった時に通知する</label>
       <label>担当手配者未設定の人</label>
-      <label style="font-weight:400;display:flex;align-items:center;gap:8px"><input type="checkbox" id="ss-new-exclude-unmanaged" checked style="width:auto"> このシートからは取り込まない(チーフ手配は別シートを優先する場合)</label>
+      <div style="font-weight:400;display:flex;align-items:center;gap:8px"><label class="ios-toggle"><input type="checkbox" id="ss-new-exclude-unmanaged" checked><span class="ios-toggle-track"></span></label> このシートからは取り込まない(チーフ手配は別シートを優先する場合)</div>
     </div>
     <div class="row" style="margin-top:12px;gap:8px;align-items:center">
       <button class="btn gold sm" id="ss-add">追加する</button>
@@ -6299,7 +6328,7 @@ async function pageSchedSources(app, hash){
         <label>管理者へ通知</label>
         <label style="font-weight:400;display:flex;align-items:center;gap:8px"><input type="checkbox" class="ss-e-notify" data-id="${s.id}" ${s.notifyAdmin?'checked':''} style="width:auto"> 反映があった時に通知する</label>
         <label>担当手配者未設定の人</label>
-        <label style="font-weight:400;display:flex;align-items:center;gap:8px"><input type="checkbox" class="ss-e-exclude-unmanaged" data-id="${s.id}" ${s.excludeUnmanaged?'checked':''} style="width:auto"> このシートからは取り込まない(チーフ手配は別シートを優先する場合)</label>
+        <div style="font-weight:400;display:flex;align-items:center;gap:8px"><label class="ios-toggle"><input type="checkbox" class="ss-e-exclude-unmanaged" data-id="${s.id}" ${s.excludeUnmanaged?'checked':''}><span class="ios-toggle-track"></span></label> このシートからは取り込まない(チーフ手配は別シートを優先する場合)</div>
       </div>
       <div class="row" style="margin-top:10px"><button class="btn gold sm ss-save" data-id="${s.id}">保存する</button></div>
     </div>
