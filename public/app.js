@@ -6943,7 +6943,7 @@ async function pageDaicho(app){
           </tr>
           ${filtered.map(it=>`<tr>
             <td><input type="checkbox" class="dc-check" data-id="${it.id}" ${selected.has(it.id)?'checked':''}></td>
-            <td style="white-space:nowrap;font-weight:600">${h(it.file_name||'(名称不明)')}</td>
+            <td style="font-weight:600;max-width:320px">${h(it.file_name||'(名称不明)')}</td>
             <td style="white-space:nowrap">${h(it.ts)}</td>
             <td style="white-space:nowrap">${h(it.importer_name||'—')}</td>
             <td>${it.applied!=null?it.applied+'件':'—'}</td>
