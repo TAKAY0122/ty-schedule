@@ -2797,14 +2797,25 @@ async function api(req, env, url) {
     try {
       const r = await runDaichoReload(env, targetUrls, { updateRemaining: true, checkAbsent, sourceLabel: '台帳手動再取り込み' });
       const remainRaw = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
-      // 手動で今すぐ取り込んだ場合、同じ内容がその夜また自動的に取り込まれて二重に処理される
-      // (通知が2回来る、differenceの検出が乱れる等)のを避けるため、深夜自動実行の「本日実行済み」
-      // フラグも合わせて更新しておく。これにより、その夜のcronDaichoReloadは通常通りスキップされる。
-      await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_run',?)").bind(jstDate()).run();
+      // 手配担当者向けの管理者ダッシュボード「システム状態」が古い結果のまま表示され続けないよう、
+      // 手動実行の場合も深夜自動実行(cronDaichoReload)と同じ内容をdaicho_reload_last_resultへ
+      // 保存する(以前はdaicho_reload_last_runのみ更新しており、last_resultが前回の深夜実行分の
+      // まま古くなる不具合があった)。
+      await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_result',?)").bind(
+        JSON.stringify({ ts: jstTs(), count: targetUrls.length, results: r.results, clearedAbsent: r.absentResult.clearedPeople, clearedRegistrations: r.registryResult.clearedRegistrations })
+      ).run();
+      // 時間予算切れで一部URLが未処理(incomplete)の場合は、深夜自動実行の「本日実行済み」フラグを
+      // 立てない(処理しきれなかった分をその夜のcronDaichoReloadに引き継がせるため)。
+      if (!r.incomplete) {
+        // 手動で今すぐ取り込んだ場合、同じ内容がその夜また自動的に取り込まれて二重に処理される
+        // (通知が2回来る、differenceの検出が乱れる等)のを避けるため、深夜自動実行の「本日実行済み」
+        // フラグも合わせて更新しておく。これにより、その夜のcronDaichoReloadは通常通りスキップされる。
+        await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_run',?)").bind(jstDate()).run();
+      }
       return J({
         ok: 1, okCount: r.okCount, ngCount: r.ngCount, totalApplied: r.totalApplied,
         results: r.results, clearedAbsent: r.absentResult.clearedPeople, clearedRegistrations: r.registryResult.clearedRegistrations, checkedAbsent: checkAbsent,
-        remainingCount: remainRaw.length,
+        remainingCount: remainRaw.length, incomplete: !!r.incomplete,
       });
     } catch (e) {
       return ERR('取り込み中にエラーが発生しました: ' + e.message);
@@ -5195,7 +5206,15 @@ async function api(req, env, url) {
 // opt.sourceLabel: daicho_archive に残す取込元ラベル。
 async function runDaichoReload(env, urls, opt = {}) {
   const sourceLabel = opt.sourceLabel || '台帳再取り込み';
-  if (!urls.length) return { okCount: 0, ngCount: 0, totalApplied: 0, results: [], absentResult: { clearedPeople: 0, clearedDays: 0 } };
+  if (!urls.length) return { okCount: 0, ngCount: 0, totalApplied: 0, results: [], absentResult: { clearedPeople: 0, clearedDays: 0 }, incomplete: false };
+
+  // この起動全体で使ってよい時間の目安(保険的な安全策。専用cronトリガーに分離した後は
+  // 他のcron処理を巻き込む心配は無いが、URL件数が多い日でも1回の起動が際限なく
+  // 長引かないようにする)。超過した場合は残りのURLを処理せず、incomplete=trueを返す。
+  // 呼び出し元(cronDaichoReload)はincompleteの場合、当日分の「実行済み」フラグを立てない。
+  const invocationStart = Date.now();
+  const OVERALL_BUDGET_MS = 120000;
+  let incomplete = false;
 
   const adminUser = await env.DB.prepare("SELECT id, name FROM users WHERE role='admin' LIMIT 1").first();
   const editorId = adminUser ? adminUser.id : 0;
@@ -5212,6 +5231,11 @@ async function runDaichoReload(env, urls, opt = {}) {
   }
 
   for (const rawUrl of urls) {
+    if (Date.now() - invocationStart > OVERALL_BUDGET_MS) {
+      console.log(`[runDaichoReload] time budget (${OVERALL_BUDGET_MS}ms) exceeded, deferring remaining URLs to next run`);
+      incomplete = true;
+      break;
+    }
     const meta = parseSheetUrl(rawUrl);
     if (!meta) { results.push({ url: rawUrl, ok: false, error: 'URL不正' }); }
     else {
@@ -5291,7 +5315,10 @@ async function runDaichoReload(env, urls, opt = {}) {
   let absentResult = { clearedPeople: 0, clearedDays: 0 };
   let registryResult = { clearedRegistrations: 0 };
   if (allRowsCombined.length) {
-    if (opt.checkAbsent) {
+    // incomplete(時間予算切れで一部URL未処理)の場合、allRowsCombinedは対象ファイルの一部でしか
+    // ないため、不在者判定は行わない(未処理ファイルに載っている人まで誤って休暇化してしまうため)。
+    // 残りのURLは次回の起動で処理され、その時点で全ファイル分が揃ってから不在者判定される。
+    if (opt.checkAbsent && !incomplete) {
       try { absentResult = await clearAbsentFromDaicho(env, allRowsCombined, editorId); }
       catch (e) { console.error('clearAbsentFromDaicho failed:', e); }
       try { registryResult = await clearAbsentSiteRegistry(env, allRowsCombined); }
@@ -5301,7 +5328,7 @@ async function runDaichoReload(env, urls, opt = {}) {
     catch (e) { console.error('matchRookieAndBlacklist failed:', e); }
   }
 
-  return { okCount, ngCount, totalApplied, results, absentResult, registryResult, editorId };
+  return { okCount, ngCount, totalApplied, results, absentResult, registryResult, editorId, incomplete };
 }
 
 async function cronDaichoReload(env) {
@@ -5329,6 +5356,14 @@ async function cronDaichoReload(env) {
   }
 
   const r = await runDaichoReload(env, urls, { updateRemaining: true, checkAbsent: true, sourceLabel: '台帳自動再取り込み' });
+
+  // 時間予算切れで一部URLが未処理(incomplete)の場合、「本日実行済み」フラグは立てない。
+  // import_urlsからは処理済み分だけが既に取り除かれているため、次回の起動では残りのURLだけを
+  // 対象に自動的に再開される(unregisteredな全件やり直しにはならない)。
+  if (r.incomplete) {
+    console.log('[cronDaichoReload] incomplete this run, will resume remaining URLs on next invocation');
+    return;
+  }
 
   // 全URLの取込を終えてからフラグを立てる(途中で予期せぬ例外が起きても、その日のうちに再試行できるようにするため)
   await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_run',?)").bind(today).run();
@@ -5459,6 +5494,12 @@ async function cronNotify(env, opt = {}) {
 // 「読み込み日の2日後以降」のみ反映(当日・翌日は台帳の実績取り込みに任せる)
 // 反映件数が1件以上あった場合、notify_adminが有効なら管理者へ通知する。
 async function cronScheduleSources(env) {
+  const invocationStart = Date.now();
+  // この起動全体で使ってよい時間の目安(ソースごとの28秒タイムアウトとは別に、
+  // 全ソース合計でも上限を設ける安全策)。専用cronトリガーに分離したことで他の
+  // cron処理を巻き込む心配は無くなったが、ソース数が今後増えた場合の保険として残す。
+  // 超過した場合、残りのソースはlast_runが更新されないため、次回の起動で処理される。
+  const OVERALL_BUDGET_MS = 90000;
   const now = new Date(Date.now() + 9 * 3600e3); // JST
   const nowMs = Date.now();
   // last_runが古い(または未実行=空文字)ものから優先的に処理する。
@@ -5475,6 +5516,10 @@ async function cronScheduleSources(env) {
   });
 
   for (const src of sources) {
+    if (Date.now() - invocationStart > OVERALL_BUDGET_MS) {
+      console.log(`[cronScheduleSources] time budget (${OVERALL_BUDGET_MS}ms) exceeded, deferring remaining sources to next run`);
+      break;
+    }
     try {
       let shouldRun = false;
       if (src.freq_type === 'daily') {
@@ -5566,15 +5611,20 @@ export default {
     }
     return withSecurityHeaders(resp);
   },
-  // 各cronタスクは互いに影響しないよう、それぞれ独立してtry-catchする。
-  // 台帳の深夜再取込を最優先で実行(最も重要な処理のため、他のcronが重くても確実に走らせる)。
+  // 4つのcron処理は、それぞれ専用のcronスケジュール(wrangler.toml参照)を持ち、
+  // 別々の起動(=別々のCPU時間・実行時間の予算)で実行される。以前は1本のcronの中で
+  // 順番に全部実行していたが、台帳・予定表の取込が重くなった際に1回の起動に処理が
+  // 集中し、Cloudflare側の自動リトライで数十分後にようやく完了する遅延が本番で
+  // 実際に発生したため、この構成に変更した(2026年8月)。
   async scheduled(event, env) {
     const startTs = jstTs();
-    console.log(`[scheduled] start at ${startTs}`);
-    try { await cronDaichoReload(env); } catch (e) { console.error('cronDaichoReload failed:', e); }
-    try { await cronScheduleSources(env); } catch (e) { console.error('cronScheduleSources failed:', e); }
-    try { await cronRankPromotion(env); } catch (e) { console.error('cronRankPromotion failed:', e); }
-    try { await cronNotify(env); } catch (e) { console.error('cronNotify failed:', e); }
-    console.log(`[scheduled] end (started at ${startTs})`);
+    console.log(`[scheduled] cron=${event.cron} start at ${startTs}`);
+    try {
+      if (event.cron === '0 * * * *') await cronDaichoReload(env);
+      else if (event.cron === '5 * * * *') await cronScheduleSources(env);
+      else if (event.cron === '10 * * * *') await cronRankPromotion(env);
+      else if (event.cron === '15 * * * *') await cronNotify(env);
+    } catch (e) { console.error(`[scheduled] cron=${event.cron} failed:`, e); }
+    console.log(`[scheduled] end (cron=${event.cron}, started at ${startTs})`);
   }
 };

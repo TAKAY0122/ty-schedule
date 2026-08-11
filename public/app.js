@@ -5440,15 +5440,20 @@ async function pageImport(app, hash){
           try{
             const r = await api('/daicho-reload-run-now', { method:'POST', body:{ urls: selected, checkAbsent } });
             const hasChanges = (r.results||[]).some(x => x.changes && x.changes.length);
-            msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${r.checkedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''}${r.checkedAbsent&&r.clearedRegistrations?` / 台帳に見当たらない登録現場を削除 ${r.clearedRegistrations}件`:''} / 残りの保存済みURL ${r.remainingCount}件${hasChanges?` <button class="btn ghost xs" id="dr-run-show-changes">変更内容を見る</button>`:''}<br><span class="muted" style="font-size:11px">今夜の深夜自動再取り込みは、今回の手動実行分としてスキップされます。</span><br>`
+            const skipNote = r.incomplete
+              ? '<span class="muted" style="font-size:11px">⚠ 件数が多く時間の都合で一部は今回処理できませんでした。未処理分は今夜の深夜自動再取り込みで続けて処理されます。</span><br>'
+              : '<span class="muted" style="font-size:11px">今夜の深夜自動再取り込みは、今回の手動実行分としてスキップされます。</span><br>';
+            msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${r.checkedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''}${r.checkedAbsent&&r.clearedRegistrations?` / 台帳に見当たらない登録現場を削除 ${r.clearedRegistrations}件`:''} / 残りの保存済みURL ${r.remainingCount}件${hasChanges?` <button class="btn ghost xs" id="dr-run-show-changes">変更内容を見る</button>`:''}<br>${skipNote}`
               + r.results.map(x=>`${x.ok?icon('checkCircle',{size:'12px'}):icon('xCircle',{size:'12px'})} ${h((x.url||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>');
             const showBtn2 = $('#dr-run-show-changes');
             if(showBtn2) showBtn2.onclick = () => showDaichoChanges({ ts: '今回の実行結果', results: r.results });
-            popup(`取り込みが完了しました(${r.okCount}件成功)`);
-            // 実行したURLは保存済みリストから削除済みのため、一覧からも取り除く(チェック状態を保つため
+            popup(r.incomplete ? `一部処理しました(${r.okCount}件成功、残りは今夜の自動実行で継続)` : `取り込みが完了しました(${r.okCount}件成功)`);
+            // 実際に処理できたURLだけを一覧から取り除く(incomplete時は選んだ全部が処理された
+            // わけではないため、resultsに含まれるURLだけを対象にする。チェック状態を保つため
             // 一覧全体は再構築せず、対象の行だけをDOM上から削除する)
+            const processedUrls = new Set((r.results||[]).map(x => x.url));
             box.querySelectorAll('.dr-url-chk').forEach(chk => {
-              if(selected.includes(chk.value)){
+              if(processedUrls.has(chk.value)){
                 const label = chk.closest('label');
                 if(label) label.remove();
               }
