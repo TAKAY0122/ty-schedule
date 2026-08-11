@@ -42,6 +42,228 @@ function has(u, key) {
   return getPerms(u).includes(key);
 }
 
+// ===== アプリ構造ビューア(#/app-structure、管理者専用)向けの静的データ =====
+// 画面一覧・APIエンドポイント一覧・テーブルの説明文は、コードから完全自動導出はできない
+// (説明文は人が書く必要があるため)。新しい画面/APIを追加したら、PERMS/FEATURE_KEYSと
+// 同様にここへも1件追記すること。権限一覧・機能公開キー・DBテーブル構造そのものは
+// PERMS/FEATURE_KEYS/実DBスキーマ(sqlite_master)から実行時に自動導出するため、
+// これらは追記不要で常に最新の状態を保つ。
+const APP_STRUCTURE_ROLES = [
+  { key: 'member', label: 'メンツ', level: 0 },
+  { key: 'chief', label: 'チーフ', level: 1 },
+  { key: 'handler', label: 'チーフ/手配者', level: 2 },
+  { key: 'admin', label: 'チーフ/管理者', level: 3 },
+];
+const APP_STRUCTURE_CRON = [
+  { name: 'cronDaichoReload', desc: '台帳再取込(深夜)' },
+  { name: 'cronScheduleSources', desc: '予定表ソース取込(深夜/ソースごとの指定時刻)' },
+  { name: 'cronRankPromotion', desc: 'ランク昇格の適用(D→C自動昇格の予約日到来分)' },
+  { name: 'cronNotify', desc: '新人報告リマインド' },
+];
+const APP_STRUCTURE_PAGES = [
+  { hash: '#/home', name: 'ホーム', role: '全員', desc: 'ログイン後の最初の画面。今日から1週間分の予定をスワイプで確認でき、未読通知・承認待ち件数、権限に応じたメニューショートカットを表示する。' },
+  { hash: '#/dashboard', name: '管理者ダッシュボード', role: 'dashboard_view権限者', desc: '定期処理(台帳再取込・予定表ソース取込・ランク昇格適用・新人報告リマインド)の最終実行日時、予定表ソースのエラー詳細等、システム状態を一覧表示する。' },
+  { hash: '#/schedule', name: 'マイスケジュール', role: '全員', desc: '月間カレンダーで自身(または閲覧権限のある他者)のスケジュールを表示する。日付タップで現場変更報告・休み希望の入力モーダルを開く。member_summary_view権限があれば画面末尾に個人の年間サマリーを表示。sites_view権限があれば「行った会場」「行った公演」ボタンと現場検索バーを表示。月見出しタップで年月を直接選択できる。' },
+  { hash: '#/edit', name: 'スケジュール入力', role: '手配者(手配モード中)', desc: '現場へのメンバー一括登録、個人ごとの詳細編集(時刻・業務・休憩等)を行う。' },
+  { hash: '#/self-reports', name: '現場変更報告の承認', role: 'handler以上', desc: 'メンツからの現場変更報告を確認し、承認(現場への変更は個別入力/休暇等は一括可)・却下する。現場への変更の承認画面では、対象日に既に登録されている現場があれば一覧から選んで入力を省略できる。' },
+  { hash: '#/availability', name: '休み希望・稼働時間の提出', role: '全員', desc: '月間カレンダー形式で、日ごとに休み希望・稼働可能時間(開始/終了/出発地点)を入力する。' },
+  { hash: '#/availability-team', name: 'チームの希望一覧', role: 'handler以上', desc: '担当メンバー(管理者は全員)の休み希望・稼働時間の提出状況を日付ごとに確認する。' },
+  { hash: '#/nominate', name: 'メンバーを希望する', role: 'chief以上', desc: '自身の現場に、希望するメンバーを選んで指名を送信する。' },
+  { hash: '#/nominations', name: 'メンバー指名の承認', role: 'handler以上', desc: '受け取った指名を確認し、承認(スケジュールへ自動追加)・見送りを行う。複数選択して一括処理可能。' },
+  { hash: '#/sites', name: '現場一覧', role: 'chief以上', desc: '月間の現場を日付ごとに一覧表示。新人共有🔰・要注意共有⚠️のマークを表示。現場詳細モーダルから、複数日にわたる現場の稼働表、同会場・同アーティストの過去/今後の公演参照を開ける。site_manage権限(手配者以上)があれば現場名・会場の一括改名、まだ配置されていない現場の手動登録・削除ができる(手配モード中)。過去/今後の公演一覧には本人の訪問済みマーカーが付く。' },
+  { hash: '#/venues', name: '会場一覧', role: 'chief以上', desc: '会場名で検索できる一覧。会場をタップするとその会場の過去/今後の現場を確認でき、現場をタップすると現場詳細が開く。「会場マニュアル」ボタンは機能公開設定で準備中。site_manage権限があれば会場名の一括改名、マニュアル有無フラグの設定、メンバーリスト(経験者一覧、並び替え対応)の閲覧、グループ分けによる絞り込みができる。' },
+  { hash: '#/artists', name: '公演一覧(準備中)', role: 'chief以上', desc: '会場一覧と同じ操作感で、現場名から本体名を集計する一覧。フリーワード検索・並び替え、過去/今後の公演参照、メンバーリストに対応。site_manage権限があれば公演名の一括改名・部分置換、グループ分け、フォルダ(複数公演を1件に集約表示)の作成ができる。実運用未確定のため機能公開設定で準備中。' },
+  { hash: '#/members', name: 'メンバー一覧', role: 'chief以上', desc: '課・班・手配担当で絞り込んだメンバー一覧。役割・担当手配者等をインライン編集できる。' },
+  { hash: '#/summary', name: '稼働サマリー', role: 'chief以上', desc: '出勤日数・連勤・時間の集計。働きすぎ・機会少・同じ現場ばかり等の統計カードをタップしてフィルタできる。' },
+  { hash: '#/member-stats', name: 'メンバー分析', role: 'member_stats_view権限者', desc: '拠点・課・班・ランクの構成を、全体・課ごとにリアルタイムで確認する。手配担当ごとの内訳も表示。' },
+  { hash: '#/day-schedule', name: 'スケジュール一覧', role: 'day_schedule_view権限者', desc: '全メンバーの1週間分の予定を、日付×人のマトリックス表(チーフ予定表のような形式)で確認する。' },
+  { hash: '#/member-summary/search', name: '個人の年間サマリー(検索)', role: 'member_summary_view権限者(手配者以上)', desc: 'メンバー一覧・氏名/登録番号検索から、年間サマリーを見たい対象を選ぶ入口画面。' },
+  { hash: '#/member-summary/:uid', name: '個人の年間サマリー', role: 'member_summary_view権限者(手配者以上)', desc: '対象メンバーの、年度単位(12月始まり〜翌年11月)の月別勤務日数・勤務時間・残業時間・給料(site_pay権限がある場合のみ)の推移とランク進捗を表示。自由記述の備考欄を時系列で確認・追記できる。' },
+  { hash: '#/report', name: '新人報告', role: '全員', desc: '新人の1次報告(印象・所感等)を提出する。' },
+  { hash: '#/reports', name: '報告一覧', role: '全員', desc: '提出済みの新人報告一覧。獲得課バッジを表示。' },
+  { hash: '#/draft', name: 'ドラフト', role: '2次チェック権限者', desc: '2次チェックで「あげる」判定された新人の一覧。' },
+  { hash: '#/blacklist', name: 'ブラックリスト', role: 'ブラックリスト管理権限者', desc: '要注意人物の登録・評価一覧。登録済みバッジを表示。' },
+  { hash: '#/report-export', name: 'スプレッドシート貼付用コピー', role: 'admin', desc: '新人報告・ブラックリストを期間指定してタブ区切りテキストでコピーする。' },
+  { hash: '#/admin', name: 'アカウント管理', role: 'account_manage権限者', desc: 'アカウントの新規作成・編集・停止・削除。複数選択して一括停止/復活が可能。全データ閲覧の「ログインセッション」には最後に見ていたページを表示する(activity_view権限)。' },
+  { hash: '#/admin-settings', name: 'システム設定', role: 'system_settings権限者', desc: 'PIN、GAS連携トークン、通知設定、時給設定、メンテナンスモード等の各種設定。' },
+  { hash: '#/role-permissions', name: '権限の一括設定', role: 'admin', desc: '役割ごとの個別権限をまとめて付与・削除する。役割が標準で持つ権限を個別に剥奪する設定にも対応。' },
+  { hash: '#/handler-status', name: 'ログイン中・編集履歴', role: 'handler_tools権限者', desc: '現在ログイン中のメンバー一覧と、スケジュール編集履歴(取り消し操作含む)を確認する。activity_view権限があれば各メンバーが今どの画面を見ているかも確認できる。' },
+  { hash: '#/import', name: 'スプレッドシート取込', role: 'import_data権限者', desc: '台帳・予定表のURLを登録して取込を実行する。台帳ExcelファイルをPCから直接アップロードして取り込むカードもある(常に手動実行、複数ファイル一括・ファイルごとの対象日指定に対応)。' },
+  { hash: '#/sched-sources', name: '予定表ソース管理', role: '設定権限者', desc: 'チーフ予定表専用フォーマットの自動取込設定。「担当手配者未設定(チーフ手配)の人はこのソースから取り込まない」オプションを持つ。' },
+  { hash: '#/daicho', name: '台帳保管', role: '台帳管理権限者', desc: '取込済みExcelファイルの保管・ダウンロード・削除(複数選択対応)。保存済みファイルを選択して再取込(再アップロード不要)する機能もある。' },
+  { hash: '#/calendar-guide', name: 'カレンダー連携のやり方', role: '全員', desc: 'Google/Outlook/Appleカレンダーへの連携手順を案内する専用ページ。' },
+  { hash: '#/legacy-import', name: '過去データ取込確認', role: 'admin', desc: '手配帳から外部で再構築した過去の給与実績(2021年6月〜2025年12月分、計55ヶ月)を、管理者だけが閲覧できるデモデータとして月単位で確認する画面。「公開する」でスケジュール本体へ反映、「削除する」で取り消せる。複数月をまとめて公開する機能もある。' },
+  { hash: '#/app-structure', name: 'アプリ構造ビューア', role: 'admin', desc: 'このアプリの画面・API・DB・権限モデルの全体構造を確認する開発者向け診断画面。DBテーブル構造は実際のD1から都度取得するため、schema.sqlと本番の食い違い(過去に実際に発生した事故)にも気づける。' },
+];
+const APP_STRUCTURE_API_GROUPS = [
+  { title: '認証・アカウント', rows: [
+    ['POST', '/login', '登録番号+パスワードでログイン。ブルートフォース対策(5回失敗で15分ロック)あり'],
+    ['POST', '/logout', 'ログアウト(セッション削除)'],
+    ['GET', '/me', 'ログイン中ユーザー情報取得(needsUpdateNotice・currentUpdateVersion含む)'],
+    ['POST', '/password', 'パスワード変更'],
+    ['POST', '/handler-mode', 'PIN照合、手配者モードへ切替'],
+    ['DELETE', '/handler-mode', '手配者モード終了'],
+    ['GET/POST', '/users', 'アカウント一覧取得・新規作成'],
+    ['PATCH', '/users/:id', 'アカウント情報の更新(役割・停止・登録番号等)。役割を下位に変更、またはアカウント停止した場合、対象者を強制ログアウトする'],
+    ['DELETE', '/users/:id', 'アカウント削除(管理者のみ)'],
+    ['POST', '/users/bulk-suspend', 'アカウントの一括停止/復活'],
+    ['GET/PUT', '/users/:id/perms', '個別権限(追加extraPerms・剥奪revokedPerms)の取得・更新'],
+    ['GET/PUT', '/role-perms/:role', 'ロール単位の一括権限設定(追加perms・剥奪revokedPerms)'],
+    ['POST', '/users/:id/resetpw', 'パスワードの初期化'],
+    ['POST', '/users/:id/assess', '査定によるランク変更(C→B/C→A/B→A、即時反映・当月給与も再計算)'],
+    ['GET', '/users/:id/rank-history', 'ランク変更履歴の取得(自動昇格・査定・手動変更)'],
+  ]},
+  { title: 'スケジュール', rows: [
+    ['GET', '/schedule', '指定ユーザー・月のスケジュール取得(休憩不足フラグ等も付与、権限により給与情報をマスク)'],
+    ['PUT', '/schedule', '1人分のスケジュール保存(手配モード必須)'],
+    ['PUT', '/schedule-bulk', '複数人への一括登録'],
+    ['PUT', '/site-edit', '既存の現場登録メンバーの一括編集'],
+    ['PUT', '/schedule-plan', '育成計画の記入(記入時に本人へ通知)'],
+    ['POST', '/schedule-self-report', '本人による現場変更報告(役割により即時反映/承認待ちに分岐)'],
+    ['GET', '/self-reports', '承認待ち報告の一覧取得(handler以上)'],
+    ['POST', '/self-reports/:id/approve', '承認(現場への変更は詳細入力必須)、本人へ通知'],
+    ['POST', '/self-reports/:id/reject', '見送り、本人へ通知'],
+    ['POST', '/self-reports/bulk-decide', '複数報告の一括承認/却下(現場への変更は対象外)'],
+  ]},
+  { title: '休み希望・メンバー指名', rows: [
+    ['GET/PUT/DELETE', '/availability', '休み希望・稼働可能時間の取得・保存・削除(本人)'],
+    ['GET', '/availability/team', '担当メンバーの希望一覧取得(handler以上)'],
+    ['POST', '/site-nominations', 'メンバー指名の送信(chief以上)'],
+    ['GET', '/site-nominations', '承認待ちの指名一覧取得(handler以上)'],
+    ['POST', '/site-nominations/:id/approve', '指名の承認、対象者のスケジュールに追加'],
+    ['POST', '/site-nominations/:id/reject', '指名の見送り'],
+    ['POST', '/site-nominations/bulk-decide', '複数指名の一括承認/却下'],
+  ]},
+  { title: '現場・記録・サマリー', rows: [
+    ['GET', '/sites', '月間の現場一覧(新人共有・要注意共有マーク付き。実績が無く手動登録のみの現場も未配置として合わせて返す)'],
+    ['GET', '/site-members', '指定現場・日のメンバー一覧({list,venue}形式。実績0件の場合はvenueに手動登録側の会場を返す)'],
+    ['GET/PUT', '/site-record', '個人の現場記録(配置・休憩・自由記入)の取得・保存'],
+    ['GET', '/site-record-breaks', '指定現場・日の全員分の休憩合計(チーフ以上)'],
+    ['GET', '/site-roster', '複数日現場の稼働表。同じ現場(または会場)が連続する日程を自動判定し、その期間の人だけを日付×人のマトリックス形式で返す(チーフ以上)'],
+    ['GET', '/site-history', '過去/今後の公演一覧(チーフ以上)。currentフィールドで現在閲覧中の現場自体も返す。過去は現場名・会場名の完全一致のみ、今後は同会場・同アーティストのどちらか一致で結合。各行にvisitedを付与'],
+    ['GET', '/venues', '会場名の一覧(使用回数・使用日数・最初/最後に使った日付・hasManual。チーフ以上)'],
+    ['GET', '/venue-history', '指定した会場の現場一覧を今日を境に過去/今後に分けて返す(チーフ以上)。hasManual・visitedも返す'],
+    ['POST', '/venues/bulk-rename', 'チェックした複数の会場名をまとめて統一名称に変更(手配者以上)。site_registry.venue・venue_manuals・site_group_membersも引き継ぐ'],
+    ['POST', '/venues/manual-flag', '会場マニュアルの有無フラグを設定(手配者以上)'],
+    ['GET', '/venue-members', '指定した会場を経験したことのあるメンバー一覧(チーフ以上)。sortパラメータでcnt/recent/rankに切替可能。停止中アカウントも含む'],
+    ['GET', '/member-venues', '指定したメンバーが行ったことのある会場一覧(使用回数・使用日数・最終日。チーフ以上)'],
+    ['GET/POST', '/site-groups', '会場・公演のグループ一覧取得・新規作成(kindでvenue/artistを指定)。GETはチーフ以上、POSTは手配者以上'],
+    ['PUT/DELETE', '/site-groups/:id', 'グループ名・所属メンバーの更新、グループ自体の削除(手配者以上)'],
+    ['GET', '/artists', '公演一覧(準備中、チーフ以上)。現場名から【セクション等】を除いた本体名で集計。グループ・フォルダ所属情報を付与'],
+    ['GET', '/artist-history', '指定した公演の現場一覧を過去/今後に分けて返す(準備中、チーフ以上)。対象は本体名一致の表記ゆれ全て。visitedを付与'],
+    ['GET', '/artist-members', '指定した公演を経験したことのあるメンバー一覧(準備中、チーフ以上)。sortパラメータ対応'],
+    ['GET', '/member-artists', '指定したメンバーが行ったことのある公演一覧(準備中、チーフ以上)'],
+    ['GET', '/member-site-log', '指定したメンバーの現場ログ(1稼働=1行、日付降順。チーフ以上)。集計はせず生ログを返す'],
+    ['POST', '/artists/bulk-rename', 'チェックした複数の公演名をまとめて統一名称に変更(準備中、手配者以上)。【セクション等】表記は維持'],
+    ['POST', '/artists/find-replace', '公演名(本体部分)に含まれる文字列の一部だけを一括置換(準備中、手配者以上)。body.preview=trueでプレビューのみ。body.artistsで対象を絞り込み可(フォルダ内実行時の誤爆防止)'],
+    ['GET/POST', '/artist-folders', '公演フォルダの一覧取得・新規作成(準備中)。GETはチーフ以上、POSTは手配者以上'],
+    ['PUT/DELETE', '/artist-folders/:id', 'フォルダ名・所属公演の更新、フォルダ自体の削除(手配者以上)'],
+    ['POST', '/sites/bulk-rename', 'チェックした複数の(日付,現場名,会場)をまとめて統一名称に変更(手配者以上)'],
+    ['POST', '/sites/register', 'まだ誰も配置されていない現場の情報を先に登録し現場一覧に表示させる(手配者以上・手配モード中のみ)'],
+    ['DELETE', '/sites/register/:id', '手動登録した現場情報の削除(手配者以上・手配モード中のみ)。台帳取込時、条件を満たせば自動でも削除'],
+    ['GET', '/summary', '月間稼働サマリー(同じ現場ばかり検知含む)'],
+    ['GET', '/member-year-summary', '個人の年間稼働サマリー(12月始まり〜翌年11月、月別勤務日数・時間・給料。member_summary_view権限)'],
+    ['GET/POST', '/member-notes', '個人の備考欄の取得・追加(自由記述、時系列。member_summary_view権限)'],
+    ['DELETE', '/member-notes/:id', '備考欄1件の削除(記入者本人または管理者のみ)'],
+  ]},
+  { title: 'データ連携', rows: [
+    ['POST', '/import-from-url', '台帳スプレッドシートの手動取込。新人報告/ブラックリストとの氏名照合も実行'],
+    ['GET/POST', '/import-urls', '保存済み取込先URLの取得・保存'],
+    ['GET/PUT/POST', '/sched-sources', '予定表ソースの一覧・追加・個別実行(excludeUnmanagedオプション対応。上書き判定は日単位のスプレッドシート差分ベース)'],
+    ['POST', '/import-schedule', 'GAS連携による取込(トークン認証)'],
+    ['GET', '/daicho', '台帳保管一覧'],
+    ['GET', '/daicho/:id/download', '台帳原本ダウンロード'],
+    ['POST', '/daicho/bulk-download', '台帳の一括ダウンロード'],
+    ['POST', '/daicho/bulk-delete', '台帳の一括削除'],
+    ['POST', '/import-excel-daicho', '台帳ExcelファイルをPCから直接アップロードして取込(複数ファイル一括、ファイルごとに対象日指定可。常に手動実行)'],
+    ['POST', '/daicho/reimport-from-archive', '台帳保管に保存済みのファイルから再取込(再アップロード不要。常に手動実行)'],
+  ]},
+  { title: '新人報告・ブラックリスト', rows: [
+    ['POST/GET', '/reports', '新人報告の提出・一覧取得(acquired_ka含む)'],
+    ['PATCH', '/reports/:id', '2次チェックの記入'],
+    ['DELETE', '/reports/:id', '新人報告の削除(手配者以上)'],
+    ['GET/POST', '/blacklist', 'ブラックリストの取得・登録(matched_ka含む)'],
+  ]},
+  { title: 'システム設定・通知', rows: [
+    ['GET/PUT', '/wage-rates', '時給テーブルの取得・更新(PUTは新しいeffective_fromの追加も可)'],
+    ['POST', '/wage-rates/delete', '時給改定(effective_from)をまるごと削除'],
+    ['GET/PUT', '/notify-settings', '新人報告リマインドの設定'],
+    ['GET/PUT', '/lock-settings', '給与確定ロックの設定'],
+    ['GET/POST', '/settings/maintenance', 'メンテナンスモードの状態取得・切替(切替時に対象者を強制ログアウト)'],
+    ['GET/POST', '/settings/feature-status', '画面ごとの公開状態(公開中/準備中/メンテナンス中)の取得・切替(管理者)'],
+    ['GET', '/notifications', 'アプリ内通知一覧'],
+    ['POST', '/notifications/:id/read', '個別既読化'],
+    ['POST/DELETE', '/push-token', 'プッシュ通知トークンの登録・削除'],
+    ['GET', '/online', 'ログイン中メンバー一覧。activity_view権限があれば各メンバーの閲覧中ページ(last_page)も含む'],
+    ['GET', '/history', 'スケジュール編集履歴(uid指定で個人分のみ取得可、上限500件)'],
+    ['POST', '/history/:id/undo', '編集履歴1件の取り消し'],
+    ['POST', '/history/undo-batch', '編集履歴の複数一括取り消し(新しい順に処理)'],
+    ['POST', '/history/undo-by-ts', '同じ取込実行(タイムスタンプ)で反映された変更をまとめて取り消し'],
+    ['GET', '/admin/data', '全テーブルの生データ閲覧(管理者)。sessionsテーブルにはlast_pageを含む'],
+    ['GET', '/legacy-import/months', '過去データ取込確認の月別集計(管理者)'],
+    ['GET', '/legacy-import/months/:ym', '過去データ取込確認の月別明細(管理者)'],
+    ['POST', '/legacy-import/months/:ym/approve', '過去データを公開(管理者)。名簿と一致した行のみ対象、既存データがある人はスキップ'],
+    ['POST', '/legacy-import/months/:ym/reject', '過去データを削除(管理者)。未確認(pending)の行のみ'],
+    ['POST', '/legacy-import/months/bulk-approve', '複数月をまとめて公開(管理者)'],
+    ['GET/POST/PUT/DELETE', '/non-site-keywords', '非現場キーワードの取得・追加・変更・削除'],
+    ['GET/POST/PUT/DELETE', '/report-type-options', '現場変更報告の選択肢の取得・追加・変更・削除'],
+    ['POST', '/update-notice/seen', 'アップデートのお知らせを既読にする'],
+    ['GET', '/app-structure', 'このアプリ自身の構造データ取得(管理者専用、#/app-structure用)'],
+  ]},
+  { title: 'Googleカレンダー連携', rows: [
+    ['GET/POST', '/calendar-token', 'カレンダー購読トークンの取得・発行'],
+    ['POST', '/calendar-token/regenerate', 'カレンダー購読トークンの再発行(旧URL無効化)'],
+    ['GET', '/calendar/:token.ics', 'iCalendar形式のスケジュール配信(認証不要・トークンで本人確認)'],
+  ]},
+];
+// テーブル名 → 用途の一言説明(schema.sql冒頭コメントの要約。列自体はsqlite_masterから自動取得するため
+// ここでは概要のみを持たせる。新しいテーブルを追加したら1行追記する)
+const APP_STRUCTURE_TABLE_COMMENTS = {
+  users: 'ユーザーアカウント(基本情報・権限・ランク・研修状況)',
+  sessions: 'ログインセッション(手配モード状態・最終アクセス・閲覧中ページ)',
+  schedule: 'スケジュール本体。1日に複数現場を持てる(id採番+slotで同日内の順番)',
+  dev_plan: '育成計画(人×日単位、現場が複数でも1日1つ)',
+  member_notes: 'メンバーごとの備考欄(自由記述、時系列、記入者付き)',
+  schedule_history: 'スケジュール編集履歴(取り消し機能の元データ)',
+  reports: '新人報告(1次所感・2次チェック)',
+  blacklist: 'ブラックリスト(要注意人物の登録・評価)',
+  notifications: 'アプリ内通知',
+  push_tokens: 'プッシュ通知用デバイストークン(アプリ版・ブラウザ版共通管理)',
+  self_reports: '本人による現場変更の報告(メンツは承認必要、チーフ以上は即時反映)',
+  settings: '汎用キー・バリュー設定',
+  wage_rates: '時給テーブル(効力発生日つき・編集可)',
+  duty_map: '業務名→料金区分の対応表(編集可)',
+  daicho_archive: '取り込んだ台帳(元Excel)の保管インデックス。実ファイルはR2、ここはメタ情報のみ',
+  import_snapshots: '予定表自動取込の前回内容スナップショット(差分判定用)',
+  sched_sources: '予定表の自動取り込みソース管理',
+  site_records: '現場記録(個人が自分の現場ごとに残す配置・休憩・自由記入)',
+  option_lists: 'スタッフ登録時のプルダウン選択肢(所属課・班)',
+  non_site_keywords: '台帳・予定表取込時に「現場名」ではなく特別な状態として扱う文言(×・休暇・1日OK等)',
+  report_type_options: '現場変更報告モーダルの変更内容プルダウン選択肢',
+  availability_requests: '休み希望・稼働可能時間の提出',
+  site_nominations: 'チーフ以上による現場メンバー指名',
+  rookie_site_matches: '台帳取込時、新人報告/ブラックリスト対象者と同姓同名が現場に入っていた検知記録',
+  site_registry: '現場一覧に未配置のまま表示するための現場情報の手動登録',
+  venue_manuals: '会場マニュアルの有無フラグ(本文は未実装)',
+  login_attempts: 'ログイン失敗回数の記録(ブルートフォース対策)',
+  rank_history: 'ランク変更履歴(自動昇格・査定・手動変更)',
+  legacy_import_shifts: '過去データ(手配帳から外部で再構築した給与実績)の取込ステージング',
+  site_groups: '会場一覧・公演一覧共通のグループ機能',
+  site_group_members: 'site_groupsの所属メンバー(会場名/公演名)',
+  artist_folders: '公演一覧限定のフォルダ機能(複数公演を1件に集約表示)',
+  artist_folder_members: 'artist_foldersの所属公演',
+};
+// ファイル構成・依存関係(#/app-structureの「ファイル構成」タブ用。静的な説明文)
+const APP_STRUCTURE_FILES = [
+  { name: 'public/index.html', role: 'エントリーポイント', desc: 'app.js・style.cssを読み込むだけの最小限のHTML。画面自体はapp.jsが全て動的に生成する。', dependsOn: [] },
+  { name: 'public/app.js', role: 'フロントエンド本体', desc: '全画面(page関数)・全モーダル(open関数)・ルーティング(location.hashの監視)を含む単一ファイル。共通api()関数経由でsrc/index.jsの全APIを呼び出す。PERM_BASE_LV/FEATURE_LABELSはsrc/index.jsのPERMS/FEATURE_KEYSと対になっており、両方に追記しないと権限判定がフロント/バックエンドで食い違う。', dependsOn: ['public/index.html', 'public/style.css'] },
+  { name: 'public/style.css', role: '見た目(CSS)', desc: 'app.jsが生成するHTML全体のスタイル。ビルド工程が無いため、app.jsのクラス名と1対1で対応させる必要がある。', dependsOn: [] },
+  { name: 'src/index.js', role: 'バックエンド本体(Cloudflare Worker)', desc: 'fetch()ハンドラでAPIルーティングと静的ファイル配信、scheduled()ハンドラで4種類のcron処理を行う単一ファイル。D1(env.DB)・R2(ファイル保管用バケット)にアクセスする。', dependsOn: [] },
+  { name: 'schema.sql', role: '新規DB構築用スキーマ', desc: 'D1データベースを新規構築する際に一度だけ流し込む、33テーブル全ての完全なCREATE TABLE定義。デプロイのたびに自動実行されるものではない(本番は既に構築済み)。', dependsOn: [] },
+  { name: 'migrate-*.sql', role: '既存環境向けマイグレーション', desc: '機能追加のたびに作成する差分SQL(ALTER TABLE等)。コードのデプロイより先に本番D1へ手動実行する運用。1機能=1ファイル。', dependsOn: ['schema.sql'] },
+  { name: 'wrangler.toml', role: 'Cloudflare設定', desc: 'D1(schedule-db)・R2バインディング、Cron実行スケジュール(毎時0分)を定義する。src/index.jsのenv.DB/env経由のアクセス先を決めている。', dependsOn: [] },
+];
+
 async function getSetting(env, key, def) {
   const r = await env.DB.prepare('SELECT value FROM settings WHERE key=?').bind(key).first().catch(() => null);
   return r ? r.value : def;
@@ -127,7 +349,7 @@ async function pbkdf2(pw, salt) {
 // アプリの機能アップデートのお知らせに使うバージョン番号。新しいお知らせを追加したら値を増やし、
 // updateNoticeContent()にも内容を追記する。既にパスワードを変更済み(must_change=0)の既存ユーザーが
 // ログインした際、seen_update_version がこれより小さければ「アップデートのお知らせ」を表示する。
-const CURRENT_UPDATE_VERSION = 10;
+const CURRENT_UPDATE_VERSION = 11;
 
 const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0, must_change: u.must_change ? 1 : 0, extra_perms: getPerms(u), revoked_perms: getRevokedPerms(u), notify_rookie: u.notify_rookie === null || u.notify_rookie === undefined ? null : (u.notify_rookie ? 1 : 0), manner_done: u.manner_done ? 1 : 0, team2_done: u.team2_done ? 1 : 0, su_done: u.su_done ? 1 : 0, graduate_flag: u.graduate_flag ? 1 : 0, promotion_pending_date: u.promotion_pending_date || null, promotion_pending_rank: u.promotion_pending_rank || null, needsUpdateNotice: !u.must_change && (u.seen_update_version || 0) < CURRENT_UPDATE_VERSION, seenUpdateVersion: u.seen_update_version || 0, currentUpdateVersion: CURRENT_UPDATE_VERSION });
 
@@ -2242,7 +2464,7 @@ async function api(req, env, url) {
     'report', 'reports', 'draft', 'blacklist', 'report-export',
     'admin', 'admin-settings', 'role-permissions', 'handler-status',
     'import', 'sched-sources', 'daicho', 'member-summary',
-    'venues', 'venue-manual', 'legacy-import', 'artists',
+    'venues', 'venue-manual', 'legacy-import', 'artists', 'app-structure',
   ];
   if (method === 'GET' && path === '/settings/feature-status') {
     const status = {};
@@ -4781,6 +5003,66 @@ async function api(req, env, url) {
     const sql = Q[url.searchParams.get('table')];
     if (!sql) return ERR('不正なテーブル名です');
     return J((await env.DB.prepare(sql).all()).results);
+  }
+
+  // ---- アプリ構造ビューア(#/app-structure、管理者専用) ----
+  // 権限一覧・機能公開キーはPERMS/FEATURE_KEYSから、DBテーブル構造は実際のD1(sqlite_master)から
+  // 都度取得するため、コード変更に自動追従する(schema.sqlとの食い違いにも気づける)。
+  // 画面一覧・APIエンドポイント一覧・ファイル構成の説明文はAPP_STRUCTURE_*の静的データを返す。
+  if (method === 'GET' && path === '/app-structure') {
+    if (me.role !== 'admin') return ERR('ページが見つかりません', 404);
+    const tableRows = (await env.DB.prepare(
+      "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\' ORDER BY name"
+    ).all()).results;
+    const parseCreateTableSql = (sqlText) => {
+      const openIdx = sqlText.indexOf('(');
+      const closeIdx = sqlText.lastIndexOf(')');
+      if (openIdx < 0 || closeIdx < 0) return [];
+      const body = sqlText.slice(openIdx + 1, closeIdx);
+      const cols = [];
+      for (const raw of body.split(/\r?\n/)) {
+        const t = raw.trim();
+        if (!t) continue;
+        if (/^(UNIQUE|PRIMARY KEY)\s*\(/i.test(t)) { cols.push({ name: null, type: 'CONSTRAINT', note: t.replace(/,$/, '') }); continue; }
+        const cm = t.match(/^(\w+)\s+([A-Z]+(?:\([^)]*\))?)([\s\S]*)$/);
+        if (!cm) continue;
+        let rest = cm[3], note = '';
+        const cIdx = rest.indexOf('--');
+        if (cIdx >= 0) { note = rest.slice(cIdx + 2).trim(); rest = rest.slice(0, cIdx); }
+        rest = rest.trim().replace(/,$/, '').trim();
+        cols.push({ name: cm[1], type: cm[2] + (rest ? ' ' + rest : ''), note });
+      }
+      return cols;
+    };
+    const tables = tableRows.map(t => ({
+      name: t.name,
+      comment: APP_STRUCTURE_TABLE_COMMENTS[t.name] || '',
+      columns: parseCreateTableSql(t.sql || ''),
+    }));
+    const permissions = Object.entries(PERMS).map(([key, p]) => ({ key, label: p.label, baseLv: p.baseLv }));
+    const apiEndpointCount = APP_STRUCTURE_API_GROUPS.reduce((n, g) => n + g.rows.length, 0);
+    const jst = new Date(Date.now() + 9 * 3600 * 1000);
+    return J({
+      meta: {
+        title: 'RB事業2課 スケジュール管理システム',
+        generated: jst.toISOString().slice(0, 10),
+        stack: ['Cloudflare Workers', 'D1 (SQLite互換)', 'R2', 'Vanilla JavaScript(ビルド不要・単一ファイル構成)'],
+        files: {
+          backend: `src/index.js (API・cron処理を含む単一ファイル)`,
+          frontend: `public/app.js (全画面・全モーダルを含む単一ファイル)`,
+          css: `public/style.css`,
+        },
+      },
+      roles: APP_STRUCTURE_ROLES,
+      permissions,
+      featureKeys: FEATURE_KEYS,
+      cronJobs: APP_STRUCTURE_CRON,
+      pages: APP_STRUCTURE_PAGES,
+      apiGroups: APP_STRUCTURE_API_GROUPS,
+      apiEndpointCount,
+      files: APP_STRUCTURE_FILES,
+      db: { tableCount: tables.length, tables },
+    });
   }
 
   // ---- 過去データ取込確認(管理者だけ閲覧可能なデモデータ。月単位でOK(公開)/NG(削除)) ----

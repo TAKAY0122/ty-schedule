@@ -74,6 +74,7 @@ const ICONS = {
   play:'<path d="M5 3l14 9-14 9V3z"/>',
   alertTriangle:'<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/>',
   inbox:'<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+  sitemap:'<circle cx="12" cy="4" r="2"/><path d="M12 6v4"/><path d="M5 14v-2a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v2"/><path d="M5 14a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/><path d="M12 14a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/><path d="M19 14a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/>',
 };
 // icon('home')のように呼び、絵文字の代わりに使える線画SVGを返す。sizeとcolorは省略可(currentColorを継承)
 function icon(name, opt={}){
@@ -139,6 +140,7 @@ const PAGE_LABELS = {
   'role-permissions':'権限の一括設定','handler-status':'ログイン中・編集履歴','import':'スプレッドシート取り込み','sched-sources':'予定表ソース管理',
   'daicho':'台帳保管','permissions':'権限の個人設定','calendar-guide':'カレンダー連携のやり方','version-history':'アップデート履歴',
   'password':'パスワード変更','login':'ログイン画面','venues':'会場一覧','legacy-import':'過去データ取込確認','artists':'公演一覧',
+  'app-structure':'アプリ構造ビューア',
 };
 function pageLabelFromHash(hash){
   if(!hash) return '';
@@ -195,6 +197,7 @@ const UPDATE_ITEMS = [
   { v:10, icon:'mapPin', title:'マイスケジュールから「行った会場」「行った公演」を確認できるように', desc:'マイスケジュール画面から「行った会場」「行った公演」ボタンを押すと、実際に行ったことのある会場・公演の一覧と回数を確認できます。会場・公演・現場の詳細画面でも、自分が行ったことのある項目に金色の丸マークが付き、検索バーで現場名・会場名・公演名・日付から探すこともできるようになりました。', show: () => LV[ME.role] >= 1 },
   { v:10, icon:'barChart', title:'マイスケジュールの下部に個人の年間サマリーを表示', desc:'個人の年間サマリーを閲覧できる方(手配担当者以上)は、マイスケジュール画面をスクロールした一番下でも、その人の年間の稼働状況・備考欄をそのまま確認できるようになりました。', show: () => LV[ME.role] >= 2 },
   { v:10, icon:'calendar', title:'マイスケジュールで表示する年月を直接選べるように', desc:'月の見出し部分をタップすると、カレンダーから年月を直接選んで一気に移動できるようになりました(◀▶ボタンでの1ヶ月ずつの移動も引き続き使えます)。', show: () => true },
+  { v:11, icon:'sitemap', title:'アプリ構造ビューアを追加', desc:'このアプリの画面・API・DB・権限モデルの全体構造を確認できる開発者向け診断画面「アプリ構造ビューア」を追加しました(管理者専用)。DBテーブルの構造は都度実際のデータベースから取得するため、常に本番の実態が反映されます。', show: () => ME.role === 'admin' },
 ];
 // 機能公開設定の対象画面。バックエンドのFEATURE_KEYSと必ず一致させる。
 // 新しい画面を追加したら、ここと src/index.js の FEATURE_KEYS の両方に追記する。
@@ -228,6 +231,7 @@ const FEATURE_LABELS = {
   'venue-manual': { icon:'bookOpen', label:'会場マニュアル' },
   'legacy-import': { icon:'inbox', label:'過去データ取込確認' },
   'artists': { icon:'megaphone', label:'公演一覧' },
+  'app-structure': { icon:'sitemap', label:'アプリ構造ビューア' },
 };
 const FEATURE_KEYS = Object.keys(FEATURE_LABELS);
 // 給与計算区分コード → 表示用の日本語ラベル(業務名対応表の表示に使う)
@@ -1174,6 +1178,7 @@ async function render(){
     else if(hash.startsWith('#/import')) await pageImport(app, hash);
     else if(hash === '#/handler-status') await pageHandlerStatus(app);
     else if(hash.startsWith('#/legacy-import')) await pageLegacyImport(app, hash);
+    else if(hash === '#/app-structure') await pageAppStructure(app);
     else if(hash === '#/self-reports') await pageSelfReports(app);
     else if(hash === '#/admin') await pageAdmin(app);
     else if(hash === '#/admin-settings') await pageAdminSettings(app);
@@ -1333,6 +1338,7 @@ function renderShell(hash){
       ...(canRolePerm ? [{ path:'#/role-permissions', icon:'shield', label:'権限の一括設定', role:'admin' }] : []),
       ...(canHandlerStatus ? [{ path:'#/handler-status', icon:'circleFilled', label:'ログイン中・編集履歴', role:'handler' }] : []),
       ...(ME.role==='admin' ? [{ path:'#/legacy-import', icon:'inbox', label:'過去データ取込確認', role:'admin' }] : []),
+      ...(ME.role==='admin' ? [{ path:'#/app-structure', icon:'sitemap', label:'アプリ構造ビューア', role:'admin' }] : []),
     ]},
     { icon:'upload', label:'スプレッド読み込み', show: showSpreadGroup, children:[
       ...(canImport ? [{ path:'#/import', icon:'download', label:'スプレッドシート取り込み', role:'handler' }] : []),
@@ -6641,6 +6647,225 @@ async function pageLegacyImportDetail(app, ym){
   if(appBtn) appBtn.onclick = () => runLegacyApprove(ym, [], () => pageLegacyImportDetail(app, ym));
   const rejBtn = $('#li-detail-reject');
   if(rejBtn) rejBtn.onclick = () => runLegacyReject(ym, [], () => goTo('#/legacy-import'));
+}
+
+// アプリ構造ビューア(管理者専用): このアプリ自身の画面・API・DB・権限モデル・ファイル構成を
+// 一覧できる開発者向け診断画面。権限一覧・機能公開キー・DBテーブルの列構成は、リクエストのたびに
+// PERMS/FEATURE_KEYS・実際のD1(sqlite_master)から取得するため、コード変更に自動追従する
+// (schema.sqlと本番の食い違いにも気づける)。画面一覧・API一覧・ファイル説明はsrc/index.jsの
+// APP_STRUCTURE_*静的データを返しているだけなので、新しい画面/APIを追加したらそちらに追記する。
+function appStructureArchSvg(){
+  const box = (x,y,w,bh,lines,cls) => `<g>
+    <rect x="${x}" y="${y}" width="${w}" height="${bh}" rx="8" class="as-arch-box ${cls||''}"/>
+    <text x="${x+w/2}" y="${y+bh/2 - (lines.length-1)*7}" text-anchor="middle" class="as-arch-text">
+      ${lines.map((l,i)=>`<tspan x="${x+w/2}" dy="${i===0?0:16}">${h(l)}</tspan>`).join('')}
+    </text>
+  </g>`;
+  const arrow = (x1,y1,x2,y2,label) => `<g>
+    <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" class="as-arch-line" marker-end="url(#as-arrow)"/>
+    ${label ? `<text x="${(x1+x2)/2}" y="${(y1+y2)/2 - 6}" text-anchor="middle" class="as-arch-line-label">${h(label)}</text>` : ''}
+  </g>`;
+  return `
+  <div class="as-svg-wrap">
+  <svg viewBox="0 0 900 400" class="as-arch-svg" role="img" aria-label="システム構成図">
+    <defs><marker id="as-arrow" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" class="as-arch-arrowhead"/></marker></defs>
+    ${arrow(240,80,340,120)}
+    ${arrow(560,150,650,120,'D1へ読み書き')}
+    ${arrow(560,190,650,230,'R2へ保存/取得')}
+    ${arrow(450,70,450,120,'毎時0分')}
+    ${arrow(240,220,340,180,'GASからPOST')}
+    ${arrow(560,180,240,300,'.ics配信')}
+    ${box(20,50,220,60,['ブラウザ','public/app.js + style.css'],'as-arch-client')}
+    ${box(340,120,220,80,['Cloudflare Worker','src/index.js (fetch/scheduled)'],'as-arch-worker')}
+    ${box(650,90,220,60,['D1: schedule-db'],'as-arch-store')}
+    ${box(650,200,220,60,['R2: 台帳ファイル保管'],'as-arch-store')}
+    ${box(340,20,220,50,['Cron trigger','wrangler.toml crons'],'as-arch-ext')}
+    ${box(20,180,220,60,['Googleスプレッドシート','(予定表ソース・台帳URL取込)'],'as-arch-ext')}
+    ${box(20,290,220,60,['Googleカレンダー等','(.ics購読フィード)'],'as-arch-ext')}
+  </svg>
+  </div>`;
+}
+function appStructureFileFlowHtml(){
+  return `<div class="as-flow">
+    <div class="as-flow-box">index.html</div><div class="as-flow-arrow">→</div>
+    <div class="as-flow-box">app.js ⇄ style.css</div><div class="as-flow-arrow">→ api() →</div>
+    <div class="as-flow-box strong">src/index.js</div><div class="as-flow-arrow">→</div>
+    <div class="as-flow-box">D1 / R2</div>
+  </div>
+  <div class="muted" style="font-size:12px;margin-top:6px">上記はリクエスト単位の実行時の関係。schema.sql・migrate-*.sql・wrangler.tomlはデプロイ作業時にのみ関わり、Workerの実行中に読み込まれるものではない。</div>`;
+}
+async function pageAppStructure(app){
+  if(ME.role !== 'admin'){ notFound(app); return; }
+  app.innerHTML = `<h2>${icon('sitemap')} アプリ構造ビューア</h2><div class="card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>`;
+  let data;
+  try{ data = await api('/app-structure'); }
+  catch(e){ app.innerHTML = `<h2>${icon('sitemap')} アプリ構造ビューア</h2><div class="card"><div class="msg err">${h(e.message)}</div></div>`; return; }
+
+  const st = PAGE_STATE.appStructure || (PAGE_STATE.appStructure = { tab:'overview', pageQ:'', apiQ:'', dbQ:'', openTables:new Set() });
+  const TABS = [
+    ['overview','概要'], ['pages','画面一覧'], ['perms','権限モデル'], ['api','API仕様'],
+    ['db','DB設計'], ['features','機能公開キー'], ['arch','ファイル構成・アーキテクチャ'],
+  ];
+
+  app.innerHTML = `
+    <h2>${icon('sitemap')} アプリ構造ビューア</h2>
+    <div class="muted" style="margin-bottom:12px">このアプリ自身の画面・API・DB・権限モデルの構造を確認できる管理者専用の開発者向け診断画面です。権限一覧・機能公開キー・DBテーブル構造は、今この瞬間の実際のコード・データベースから取得しています(取得日: ${h(data.meta.generated)})。</div>
+    <div class="as-tabs" id="as-tabs">${TABS.map(([k,l])=>`<button type="button" class="as-tab ${st.tab===k?'on':''}" data-tab="${k}">${h(l)}</button>`).join('')}</div>
+    <div id="as-panel"></div>`;
+  const panel = $('#as-panel');
+
+  function renderOverview(){
+    const m = data.meta;
+    const stats = [
+      [data.pages.length,'画面'], [data.apiEndpointCount,'APIエンドポイント'], [data.db.tableCount,'DBテーブル'],
+      [data.permissions.length,'個別権限'], [data.featureKeys.length,'機能公開キー'], [data.roles.length,'ロール階層'],
+    ];
+    panel.innerHTML = `
+      <div class="as-stat-row">${stats.map(([n,l])=>`<div class="as-stat"><div class="as-stat-num">${n}</div><div class="as-stat-lbl">${h(l)}</div></div>`).join('')}</div>
+      <div class="as-grid">
+        <div class="card"><h3>構成ファイル</h3><ul>
+          <li><b>バックエンド</b>: ${h(m.files.backend)}</li>
+          <li><b>フロントエンド</b>: ${h(m.files.frontend)}</li>
+          <li><b>スタイル</b>: ${h(m.files.css)}</li>
+        </ul></div>
+        <div class="card"><h3>技術スタック</h3><ul>${m.stack.map(s=>`<li>${h(s)}</li>`).join('')}</ul></div>
+        <div class="card"><h3>定期実行(cron)</h3><ul class="as-cron-list">${data.cronJobs.map(c=>`<li><code>${h(c.name)}</code><span>${h(c.desc)}</span></li>`).join('')}</ul></div>
+      </div>`;
+  }
+
+  function renderPages(){
+    const draw = () => {
+      const ql = st.pageQ.toLowerCase();
+      const items = data.pages.filter(p => !ql || (p.name+p.hash+p.role+p.desc).toLowerCase().includes(ql));
+      $('#as-page-count').textContent = `${items.length} / ${data.pages.length} 件`;
+      $('#as-page-list').innerHTML = items.map(p => `
+        <div class="as-page-card">
+          <div class="as-page-hh"><span class="as-page-name">${h(p.name)}</span><span class="as-hash">${h(p.hash)}</span><span class="as-role-pill">${h(p.role)}</span></div>
+          <div class="as-desc">${h(p.desc)}</div>
+        </div>`).join('') || '<p class="muted">該当する画面がありません。</p>';
+    };
+    panel.innerHTML = `
+      <div class="as-searchbar"><input type="text" id="as-page-search" placeholder="画面名・パス・説明文で検索…" value="${h(st.pageQ)}"><span class="muted" id="as-page-count"></span></div>
+      <div id="as-page-list"></div>`;
+    draw();
+    $('#as-page-search').addEventListener('input', e => { st.pageQ = e.target.value; draw(); });
+  }
+
+  function renderPerms(){
+    const roleByLv = {1:'chief以上',2:'handler以上',3:'admin以上'};
+    panel.innerHTML = `
+      <div class="card" style="margin-bottom:16px">
+        <h3>ロール階層(下から上へ包含)</h3>
+        <div class="as-role-track">${data.roles.map(r=>`<div class="as-r${r.level}">${h(r.label)}</div>`).join('')}</div>
+        <p class="muted" style="font-size:12.5px;margin-top:4px">4段階のロールに加え、ユーザーごとに個別権限(extra_perms/revoked_perms)を追加・剥奪できるハイブリッド方式。剥奪が最優先で判定される。</p>
+      </div>
+      <div class="card">
+        <h3>個別追加権限 一覧(${data.permissions.length}件)</h3>
+        <div class="as-table-scroll"><table class="list as-perm-table"><tr><th>キー</th><th>説明</th><th>基準ロール</th></tr>
+        ${data.permissions.map(p=>`<tr><td class="as-lvl${p.baseLv}"><code>${h(p.key)}</code></td><td>${h(p.label)}</td><td><span class="as-lvl-badge as-l${p.baseLv}">${h(roleByLv[p.baseLv]||p.baseLv)}</span></td></tr>`).join('')}
+        </table></div>
+      </div>`;
+  }
+
+  function methodBadges(m){ return m.split('/').map(x=>`<span class="as-method as-m-${h(x)}">${h(x)}</span>`).join(' '); }
+  function renderApi(){
+    const draw = () => {
+      const ql = st.apiQ.toLowerCase();
+      let shown = 0, html = '';
+      for(const g of data.apiGroups){
+        const rows = g.rows.filter(r => !ql || r.join(' ').toLowerCase().includes(ql));
+        if(!rows.length) continue;
+        shown += rows.length;
+        html += `<div class="as-group-title">${h(g.title)}(${rows.length}件)</div>`;
+        html += `<div class="as-table-scroll"><table class="list as-api-table"><tr><th>Method</th><th>パス</th><th>概要</th></tr>${rows.map(r=>`<tr><td>${methodBadges(r[0])}</td><td><code>${h(r[1])}</code></td><td>${h(r[2])}</td></tr>`).join('')}</table></div>`;
+      }
+      $('#as-api-count').textContent = `${shown} / ${data.apiEndpointCount} 件`;
+      $('#as-api-groups').innerHTML = html || '<p class="muted">該当するAPIがありません。</p>';
+    };
+    panel.innerHTML = `
+      <div class="as-searchbar"><input type="text" id="as-api-search" placeholder="パス・メソッド・説明文で検索…" value="${h(st.apiQ)}"><span class="muted" id="as-api-count"></span></div>
+      <div id="as-api-groups"></div>`;
+    draw();
+    $('#as-api-search').addEventListener('input', e => { st.apiQ = e.target.value; draw(); });
+  }
+
+  function renderDb(){
+    const draw = () => {
+      const ql = st.dbQ.toLowerCase();
+      const tables = data.db.tables.filter(t => {
+        if(!ql) return true;
+        const hay = t.name+' '+t.comment+' '+t.columns.map(c=>(c.name||'')+' '+c.note).join(' ');
+        return hay.toLowerCase().includes(ql);
+      });
+      $('#as-db-count').textContent = `${tables.length} / ${data.db.tableCount} テーブル`;
+      $('#as-db-list').innerHTML = tables.map(t => {
+        const rows = t.columns.map(c => c.type==='CONSTRAINT'
+          ? `<tr class="as-constraint-row"><td colspan="3">${h(c.note)}</td></tr>`
+          : `<tr><td class="as-col-name">${h(c.name)}</td><td class="as-col-type">${h(c.type)}</td><td class="as-col-note">${h(c.note)}</td></tr>`
+        ).join('');
+        const open = st.openTables.has(t.name);
+        return `<div class="as-tbl-card ${open?'open':''}" data-table="${h(t.name)}">
+          <div class="as-tbl-th">
+            <span class="as-tname">${h(t.name)}</span>
+            <span class="as-tcount">${t.columns.filter(c=>c.type!=='CONSTRAINT').length}列</span>
+            <span class="as-tcomment">${h(t.comment)}</span>
+            <span class="as-arrow">▸</span>
+          </div>
+          <div class="as-tbl-body"><div class="as-table-scroll"><table class="list"><tr><th>列名</th><th>型</th><th>備考</th></tr>${rows}</table></div></div>
+        </div>`;
+      }).join('') || '<p class="muted">該当するテーブルがありません。</p>';
+      $('#as-db-list').querySelectorAll('.as-tbl-th').forEach(th => {
+        th.onclick = () => {
+          const card = th.closest('.as-tbl-card');
+          const name = card.dataset.table;
+          if(st.openTables.has(name)) st.openTables.delete(name); else st.openTables.add(name);
+          card.classList.toggle('open');
+        };
+      });
+    };
+    panel.innerHTML = `
+      <div class="as-searchbar"><input type="text" id="as-db-search" placeholder="テーブル名・列名・コメントで検索…" value="${h(st.dbQ)}"><span class="muted" id="as-db-count"></span></div>
+      <div class="muted" style="margin-bottom:8px;font-size:12px">テーブルの列構成は、このリクエストの時点で実際のデータベース(D1)から取得しています。schema.sqlと内容がずれていても、ここには常に本番の実態が表示されます。</div>
+      <div id="as-db-list"></div>`;
+    draw();
+    $('#as-db-search').addEventListener('input', e => { st.dbQ = e.target.value; draw(); });
+  }
+
+  function renderFeatures(){
+    panel.innerHTML = `<div class="card">
+      <h3>機能公開設定キー(${data.featureKeys.length}件)</h3>
+      <p class="muted" style="font-size:12.5px;margin-bottom:10px">システム設定 → 機能公開設定 で、それぞれ「公開中/準備中/メンテナンス中」を切り替えられる画面キー。</p>
+      <div>${data.featureKeys.map(k=>`<span class="as-chip"><code>${h(k)}</code></span>`).join('')}</div>
+    </div>`;
+  }
+
+  function renderArch(){
+    panel.innerHTML = `
+      <div class="card" style="margin-bottom:14px">
+        <h3>システム構成図</h3>
+        ${appStructureArchSvg()}
+      </div>
+      <div class="card">
+        <h3>ファイル構成・依存関係</h3>
+        ${appStructureFileFlowHtml()}
+        <div class="as-table-scroll"><table class="list as-file-table" style="margin-top:14px">
+          <tr><th>ファイル</th><th>役割</th><th>説明</th></tr>
+          ${data.files.map(f=>`<tr><td><code>${h(f.name)}</code></td><td>${h(f.role)}</td><td>${h(f.desc)}${f.dependsOn && f.dependsOn.length ? `<div class="muted" style="font-size:11.5px;margin-top:3px">依存先: ${f.dependsOn.map(d=>`<code>${h(d)}</code>`).join(', ')}</div>` : ''}</td></tr>`).join('')}
+        </table></div>
+      </div>`;
+  }
+
+  const RENDERERS = { overview:renderOverview, pages:renderPages, perms:renderPerms, api:renderApi, db:renderDb, features:renderFeatures, arch:renderArch };
+  function switchTab(tab){
+    st.tab = tab;
+    $('#as-tabs').querySelectorAll('.as-tab').forEach(b => b.classList.toggle('on', b.dataset.tab===tab));
+    RENDERERS[tab]();
+  }
+  $('#as-tabs').addEventListener('click', e => {
+    const btn = e.target.closest('.as-tab'); if(!btn) return;
+    switchTab(btn.dataset.tab);
+  });
+  switchTab(st.tab);
 }
 
 async function pageDaicho(app){
