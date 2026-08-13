@@ -3399,7 +3399,9 @@ async function pageArtists(app){
       <span class="muted" style="font-weight:600">${st.selected.size}件選択中</span>
       <button class="btn gold sm" id="artist-bulk-rename">${icon('edit',{size:'12px'})} まとめて名前を変更</button>
       <button class="btn ghost sm" id="artist-bulk-group">${icon('tag',{size:'12px'})} グループに追加</button>
-      ${!st.openFolder ? `<button class="btn ghost sm" id="artist-bulk-folder">${icon('package',{size:'12px'})} フォルダにまとめる</button>` : ''}
+      ${!st.openFolder ? `<button class="btn ghost sm" id="artist-bulk-folder">${icon('package',{size:'12px'})} フォルダにまとめる</button>` : `
+      <button class="btn ghost sm" id="artist-bulk-folder-move">${icon('package',{size:'12px'})} 別のフォルダへ移動</button>
+      <button class="btn ghost sm" id="artist-bulk-folder-remove">${icon('x',{size:'12px'})} フォルダから出す</button>`}
       <button class="btn ghost sm" id="artist-bulk-clear">選択解除</button>` : '';
     const brBtn = $('#artist-bulk-rename');
     if(brBtn) brBtn.onclick = () => {
@@ -3412,6 +3414,24 @@ async function pageArtists(app){
     const bfBtn = $('#artist-bulk-folder');
     if(bfBtn) bfBtn.onclick = () => {
       openArtistFolderPicker(folders, [...st.selected], () => { st.selected = new Set(); pageArtists(app); });
+    };
+    const bfmBtn = $('#artist-bulk-folder-move');
+    if(bfmBtn) bfmBtn.onclick = () => {
+      openArtistFolderPicker(folders, [...st.selected], () => { st.selected = new Set(); pageArtists(app); }, { moveFromFolderId: st.openFolder });
+    };
+    const bfrBtn = $('#artist-bulk-folder-remove');
+    if(bfrBtn) bfrBtn.onclick = async () => {
+      const folder = folders.find(f=>String(f.id)===String(st.openFolder));
+      if(!folder) return;
+      if(!confirm(`選択した${st.selected.size}件をこのフォルダから出しますか?(公演のデータ自体は変更されません)`)) return;
+      const remaining = folder.members.filter(m=>!st.selected.has(m));
+      await withLoading(bfrBtn, async () => {
+        try{
+          await api(`/artist-folders/${folder.id}`, { method:'PUT', body:{ members: remaining } });
+          st.selected = new Set();
+          pageArtists(app);
+        }catch(e){ popup(e.message,'error'); }
+      });
     };
     const bcBtn = $('#artist-bulk-clear');
     if(bcBtn) bcBtn.onclick = () => { st.selected = new Set(); renderList(); renderBulkBar(); };
@@ -3567,24 +3587,31 @@ async function pageArtists(app){
 }
 
 // 選択中の公演をフォルダに追加する(既存フォルダに追加 or 新規フォルダを作成)。openGroupPickerと同じ操作感。
-function openArtistFolderPicker(folders, selectedArtists, onDone){
+// opts.moveFromFolderId を指定すると「移動」モードになり、追加後に移動元フォルダから選択メンバーを
+// 取り除く(移動元自身は選択肢から除外する)。folders は移動元を含む全フォルダを渡すこと(移動元の
+// 現在のメンバーを引くために参照する)。
+function openArtistFolderPicker(folders, selectedArtists, onDone, opts){
   if(!selectedArtists.length) return;
-  modal(`<h3>${icon('package',{size:'15px'})} フォルダにまとめる</h3>
+  const moveFromFolderId = opts && opts.moveFromFolderId;
+  const pickableFolders = moveFromFolderId ? folders.filter(f=>String(f.id)!==String(moveFromFolderId)) : folders;
+  const title = moveFromFolderId ? '別のフォルダへ移動' : 'フォルダにまとめる';
+  const btnLabel = moveFromFolderId ? '移動する' : '追加する';
+  modal(`<h3>${icon('package',{size:'15px'})} ${title}</h3>
     <div class="muted" style="font-size:12px;margin-bottom:10px">対象(${selectedArtists.length}件):</div>
     <div style="max-height:20vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-bottom:12px">
       ${selectedArtists.map(a=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:#faf9f6;border:1px solid var(--line);border-radius:6px">${h(a)}</div>`).join('')}
     </div>
-    ${folders.length ? `<label style="display:block;margin-bottom:10px">既存のフォルダに追加<br>
+    ${pickableFolders.length ? `<label style="display:block;margin-bottom:10px">既存のフォルダに追加<br>
       <select id="afp-existing" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;margin-top:4px">
         <option value="">選択してください</option>
-        ${folders.map(f=>`<option value="${f.id}">${h(f.name)}(${f.members.length}件)</option>`).join('')}
+        ${pickableFolders.map(f=>`<option value="${f.id}">${h(f.name)}(${f.members.length}件)</option>`).join('')}
       </select>
     </label>
     <div class="muted" style="text-align:center;margin:8px 0">または</div>` : ''}
     <label style="display:block;margin-bottom:10px">新しいフォルダを作る<br>
       <input type="text" id="afp-new" placeholder="例:G大阪" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;margin-top:4px">
     </label>
-    <button class="btn gold" id="afp-run">追加する</button>
+    <button class="btn gold" id="afp-run">${btnLabel}</button>
     <div id="afp-msg" class="muted" style="margin-top:10px"></div>`);
   $('#afp-run').onclick = async () => {
     const existingSel = $('#afp-existing');
@@ -3594,14 +3621,21 @@ function openArtistFolderPicker(folders, selectedArtists, onDone){
     await withLoading($('#afp-run'), async () => {
       try{
         if(existingId){
-          const f = folders.find(f=>String(f.id)===String(existingId));
+          const f = pickableFolders.find(f=>String(f.id)===String(existingId));
           const merged = [...new Set([...(f?f.members:[]), ...selectedArtists])];
           await api(`/artist-folders/${existingId}`, { method:'PUT', body:{ members: merged } });
         }else{
           await api('/artist-folders', { method:'POST', body:{ name:newName, members:selectedArtists } });
         }
+        if(moveFromFolderId){
+          const src = folders.find(f=>String(f.id)===String(moveFromFolderId));
+          if(src){
+            const remaining = src.members.filter(m=>!selectedArtists.includes(m));
+            await api(`/artist-folders/${moveFromFolderId}`, { method:'PUT', body:{ members: remaining } });
+          }
+        }
         closeModal();
-        popup('フォルダに追加しました');
+        popup(moveFromFolderId ? '移動しました' : 'フォルダに追加しました');
         if(onDone) onDone();
       }catch(e){ $('#afp-msg').textContent = e.message; }
     });
