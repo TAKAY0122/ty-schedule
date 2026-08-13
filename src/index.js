@@ -1683,9 +1683,31 @@ async function applyArtistRenameMap(env, me, renameMap, srcLabel, artistRenameMa
     }
   }
 
+  // targets 1件ごとに個別SELECTすると(applyImportRowsが以前そうしていたのと同じ理由で)、
+  // 対象が数百件規模になった際に逐次awaitの待ち時間が積み上がりCPU/実行時間の上限に達して
+  // サーバーエラーになる。user_id・dateをそれぞれチャンク化した上でのIN×IN(直積)で
+  // まとめて1回で取得し、以降はメモリ上のMapから引く方式に統一する。
+  const beforeMap = {}; // key "uid|date" -> rows[]
+  if (targets.length) {
+    const uidsAll = [...new Set(targets.map(t => t.user_id))];
+    const datesAll = [...new Set(targets.map(t => t.date))];
+    const uidChunks = chunk(uidsAll, 30);
+    const dateChunks = chunk(datesAll, 30);
+    for (const uidChunk of uidChunks) {
+      for (const dateChunk of dateChunks) {
+        const ph1 = uidChunk.map(() => '?').join(',');
+        const ph2 = dateChunk.map(() => '?').join(',');
+        const rs = (await env.DB.prepare(
+          `SELECT * FROM schedule WHERE user_id IN (${ph1}) AND date IN (${ph2}) ORDER BY user_id, date, slot`
+        ).bind(...uidChunk, ...dateChunk).all()).results;
+        for (const r of rs) (beforeMap[r.user_id + '|' + r.date] ||= []).push(r);
+      }
+    }
+  }
+
   let updatedDays = 0;
   for (const { user_id, date } of targets) {
-    const before = (await env.DB.prepare('SELECT * FROM schedule WHERE user_id=? AND date=? ORDER BY slot').bind(user_id, date).all()).results;
+    const before = beforeMap[user_id + '|' + date] || [];
     const beforeJson = JSON.stringify(before.map(stripRow));
     const afterRows = before.map(r => (r.type === 'work' && renameMap[r.site]) ? { ...r, site: renameMap[r.site] } : r);
     const afterJson = JSON.stringify(afterRows.map(stripRow));
@@ -1703,9 +1725,11 @@ async function applyArtistRenameMap(env, me, renameMap, srcLabel, artistRenameMa
   }
   if (batch.length) for (const part of chunk(batch, 200)) await env.DB.batch(part);
 
-  for (const oldSite of oldSites) {
-    await env.DB.prepare('UPDATE site_registry SET site=? WHERE site=?').bind(renameMap[oldSite], oldSite).run();
-  }
+  // oldSitesが多い(数百件)場合、1件ずつawaitで直列実行すると往復回数がそのまま積み上がって
+  // 遅くなるため、batch()にまとめて送る(内容が1件ごとに異なるUPDATEなのでSQL自体はまとめられないが、
+  // 送信は一括化できる)。
+  const registryBatch = oldSites.map(oldSite => env.DB.prepare('UPDATE site_registry SET site=? WHERE site=?').bind(renameMap[oldSite], oldSite));
+  for (const part of chunk(registryBatch, 200)) await env.DB.batch(part);
   if (artistRenameMap) {
     for (const oldArtist of Object.keys(artistRenameMap)) {
       const newArtist = artistRenameMap[oldArtist];
