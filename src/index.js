@@ -982,7 +982,12 @@ async function clearAbsentFromDaicho(env, rows, editorId) {
     if (!regno || !date) continue;
     (datesRegnos[date] ||= new Set()).add(regno);
   }
-  const dates = Object.keys(datesRegnos);
+  // 当日(JST)はまだ台帳の入力が完了していない(その日の勤務がまさに進行中)ため、
+  // 「台帳に載っていない=不在」とは判定できない。判定対象は「完全に終わった過去の日」に限定する
+  // (深夜0時台に自動実行される際、日付が変わった直後は取り込んだ行に新しい当日分がまだ僅かしか
+  // 含まれておらず、これから出勤する人まで誤って休暇化してしまう事故が実際に起きたため)。
+  const today = jstDate();
+  const dates = Object.keys(datesRegnos).filter(d => d < today);
   if (!dates.length) return { clearedPeople: 0, clearedDays: 0 };
 
   const allUsers = (await env.DB.prepare('SELECT id, regno FROM users').all()).results;
@@ -1037,7 +1042,9 @@ async function clearAbsentSiteRegistry(env, rows) {
     if (!datesSites[date]) datesSites[date] = new Set();
     if (r.site) datesSites[date].add(r.site); // r.site が非空 = その日その現場への実際の配置行(パーサー形式によりtype無しの場合もあるためsiteの有無で判定)
   }
-  const dates = Object.keys(datesSites);
+  // clearAbsentFromDaicho と同じ理由(当日はまだ台帳の入力が完了していない)で、当日(JST)は対象外とする。
+  const today = jstDate();
+  const dates = Object.keys(datesSites).filter(d => d < today);
   if (!dates.length) return { clearedRegistrations: 0 };
   const ph = dates.map(() => '?').join(',');
   const registryRows = (await env.DB.prepare(`SELECT id, date, site FROM site_registry WHERE date IN (${ph})`).bind(...dates).all()).results;
