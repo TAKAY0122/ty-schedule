@@ -1662,10 +1662,26 @@ async function applyArtistRenameMap(env, me, renameMap, srcLabel, artistRenameMa
   const ts = jstTs();
   const batch = [];
   const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
-  const ph = oldSites.map(() => '?').join(',');
-  const targets = (await env.DB.prepare(
-    `SELECT DISTINCT user_id, date FROM schedule WHERE type='work' AND site IN (${ph})`
-  ).bind(...oldSites).all()).results;
+  // 「公演名の一部を置換」は、対象の公演名を含む現場名(【セクション等】表記違いを全部含む)を
+  // 丸ごとrenameMapに詰めるため、ヒットする公演によってはoldSitesが100件を超えうる。
+  // 1回のIN句に全件を渡すとD1のバインド変数上限を超えてサーバーエラーになる事故が過去にあった
+  // (markVisitedと同じ問題)ため、安全なサイズにチャンク化して取得する。
+  const targetKeys = new Set();
+  const targets = [];
+  for (const part of chunk(oldSites, 50)) {
+    const ph = part.map(() => '?').join(',');
+    const rows = (await env.DB.prepare(
+      `SELECT DISTINCT user_id, date FROM schedule WHERE type='work' AND site IN (${ph})`
+    ).bind(...part).all()).results;
+    // チャンクを跨いで同じ(user_id,date)が重複しうる(異なる旧site名が同じ日に一致する場合)ため、
+    // 元の単一クエリのDISTINCTと同じ結果になるようここで重複除去する。
+    for (const r of rows) {
+      const key = r.user_id + '|' + r.date;
+      if (targetKeys.has(key)) continue;
+      targetKeys.add(key);
+      targets.push(r);
+    }
+  }
 
   let updatedDays = 0;
   for (const { user_id, date } of targets) {
