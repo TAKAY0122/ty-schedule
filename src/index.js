@@ -2842,8 +2842,11 @@ async function api(req, env, url) {
     // (一部URLのみでも、利用者が意図して選んだ場合は許可する。フロント側で警告を表示した上でのチェックを想定)
     const checkAbsent = body.checkAbsent !== undefined ? !!body.checkAbsent : isFullSet;
     try {
-      const r = await runDaichoReload(env, targetUrls, { updateRemaining: true, checkAbsent, sourceLabel: '台帳手動再取り込み' });
-      const remainRaw = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
+      // 進捗の保存先(import_urls_progress)は cronDaichoReload と共用のキーなので、手動実行では
+      // 触らない(opt.progressKeyを渡さない)。以前は import_urls (保存済みURL設定そのもの)へ
+      // 直接書き戻しており、完了後に元へ戻す処理も無かったため、手動実行するたびに保存済みURLの
+      // リストが空になってしまい、以後の自動取込が何日も止まる不具合があった(2026年8月修正)。
+      const r = await runDaichoReload(env, targetUrls, { checkAbsent, sourceLabel: '台帳手動再取り込み' });
       // 手配担当者向けの管理者ダッシュボード「システム状態」が古い結果のまま表示され続けないよう、
       // 手動実行の場合も深夜自動実行(cronDaichoReload)と同じ内容をdaicho_reload_last_resultへ
       // 保存する(以前はdaicho_reload_last_runのみ更新しており、last_resultが前回の深夜実行分の
@@ -2851,10 +2854,12 @@ async function api(req, env, url) {
       await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_result',?)").bind(
         JSON.stringify({ ts: jstTs(), count: targetUrls.length, results: r.results, clearedAbsent: r.absentResult.clearedPeople, clearedRegistrations: r.registryResult.clearedRegistrations })
       ).run();
-      // 時間予算切れで一部URLが未処理(incomplete)の場合は、深夜自動実行の「本日実行済み」フラグを
-      // 立てない(処理しきれなかった分をその夜のcronDaichoReloadに引き継がせるため)。
-      if (!r.incomplete) {
-        // 手動で今すぐ取り込んだ場合、同じ内容がその夜また自動的に取り込まれて二重に処理される
+      // 「本日実行済み」フラグは、保存済み全URLを対象にした手動実行が時間予算切れなく完了した
+      // 場合のみ立てる。一部URLだけを選んだ手動実行(動作確認等)でこのフラグを立ててしまうと、
+      // その夜のcronDaichoReloadが「今日はもう実行済み」とみなして他の未選択URLを一切自動取込
+      // しなくなり、台帳が何日も更新されない不具合の原因になっていた(2026年8月修正)。
+      if (isFullSet && !r.incomplete) {
+        // 手動で今すぐ全件取り込んだ場合、同じ内容がその夜また自動的に取り込まれて二重に処理される
         // (通知が2回来る、differenceの検出が乱れる等)のを避けるため、深夜自動実行の「本日実行済み」
         // フラグも合わせて更新しておく。これにより、その夜のcronDaichoReloadは通常通りスキップされる。
         await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_run',?)").bind(jstDate()).run();
@@ -2862,7 +2867,7 @@ async function api(req, env, url) {
       return J({
         ok: 1, okCount: r.okCount, ngCount: r.ngCount, totalApplied: r.totalApplied,
         results: r.results, clearedAbsent: r.absentResult.clearedPeople, clearedRegistrations: r.registryResult.clearedRegistrations, checkedAbsent: checkAbsent,
-        remainingCount: remainRaw.length, incomplete: !!r.incomplete,
+        remainingCount: r.incomplete ? Math.max(0, targetUrls.length - r.results.length) : 0, incomplete: !!r.incomplete,
       });
     } catch (e) {
       return ERR('取り込み中にエラーが発生しました: ' + e.message);
@@ -5244,9 +5249,11 @@ async function api(req, env, url) {
 //   - 取り込んだURLを保存済みリストから削除する
 //   - R2台帳は同じfile_idの古いバージョンを削除し、最新版だけ残す
 // 台帳の再取り込み本体。cron(cronDaichoReload)と手動実行(POST /daicho-reload-run-now)の両方から呼ばれる共通ロジック。
-// opt.updateRemaining: true の場合、1件処理し終えるたびに import_urls 設定から取り除いて保存する
-//   (cron実行中の途中終了への耐性のため)。手動で一部URLだけ選んだ場合は、保存済みリストが
-//   壊れないよう false にする。
+// opt.progressKey: 指定した場合、1件処理し終えるたびに「そのキー名の」設定へ残りURLを保存する
+//   (cron実行中の途中終了への耐性のため)。過去に import_urls(保存済みURL設定そのもの)へ
+//   直接書き戻していたことがあり、完了後に元へ戻す処理が無かったため、実行するたびに
+//   保存済みURLリストが空になって以後の自動取込が止まる不具合があった(2026年8月修正)。
+//   進捗は必ず import_urls とは別のキーに保存し、完了時はそのキーを削除すること。
 // opt.checkAbsent: true の場合のみ、対象ファイルに登場しない人を休暇化する。一部のURLだけを
 //   対象にした手動実行では、他の未選択ファイルに載っている人まで誤って休暇にしてしまうため、
 //   「保存済み全URL」を対象にした場合のみ true にすること。
@@ -5271,11 +5278,9 @@ async function runDaichoReload(env, urls, opt = {}) {
   const keywordMap = await loadNonSiteKeywords(env);
 
   // 処理中に残っているURL一覧。1件処理し終えるたびに、ここから取り除いて都度保存する。
-  let remainingUrls = null;
-  if (opt.updateRemaining) {
-    const allSavedRaw = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
-    remainingUrls = allSavedRaw.map(x => typeof x === 'string' ? x : x.url);
-  }
+  // (今回渡された urls パラメータそのものが処理対象の全件なので、これをコピーして使う。
+  //  import_urls (保存済みURL設定)は絶対に参照・書き換えしない)
+  let remainingUrls = opt.progressKey ? [...urls] : null;
 
   for (const rawUrl of urls) {
     if (Date.now() - invocationStart > OVERALL_BUDGET_MS) {
@@ -5327,7 +5332,7 @@ async function runDaichoReload(env, urls, opt = {}) {
             const fname = safeTitle ? `${safeTitle}.xlsx` : `台帳_${ts.slice(0, 10)}_${meta.id.slice(0, 8)}.xlsx`;
             await env.DB.prepare(
               'INSERT INTO daicho_archive(ts,importer_id,importer_name,source_url,file_id,r2_key,file_name,size,applied,sheets) VALUES(?,?,?,?,?,?,?,?,?,?)'
-            ).bind(ts, editorId, editorName + (opt.updateRemaining ? '(自動)' : '(手動)'), rawUrl, meta.id, r2key, fname, got.raw.length, r.applied, sheetReport.length).run();
+            ).bind(ts, editorId, editorName + (opt.progressKey ? '(自動)' : '(手動)'), rawUrl, meta.id, r2key, fname, got.raw.length, r.applied, sheetReport.length).run();
 
             // 同じfile_idの古いバージョンを削除(最新版=今追加した1件だけ残す)
             const oldRecs = (await env.DB.prepare(
@@ -5345,10 +5350,18 @@ async function runDaichoReload(env, urls, opt = {}) {
       }
     }
     // このURLの処理を終えたら、都度リストから取り除いて保存する(cronの途中終了への耐性)
-    if (opt.updateRemaining) {
+    if (opt.progressKey) {
       remainingUrls = remainingUrls.filter(u => u !== rawUrl);
-      try { await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('import_urls',?)").bind(JSON.stringify(remainingUrls)).run(); } catch (e) {}
+      try {
+        await env.DB.prepare("REPLACE INTO settings(key,value) VALUES(?,?)")
+          .bind(opt.progressKey, JSON.stringify({ date: jstDate(), remaining: remainingUrls })).run();
+      } catch (e) {}
     }
+  }
+
+  // 全件処理し終えた(incompleteでない)場合は、進捗を消して次回はまっさらな状態から始める。
+  if (opt.progressKey && !incomplete) {
+    try { await env.DB.prepare('DELETE FROM settings WHERE key=?').bind(opt.progressKey).run(); } catch (e) {}
   }
 
   const totalApplied = results.reduce((s, r) => s + (r.ok ? (r.applied || 0) : 0), 0);
@@ -5375,7 +5388,7 @@ async function runDaichoReload(env, urls, opt = {}) {
     catch (e) { console.error('matchRookieAndBlacklist failed:', e); }
   }
 
-  return { okCount, ngCount, totalApplied, results, absentResult, registryResult, editorId, incomplete };
+  return { okCount, ngCount, totalApplied, results, absentResult, registryResult, editorId, incomplete, remainingUrls };
 }
 
 async function cronDaichoReload(env) {
@@ -5402,11 +5415,23 @@ async function cronDaichoReload(env) {
     return;
   }
 
-  const r = await runDaichoReload(env, urls, { updateRemaining: true, checkAbsent: true, sourceLabel: '台帳自動再取り込み' });
+  // 前回の起動が時間予算切れで未完了(incomplete)だった場合、その続きから再開する。
+  // 進捗は import_urls とは別の import_urls_progress に保持しており、当日分の記録だけを使う
+  // (import_urls 自体は保存済みURL設定そのものなので、絶対に書き換えない)。
+  let resumeUrls = urls;
+  try {
+    const progress = JSON.parse(await getSetting(env, 'import_urls_progress', 'null') || 'null');
+    if (progress && progress.date === today && Array.isArray(progress.remaining) && progress.remaining.length) {
+      resumeUrls = progress.remaining.filter(u => urls.includes(u));
+      if (!resumeUrls.length) resumeUrls = urls;
+    }
+  } catch (e) {}
+
+  const r = await runDaichoReload(env, resumeUrls, { progressKey: 'import_urls_progress', checkAbsent: true, sourceLabel: '台帳自動再取り込み' });
 
   // 時間予算切れで一部URLが未処理(incomplete)の場合、「本日実行済み」フラグは立てない。
-  // import_urlsからは処理済み分だけが既に取り除かれているため、次回の起動では残りのURLだけを
-  // 対象に自動的に再開される(unregisteredな全件やり直しにはならない)。
+  // import_urls_progressには処理済み分を除いた残りが保存されているため、次回の起動では
+  // 残りのURLだけを対象に自動的に再開される(import_urls自体は無傷のまま)。
   if (r.incomplete) {
     console.log('[cronDaichoReload] incomplete this run, will resume remaining URLs on next invocation');
     return;
