@@ -1300,9 +1300,12 @@ function renderShell(hash){
   // ナビゲーション構造。children を持つ項目はグループ(タップでサブメニューに切り替わる)、
   // 持たない項目は単独ページへのリンク。権限がない機能は、グループ内の子としても一切出現しない
   // (グループ自体も、中身が1つも無ければ表示されない)。
+  // メニュー構成の方針: 「日常的に本人が使う項目」→「チーフ・手配者が現場/メンバーを見る項目」→
+  // 「手配者・管理者向けの取込/管理項目」の順に並べる(新機能を追加するたびに末尾へ積み上げて
+  // 使いにくくなっていたのを解消。2026年8月整理)。関連する項目は必ずグループ化すること
+  // (現場一覧・会場一覧・公演一覧が個別のトップレベル項目のまま並んでいたのが典型例だった)。
   const nav = [
     { path:'#/home', icon:'home', label:'ホーム', show:true },
-    { path:'#/dashboard', icon:'gauge', label:'ダッシュボード', show:canDashboardView, role:'admin' },
     { icon:'calendar', label:'スケジュール', show:true, children:[
       { path:'#/schedule', icon:'calendar', label:'マイスケジュール' },
       ...(canEdit ? [{ path:'#/edit', icon:'edit', label:'スケジュール入力', role:'handler' }] : []),
@@ -1314,9 +1317,18 @@ function renderShell(hash){
       ...(isChief ? [{ path:'#/nominate', icon:'user', label:'メンバーを希望する', role:'chief' }] : []),
       ...(isHandlerRole ? [{ path:'#/nominations', icon:'checkCircle', label:'メンバー指名の承認', role:'handler' }] : []),
     ]},
-    { path:'#/sites', icon:'stadium', label:'現場一覧', show:canSitesView, role:'chief' },
-    { path:'#/venues', icon:'mapPin', label:'会場一覧', show:canSitesView, role:'chief' },
-    { path:'#/artists', icon:'megaphone', label:'公演一覧', show:canSitesView, role:'chief' },
+    { icon:'sparkles', label:'新人報告', show:true, children:[
+      { path:'#/report', icon:'fileText', label:'新人報告' },
+      { path:'#/reports', icon:'clipboardList', label:'報告一覧' },
+      ...(canDraft ? [{ path:'#/draft', icon:'star', label:'ドラフト', role:'handler' }] : []),
+      ...(canBlacklist ? [{ path:'#/blacklist', icon:'ban', label:'ブラックリスト', role:'handler' }] : []),
+      ...(ME.role==='admin' ? [{ path:'#/report-export', icon:'paperclip', label:'貼り付け用コピー', role:'admin' }] : []),
+    ]},
+    { icon:'stadium', label:'現場・会場', show:canSitesView, children:[
+      { path:'#/sites', icon:'stadium', label:'現場一覧', role:'chief' },
+      { path:'#/venues', icon:'mapPin', label:'会場一覧', role:'chief' },
+      { path:'#/artists', icon:'megaphone', label:'公演一覧', role:'chief' },
+    ]},
     { icon:'users', label:'メンバー', show:showMemberGroup, children:[
       ...(isHandlerRole ? [{ path:'#/members/mine', icon:'briefcase', label:`${ME.name}手配`, role:'handler' }] : []),
       ...(canMembersView ? [{ path:'#/members', icon:'users', label:'メンバー一覧', role:'chief' }] : []),
@@ -1325,12 +1337,11 @@ function renderShell(hash){
       ...(canDayScheduleView ? [{ path:'#/day-schedule', icon:'layoutGrid', label:'スケジュール一覧', role:'chief' }] : []),
       ...(canMemberSummaryNav ? [{ path:'#/member-summary/search', icon:'barChart', label:'個人の年間サマリー', role:'handler' }] : []),
     ]},
-    { icon:'sparkles', label:'新人報告', show:true, children:[
-      { path:'#/report', icon:'fileText', label:'新人報告' },
-      { path:'#/reports', icon:'clipboardList', label:'報告一覧' },
-      ...(canDraft ? [{ path:'#/draft', icon:'star', label:'ドラフト', role:'handler' }] : []),
-      ...(canBlacklist ? [{ path:'#/blacklist', icon:'ban', label:'ブラックリスト', role:'handler' }] : []),
-      ...(ME.role==='admin' ? [{ path:'#/report-export', icon:'paperclip', label:'スプレッドシート貼り付け用コピー', role:'admin' }] : []),
+    { path:'#/dashboard', icon:'gauge', label:'ダッシュボード', show:canDashboardView, role:'admin' },
+    { icon:'upload', label:'スプレッド読み込み', show: showSpreadGroup, children:[
+      ...(canImport ? [{ path:'#/import', icon:'download', label:'手動取り込み', role:'handler' }] : []),
+      ...(canSchedSrc ? [{ path:'#/sched-sources', icon:'rss', label:'予定表ソース管理', role:'admin' }] : []),
+      ...(canDaicho ? [{ path:'#/daicho', icon:'package', label:'台帳保管', role:'admin' }] : []),
     ]},
     { icon:'settings', label:'システム管理', show: showSystemGroup, children:[
       ...(canAccountAdmin ? [{ path:'#/admin', icon:'shieldCheck', label:'アカウント管理', role:'admin' }] : []),
@@ -1339,11 +1350,6 @@ function renderShell(hash){
       ...(canHandlerStatus ? [{ path:'#/handler-status', icon:'circleFilled', label:'ログイン中・編集履歴', role:'handler' }] : []),
       ...(ME.role==='admin' ? [{ path:'#/legacy-import', icon:'inbox', label:'過去データ取込確認', role:'admin' }] : []),
       ...(ME.role==='admin' ? [{ path:'#/app-structure', icon:'sitemap', label:'アプリ構造ビューア', role:'admin' }] : []),
-    ]},
-    { icon:'upload', label:'スプレッド読み込み', show: showSpreadGroup, children:[
-      ...(canImport ? [{ path:'#/import', icon:'download', label:'スプレッドシート取り込み', role:'handler' }] : []),
-      ...(canSchedSrc ? [{ path:'#/sched-sources', icon:'rss', label:'予定表ソース管理', role:'admin' }] : []),
-      ...(canDaicho ? [{ path:'#/daicho', icon:'package', label:'台帳保管', role:'admin' }] : []),
     ]},
   ].filter(n => n.show);
 
