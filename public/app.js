@@ -2166,6 +2166,10 @@ async function pageHome(app){
   const notifBtn = $('#home-notif-btn');
   if(notifBtn) notifBtn.onclick = () => openNotifDropdown();
 
+  // ホーム画面を開くたびショートカットが順に軽く浮かび上がる(編集モード中はドラッグ用の
+  // wiggleアニメーションと animation プロパティが競合するため、通常表示時のみ適用)
+  if(!homeEditing) staggerRows(app, '.home-menu-btn');
+
   const editToggle = $('#home-edit-toggle');
   editToggle.onclick = () => { PAGE_STATE.home = PAGE_STATE.home||{}; PAGE_STATE.home.editing = !homeEditing; pageHome(app); };
 
