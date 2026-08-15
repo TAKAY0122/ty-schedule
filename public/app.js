@@ -2438,13 +2438,27 @@ async function pageSchedule(app, hash){
   $('#prev-m').onclick = () => { MONTH = shiftMonth(MONTH,-1); render(); };
   $('#next-m').onclick = () => { MONTH = shiftMonth(MONTH, 1); render(); };
   $('#jump-month-btn').onclick = () => {
+    // input[type=month]は、モーダル(backdrop-filter+border-radius+overflow:hidden)内で
+    // iOS Safariがネイティブのフォームコントロールを正しくクリップできず、枠からはみ出す
+    // 不具合が実機で確認されたため、年・月を別々のselectで選ばせる方式に変更した
+    // (どのブラウザでも確実に同じ見た目になる)。
+    const [curY, curM] = MONTH.split('-').map(Number);
+    const nowY = Number(jstToday().slice(0,4));
+    const years = []; for(let y=nowY-5; y<=nowY+2; y++) years.push(y);
     modal(`<h3>${icon('calendar',{size:'15px'})} 表示する年月を選択</h3>
-      <input type="month" id="jump-month-input" value="${MONTH}" style="width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:16px;box-sizing:border-box">
+      <div class="row" style="gap:8px;flex-wrap:nowrap">
+        <select id="jump-year-input" style="flex:1;min-width:0;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:16px">
+          ${years.map(y=>`<option value="${y}" ${y===curY?'selected':''}>${y}年</option>`).join('')}
+        </select>
+        <select id="jump-month-input" style="flex:1;min-width:0;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:16px">
+          ${Array.from({length:12},(_,i)=>i+1).map(m=>`<option value="${m}" ${m===curM?'selected':''}>${m}月</option>`).join('')}
+        </select>
+      </div>
       <div class="row" style="margin-top:14px"><button class="btn gold" id="jump-month-go">この年月を表示する</button></div>`);
     $('#jump-month-go').onclick = () => {
-      const v = $('#jump-month-input').value;
-      if(!v) return;
-      MONTH = v;
+      const y = $('#jump-year-input').value;
+      const m = String($('#jump-month-input').value).padStart(2,'0');
+      MONTH = `${y}-${m}`;
       closeModal();
       render();
     };
