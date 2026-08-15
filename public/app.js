@@ -4334,7 +4334,7 @@ async function pageMembers(app){
       </div>
       <div class="cards sp-only">
       ${list.map(u=>`<div class="dcard ka-${kaOf(u)==='1課'?'1':'2'}">
-        <div class="dcard-head">${isHandler&&u.id!==ME.id?`<input type="checkbox" class="m-check" data-id="${u.id}" style="margin-right:8px">`:''}<span class="dcard-title name-link" data-goto-uid="${u.id}">${h(u.name)}</span></div>
+        <div class="dcard-head">${isHandler?(u.id!==ME.id?`<input type="checkbox" class="m-check" data-id="${u.id}" style="margin-right:8px">`:'<span style="width:16px;display:inline-block;margin-right:8px"></span>'):''}<span class="dcard-title name-link" data-goto-uid="${u.id}">${h(u.name)}</span></div>
         <div class="drow"><span class="dk">登録番号</span><span class="dv">${h(u.regno)}${baseFromRegno(u.regno)?` (${baseFromRegno(u.regno)})`:''}</span></div>
         <div class="drow"><span class="dk">ランク / 班</span><span class="dv">${h(u.rank)||'—'} / ${h(u.han)||'—'}</span></div>
         <div class="drow"><span class="dk">手配担当</span><span class="dv">${h(managerName(u,users))}</span></div>

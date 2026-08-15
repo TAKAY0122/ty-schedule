@@ -429,6 +429,8 @@ tr.li-row-skipped td{background:#f2f2f2;color:#888}
   .sched-mobile.sp-only{display:flex}
   .cards.sp-only{display:flex}
   .m-total .red-num{color:#ff8a8a}
+  /* 課タブは3つ並ぶと文字が折り返して2行になりやすいため、スマホでは詰めて1行に収める */
+  .ka-tab{font-size:12.5px;padding:9px 4px;min-width:0;white-space:nowrap}
 }
 
 /* スクロール可能なテーブルの右端にうっすらフェード(横スクロールを示唆) */
