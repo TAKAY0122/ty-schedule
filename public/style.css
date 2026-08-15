@@ -219,7 +219,14 @@ table.list tr.click:hover{background:#fdf6e0;cursor:pointer}
 /* ===== モーダル ===== */
 .modal-bg{position:fixed;inset:0;height:100vh;height:100dvh;background:rgba(15,20,35,.55);display:flex;align-items:center;justify-content:center;z-index:200;padding:16px;animation:fadein .2s ease}
 .modal-bg.closing{animation:fadeout .16s ease forwards}
-.modal{background:rgba(255,255,255,.94);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-radius:8px;max-width:560px;width:100%;max-height:85vh;overflow-y:auto;overflow-x:hidden;padding:20px;box-shadow:0 24px 80px rgba(0,0,0,.45);opacity:0;transform:scale(.94) translateY(8px)}
+.modal{background:rgba(255,255,255,.94);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-radius:8px;max-width:560px;width:100%;max-height:85vh;overflow-y:auto;overflow-x:hidden;padding:20px;box-shadow:0 24px 80px rgba(0,0,0,.45);opacity:0;transform:scale(.94) translateY(8px);
+  /* iOS Safariはbackdrop-filter+border-radius+overflow:hiddenの組み合わせで、要素が
+     独自の合成レイヤーに昇格した場合にクリッピングが効かなくなることがある(特に
+     input[type=month]等ネイティブのフォームコントロールで顕著)。mask-imageを付与すると
+     Safariが正しくクリップするようになる既知の回避策(見た目への影響は実質無い)。 */
+  -webkit-mask-image: -webkit-radial-gradient(white, black);
+  mask-image: radial-gradient(white, black);
+}
 .modal.modal-animate-in{animation:modalIn .25s cubic-bezier(.25,.8,.35,1) forwards}
 .modal.closing{animation:modalOut .16s ease forwards}
 @keyframes modalIn{from{opacity:0;transform:scale(.94) translateY(8px)}to{opacity:1;transform:scale(1) translateY(0)}}
