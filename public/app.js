@@ -5354,14 +5354,14 @@ async function pageImport(app, hash){
       const d = await api('/import-urls');
       const el = $('#imp-saved'); if(!el) return;
       if(!d.urls.length){ el.innerHTML = '保存済みURLはありません'; return; }
-      el.innerHTML = `<div style="margin-bottom:6px">保存済みURL (${d.urls.length}件): <button class="btn ghost xs" id="imp-clear-all">すべて削除</button></div>` +
+      el.innerHTML = `<div style="margin-bottom:6px">保存済みURL (${d.urls.length}件): <button class="btn ghost xs" id="imp-clear-all" style="display:inline-block;width:auto">すべて削除</button></div>` +
         d.urls.map(u=>`<div class="imp-saved-row" style="display:flex;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap">
           <span style="flex:1 1 auto;min-width:0">
             <span style="font-weight:600">${h(u.sheetTitle || '(シート名不明)')}</span>
             <span class="muted" style="font-size:12px;display:block">登録日:${h(u.targetDate||'—')} / 読込:${h(u.savedAt||'—')}</span>
             <span class="muted" style="font-size:11px;font-family:monospace;display:block;word-break:break-all">${h(u.url)}</span>
           </span>
-          <button class="btn ghost xs imp-del-one" data-url="${h(u.url)}">削除</button>
+          <button class="btn ghost xs imp-del-one" data-url="${h(u.url)}" style="display:inline-block;width:auto">削除</button>
         </div>`).join('');
       const ca = $('#imp-clear-all');
       if(ca) ca.onclick = async () => {
@@ -5438,8 +5438,8 @@ async function pageImport(app, hash){
           </label>`).join('')}
         </div>
         <div class="row" style="gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
-          <button class="btn ghost xs" id="dr-sel-all">全選択</button>
-          <button class="btn ghost xs" id="dr-sel-none">全解除</button>
+          <button class="btn ghost xs" id="dr-sel-all" style="display:inline-block;width:auto">全選択</button>
+          <button class="btn ghost xs" id="dr-sel-none" style="display:inline-block;width:auto">全解除</button>
         </div>
         <label style="display:flex;align-items:flex-start;gap:7px;font-size:12.5px;margin-bottom:4px;padding:8px 10px;background:#faf9f6;border-radius:8px;border:1px solid var(--line)">
           <input type="checkbox" id="dr-check-absent" checked style="margin-top:2px">
@@ -5483,7 +5483,7 @@ async function pageImport(app, hash){
             const skipNote = r.incomplete
               ? '<span class="muted" style="font-size:11px">⚠ 件数が多く時間の都合で一部は今回処理できませんでした。未処理分は今夜の深夜自動再取り込みで続けて処理されます。</span><br>'
               : '<span class="muted" style="font-size:11px">今夜の深夜自動再取り込みは、今回の手動実行分としてスキップされます。</span><br>';
-            msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${r.checkedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''}${r.checkedAbsent&&r.clearedRegistrations?` / 台帳に見当たらない登録現場を削除 ${r.clearedRegistrations}件`:''} / 残りの保存済みURL ${r.remainingCount}件${hasChanges?` <button class="btn ghost xs" id="dr-run-show-changes">変更内容を見る</button>`:''}<br>${skipNote}`
+            msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${r.checkedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''}${r.checkedAbsent&&r.clearedRegistrations?` / 台帳に見当たらない登録現場を削除 ${r.clearedRegistrations}件`:''} / 残りの保存済みURL ${r.remainingCount}件${hasChanges?` <button class="btn ghost xs" id="dr-run-show-changes" style="display:inline-block;width:auto">変更内容を見る</button>`:''}<br>${skipNote}`
               + r.results.map(x=>`${x.ok?icon('checkCircle',{size:'12px'}):icon('xCircle',{size:'12px'})} ${h((x.url||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>');
             const showBtn2 = $('#dr-run-show-changes');
             if(showBtn2) showBtn2.onclick = () => showDaichoChanges({ ts: '今回の実行結果', results: r.results });
@@ -6088,11 +6088,11 @@ function yearSummaryCardsHtml(data, notesData, canPay){
       </table>
     </div>
     <div class="muted" style="font-size:11px;margin-top:6px">${window.innerWidth<640?'横にスクロールできます':''}</div>
-    <div style="margin-top:16px;display:flex;align-items:flex-end;gap:6px;height:120px;padding:0 4px">
-      ${data.months.map(m=>`<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">
+    <div style="margin-top:16px;display:flex;align-items:flex-end;gap:4px;height:120px;padding:0 4px">
+      ${data.months.map(m=>`<div style="flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;gap:4px">
         <div class="muted" style="font-size:10px">${m.hours}h</div>
         <div class="ys-bar" data-h="${Math.max(2, Math.round(m.hours/maxHours*90))}" style="width:100%;max-width:28px;height:2px;background:var(--gold);border-radius:3px 3px 0 0;transition:height .5s ease"></div>
-        <div class="muted" style="font-size:10px;white-space:nowrap">${m.ym.slice(5,7)}月</div>
+        <div class="muted" style="font-size:10px">${m.ym.slice(5,7)}月</div>
       </div>`).join('')}
     </div>
   </div>
