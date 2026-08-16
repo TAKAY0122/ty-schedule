@@ -419,7 +419,9 @@ tr.li-row-skipped td{background:#f2f2f2;color:#888}
      機能は残したいので、リンク自体(アイコン部分)は消さずテキストだけ隠す。
      非表示にしないと画面名が数文字でも省略されてしまい、今どの画面にいるか
      分かりにくかった。 */
-  .brand{padding-left:0;border-left:none}
+  /* アイコンだけになった分、当たり判定が小さすぎて指でタップしにくくならないよう
+     上下左右に余白を確保する(実機でタップしても反応しないという報告があったため)。 */
+  .brand{padding:16px 8px;margin:-16px -8px;border-left:none}
   .brand-text{display:none}
   .cur-page{font-size:14px}
   .menu-btn{padding:6px 9px;font-size:16px}
