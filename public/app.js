@@ -6068,14 +6068,14 @@ async function pageMemberSummarySearch(app){
 // 埋め込み(renderScheduleYearSummary)と、個人の年間サマリー単独ページ(pageMemberYearSummary)の
 // 両方から使う。
 function yearSummaryCardsHtml(data, notesData, canPay){
-  const monthShort = ym => ym.slice(5,7) + '月' + (ym.slice(5,7)==='12'||ym.slice(5,7)==='01'?`(${ym.slice(0,4)})`:'');
+  const monthShort = ym => ym.slice(5,7) + '月';
   const maxHours = Math.max(1, ...data.months.map(m=>m.hours));
   const rankTrack = data.target ? renderRankTrack(data.target.rank) : '';
   return `
   <div class="card" style="margin-bottom:14px">
-    <div class="row" style="align-items:center;justify-content:center;gap:14px">
+    <div style="text-align:center;font-size:15px;font-weight:700;margin-bottom:10px">${h(data.yearLabel)}</div>
+    <div class="row" style="align-items:center;justify-content:center;flex-wrap:nowrap;gap:14px">
       <button class="btn ghost sm" id="ys-prev">${icon('arrowLeft',{size:'13px'})} 前年度</button>
-      <b style="font-size:15px">${h(data.yearLabel)}</b>
       <button class="btn ghost sm" id="ys-next">次年度 ${icon('arrowRight',{size:'13px'})}</button>
     </div>
     ${rankTrack ? `<div class="muted" style="font-size:11px;text-align:center;margin-top:10px">現在のランク進捗</div>${rankTrack}` : ''}
