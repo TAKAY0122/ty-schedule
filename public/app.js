@@ -1369,7 +1369,7 @@ function renderShell(hash){
   document.getElementById('root').innerHTML = `
   <header>
     <button class="menu-btn" id="menu-btn" aria-label="メニュー">${icon('menu',{size:'12px'})}</button>
-    <a href="#/home" class="brand" id="brand-home">RB事業2課<small>SCHEDULE</small></a>
+    <a href="#/home" class="brand" id="brand-home">${icon('home',{size:'14px'})}<span class="brand-text">RB事業2課<small>SCHEDULE</small></span></a>
     <div class="cur-page">${h(curName)}</div>
     <div class="hright">
       <button class="pin-btn ${ME.handler===1?'active':''}" id="pin-btn" title="${ME.handler===1?'手配者モードを終了':'手配者モードに入る'}">${ME.handler===1?icon('unlock'):icon('key')}</button>

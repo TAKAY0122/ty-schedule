@@ -40,7 +40,7 @@ a{color:var(--ink2)}
 
 /* ===== ヘッダー ===== */
 header{background:rgba(20,26,42,.96);color:#f3f1ea;display:flex;align-items:center;gap:12px;padding:0 12px;height:54px;position:sticky;top:0;z-index:50;box-shadow:0 2px 8px rgba(0,0,0,.2);border-bottom:1px solid rgba(255,255,255,.08)}
-.brand{font-weight:700;letter-spacing:.06em;border-left:3px solid var(--gold);padding-left:9px;white-space:nowrap;font-size:15px;color:inherit;text-decoration:none;cursor:pointer}
+.brand{display:inline-flex;align-items:center;gap:6px;font-weight:700;letter-spacing:.06em;border-left:3px solid var(--gold);padding-left:9px;white-space:nowrap;font-size:15px;color:inherit;text-decoration:none;cursor:pointer}
 .brand:hover{opacity:.85}
 .brand small{display:block;font-size:9px;color:var(--gold);letter-spacing:.2em;font-weight:400}
 .cur-page{font-size:15px;font-weight:600;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
@@ -415,10 +415,12 @@ tr.li-row-skipped td{background:#f2f2f2;color:#888}
 @media (max-width:640px){
   header{height:52px;padding:0 8px;gap:8px}
   /* スマホ幅では現在ページ名(.cur-page)を優先して見せたいため、常に同じ文言の
-     ブランド名は非表示にして幅を空ける(ホームへは引き続きハンバーガーメニューの
-     「ホーム」から行ける)。非表示にしないと画面名が数文字でも省略されてしまい、
-     今どの画面にいるか分かりにくかった。 */
-  .brand{display:none}
+     「RB事業2課」テキストは非表示にして幅を空ける。ただしタップでホームに戻る
+     機能は残したいので、リンク自体(アイコン部分)は消さずテキストだけ隠す。
+     非表示にしないと画面名が数文字でも省略されてしまい、今どの画面にいるか
+     分かりにくかった。 */
+  .brand{padding-left:0;border-left:none}
+  .brand-text{display:none}
   .cur-page{font-size:14px}
   .menu-btn{padding:6px 9px;font-size:16px}
   .uname{font-size:10.5px;line-height:1.15;max-width:90px;overflow:hidden;text-overflow:ellipsis}
