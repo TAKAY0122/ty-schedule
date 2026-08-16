@@ -414,8 +414,11 @@ tr.li-row-skipped td{background:#f2f2f2;color:#888}
 /* ===== スマホ ===== */
 @media (max-width:640px){
   header{height:52px;padding:0 8px;gap:8px}
-  .brand{font-size:13px}
-  .brand small{display:none}
+  /* スマホ幅では現在ページ名(.cur-page)を優先して見せたいため、常に同じ文言の
+     ブランド名は非表示にして幅を空ける(ホームへは引き続きハンバーガーメニューの
+     「ホーム」から行ける)。非表示にしないと画面名が数文字でも省略されてしまい、
+     今どの画面にいるか分かりにくかった。 */
+  .brand{display:none}
   .cur-page{font-size:14px}
   .menu-btn{padding:6px 9px;font-size:16px}
   .uname{font-size:10.5px;line-height:1.15;max-width:90px;overflow:hidden;text-overflow:ellipsis}

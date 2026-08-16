@@ -1361,6 +1361,11 @@ function renderShell(hash){
       for(const c of item.children){ if(hashIs(hash, c.path)){ curName = c.label; break outer; } }
     }
   }
+  // ドロワーの主要メニューに載らないフッターリンク等(パスワード変更・バージョン履歴・
+  // カレンダー連携のやり方 等)は上のnavでは見つからないため、ログイン中一覧で使っている
+  // 既存の対応表(PAGE_LABELS)を流用してフォールバックする。無いと、これらのページだけ
+  // ヘッダー中央に画面名が出ず「今どこにいるか」が分かりにくかった。
+  if(!curName) curName = pageLabelFromHash(hash);
   document.getElementById('root').innerHTML = `
   <header>
     <button class="menu-btn" id="menu-btn" aria-label="メニュー">${icon('menu',{size:'12px'})}</button>
@@ -3996,7 +4001,11 @@ function renderMatrixTable(dates, rows, opts={}){
     const wd = new Date(d+'T00:00:00+09:00').getDay();
     return { d, mo, da, wd, isToday: d===today };
   });
-  return `<div class="sched-wrap${opts.scrollable?' sched-wrap-scroll':''}">
+  // 表が縦に長くなる(メンバー数が多い)ことがあるため、スクロール案内は表の下ではなく
+  // 上に出す(下に出すと、案内を見る前に諦めてしまう恐れがあるため)。
+  const scrollHint = dates.length>2 && window.innerWidth<640
+    ? `<div class="muted" style="font-size:11px;padding:6px 10px 0">横にスクロールできます →</div>` : '';
+  return `${scrollHint}<div class="sched-wrap${opts.scrollable?' sched-wrap-scroll':''}">
     <table class="matrix-table">
       <tr>
         <th class="matrix-name-col">氏名</th>
@@ -5848,8 +5857,8 @@ async function pageHandlerStatus(app){
   <div class="adm-nav sticky-filters">
     ${[['online',`${icon('circleFilled')} ログイン中`],['hist',`${icon('fileText')} 編集履歴`]].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
   </div>
-  ${sec('online',`${icon('circleFilled')} 現在ログイン中のメンバー <span class="muted" style="font-weight:400">(10秒ごとに自動更新)</span>`, `<div id="hd-online" class="muted"><span class="spinner" style="width:13px;height:13px;border-width:2px;margin-right:5px"></span>読み込み中…</div>`)}
-  ${sec('hist',`${icon('fileText')} スケジュール編集履歴 <span class="muted" style="font-weight:400">(直近500件)</span>`, `<div id="hd-history" class="muted"><span class="spinner" style="width:13px;height:13px;border-width:2px;margin-right:5px"></span>読み込み中…</div>`)}`;
+  ${sec('online',`<span style="white-space:nowrap">${icon('circleFilled')} 現在ログイン中のメンバー</span> <span class="muted" style="font-weight:400">(10秒ごとに自動更新)</span>`, `<div id="hd-online" class="muted"><span class="spinner" style="width:13px;height:13px;border-width:2px;margin-right:5px"></span>読み込み中…</div>`)}
+  ${sec('hist',`<span style="white-space:nowrap">${icon('fileText')} スケジュール編集履歴</span> <span class="muted" style="font-weight:400">(直近500件)</span>`, `<div id="hd-history" class="muted"><span class="spinner" style="width:13px;height:13px;border-width:2px;margin-right:5px"></span>読み込み中…</div>`)}`;
 
   app.querySelectorAll('.adm-sec').forEach(d => d.addEventListener('toggle', () => { stHs.open[d.dataset.sec] = d.open; }));
   app.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => {
@@ -7353,7 +7362,7 @@ async function pageAdmin(app){
     </div>
     <div id="dv-out" class="muted">テーブルを選んでください</div>`)}
 
-  ${sec('create',`${icon('plus')} 新規アカウント作成 <span class="muted" style="font-weight:400">(初期パスワード = 登録番号)</span>`, `
+  ${sec('create',`<span style="white-space:nowrap">${icon('plus')} 新規アカウント作成</span> <span class="muted" style="font-weight:400">(初期パスワード = 登録番号)</span>`, `
     <div class="form-grid" style="max-width:640px">
       <label>登録番号 *</label><input id="a-regno" placeholder="登録番号">
       <label>氏名 *</label><input id="a-name" placeholder="氏名">
@@ -7383,7 +7392,7 @@ async function pageAdmin(app){
       </div>
     </div>`)}
 
-  ${sec('list',`${icon('users')} アカウント一覧 <span class="muted" style="font-weight:400" id="ad-count">(${users.length}名)</span>`, `
+  ${sec('list',`<span style="white-space:nowrap">${icon('users')} アカウント一覧</span> <span class="muted" style="font-weight:400" id="ad-count">(${users.length}名)</span>`, `
     <div class="filter-bar">
       <input id="ad-search" class="search-input" placeholder="氏名・登録番号で検索" value="${h(st.q)}">
       <select id="ad-mgr" class="filter-select">
@@ -7503,7 +7512,7 @@ async function pageAdminSettings(app){
     </div>
 `)}
 
-  ${sec('notify',`${icon('bell')} 通知設定 <span class="muted" style="font-weight:400">(新人報告リマインド)</span>`, notifyData ? `
+  ${sec('notify',`<span style="white-space:nowrap">${icon('bell')} 通知設定</span> <span class="muted" style="font-weight:400">(新人報告リマインド)</span>`, notifyData ? `
     <div class="form-grid" style="grid-template-columns:120px 1fr;max-width:440px;gap:10px 12px;align-items:center">
       <label>通知</label>
       <label style="font-weight:400;display:flex;align-items:center;gap:8px"><input type="checkbox" id="nt-enabled" ${notifyData.enabled?'checked':''} style="width:auto"> 通知をオンにする</label>
@@ -7526,7 +7535,7 @@ async function pageAdminSettings(app){
 
   ` : '<div class="muted">通知設定を取得できませんでした</div>')}
 
-  ${sec('wage',`${icon('yen')} 時給設定 <span class="muted" style="font-weight:400">(ランク×時期)</span>`, wageData ? `
+  ${sec('wage',`<span style="white-space:nowrap">${icon('yen')} 時給設定</span> <span class="muted" style="font-weight:400">(ランク×時期)</span>`, wageData ? `
     <div class="muted" style="margin-bottom:8px">現場日に有効な時給が給与計算に使われます。<b>${h(wageData.lockBefore)}</b> 以前の現場は給与確定済み（時給を変えても再計算されません）。</div>
     ${lockData ? `
     <div style="background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:12px">
