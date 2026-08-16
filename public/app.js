@@ -4340,10 +4340,10 @@ async function pageMembers(app){
       </div>`:''}
       <div class="list-scroll pc-only">
       <table class="list ka-table ka-${tab==='1課'?'1':'2'}">
-      <tr>${isHandler?'<th><input type="checkbox" id="m-check-all"></th>':''}<th>登録番号</th><th>氏名</th><th>ランク</th><th>班</th><th>手配担当</th><th>最寄駅</th><th>できること</th><th></th></tr>
+      <tr>${isHandler?'<th><input type="checkbox" id="m-check-all"></th>':''}<th style="text-align:left">氏名</th><th>登録番号</th><th>ランク</th><th>班</th><th>手配担当</th><th>最寄駅</th><th>できること</th><th></th></tr>
       ${list.map(u=>`<tr>
         ${isHandler?(u.id===ME.id?'<td></td>':`<td><input type="checkbox" class="m-check" data-id="${u.id}"></td>`):''}
-        <td>${h(u.regno)}${baseFromRegno(u.regno)?` <span class="muted" style="font-size:11px">(${baseFromRegno(u.regno)})</span>`:''}</td><td><b class="name-link" data-goto-uid="${u.id}">${h(u.name)}</b></td>
+        <td style="text-align:left"><b class="name-link" data-goto-uid="${u.id}">${h(u.name)}</b></td><td>${h(u.regno)}${baseFromRegno(u.regno)?` <span class="muted" style="font-size:11px">(${baseFromRegno(u.regno)})</span>`:''}</td>
         <td>${h(u.rank)}</td><td>${h(u.han)}</td><td>${h(managerName(u,users))}</td><td>${h(u.station)}</td>
         <td class="wrapcell">${h(u.skills)}</td>
         <td>${editBtn(u)} ${schedBtn(u,'ghost')} ${goEditBtn(u)} ${goSummaryBtn(u)}</td>
@@ -4352,7 +4352,7 @@ async function pageMembers(app){
       </div>
       <div class="cards sp-only">
       ${list.map(u=>`<div class="dcard ka-${kaOf(u)==='1課'?'1':'2'}">
-        <div class="dcard-head">${isHandler?(u.id!==ME.id?`<input type="checkbox" class="m-check" data-id="${u.id}" style="margin-right:8px">`:'<span style="width:16px;display:inline-block;margin-right:8px"></span>'):''}<span class="dcard-title name-link" data-goto-uid="${u.id}">${h(u.name)}</span></div>
+        <div class="dcard-head"><span style="display:flex;align-items:center;gap:8px">${isHandler?(u.id!==ME.id?`<input type="checkbox" class="m-check" data-id="${u.id}">`:'<span style="width:16px;display:inline-block"></span>'):''}<span class="dcard-title name-link" data-goto-uid="${u.id}">${h(u.name)}</span></span></div>
         <div class="drow"><span class="dk">登録番号</span><span class="dv">${h(u.regno)}${baseFromRegno(u.regno)?` (${baseFromRegno(u.regno)})`:''}</span></div>
         <div class="drow"><span class="dk">ランク / 班</span><span class="dv">${h(u.rank)||'—'} / ${h(u.han)||'—'}</span></div>
         <div class="drow"><span class="dk">手配担当</span><span class="dv">${h(managerName(u,users))}</span></div>
