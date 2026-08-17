@@ -574,6 +574,24 @@ function applyHomeOrder(items){
   });
 }
 
+// ホーム画面のメニューボタン一覧を組み立てる。編集モード中はドラッグ並び替えのロジックを
+// 単純に保つためグルーピングせずフラット表示にし、通常表示時のみ、現在の並び順のまま
+// カテゴリ(6番目の要素)が連続する区間ごとに見出しを挟む(ユーザーが並び替え済みでも壊れない)。
+function renderHomeMenuItems(menuItems, homeEditing){
+  const btn = ([hash,iconName,label,,role]) => `<a href="${homeEditing?'javascript:void(0)':hash}" class="home-menu-btn ${homeEditing?'editing':''}" data-hash="${hash}">
+        ${homeEditing?`<button class="home-menu-remove" data-hash="${hash}" type="button">${icon('x',{size:'12px'})}</button>`:''}
+        ${role?`<span class="role-dots" style="position:absolute;top:8px;right:8px">${roleDots(role)}</span>`:''}
+        <span class="home-menu-icon">${icon(iconName,{size:'22px'})}</span><span>${h(label)}</span>
+      </a>`;
+  if(homeEditing) return menuItems.map(btn).join('');
+  let prevCat = null;
+  return menuItems.map(item => {
+    const cat = item[5];
+    const label = (cat && cat !== prevCat) ? `<div class="home-menu-section-label">${h(cat)}</div>` : '';
+    prevCat = cat;
+    return label + btn(item);
+  }).join('');
+}
 // 保存・更新などの完了をOKボタン付きポップアップで知らせる
 function popup(message, kind){
   const isError = kind==='error';
@@ -2109,28 +2127,32 @@ async function pageHome(app){
   const unreadCount = notifData.unread || 0;
   const pendingCount = selfReports.length;
 
+  // 6番目の要素はホーム画面でのグルーピング用カテゴリ(通常表示時のみ、この単位で見出しを挟む)。
   const allMenuItems = [
-    ['#/dashboard','gauge','ダッシュボード', has('dashboard_view'), 'admin'],
-    ['#/schedule','calendar','マイスケジュール', true],
-    ['#/availability','handRaise','休み希望', true],
-    ['#/edit','edit','スケジュール入力', ME.handler===1, 'handler'],
-    ['#/availability-team','calendarDays','チーム希望一覧', isHandlerRole, 'handler'],
-    ['#/nominate','user','メンバー指名', isChief, 'chief'],
-    ['#/nominations','checkCircle','指名の承認', isHandlerRole, 'handler'],
-    ['#/sites','stadium','現場一覧', has('sites_view'), 'chief'],
-    ['#/venues','mapPin','会場一覧', has('sites_view'), 'chief'],
-    ['#/artists','megaphone','公演一覧', has('sites_view'), 'chief'],
-    ['#/members/mine','briefcase',`${h(ME.name)}手配`, isHandlerRole, 'handler'],
-    ['#/members','users','メンバー\n一覧', has('members_view'), 'chief'],
-    ['#/summary','barChart','稼働サマリー', has('summary_view'), 'chief'],
-    ['#/member-summary/search','barChart','個人の年間\nサマリー', has('member_summary_view'), 'handler'],
-    ['#/member-stats','trendingUp','メンバー分析', has('member_stats_view'), 'chief'],
-    ['#/day-schedule','layoutGrid','スケジュール一覧', has('day_schedule_view'), 'chief'],
-    ['#/self-reports','mail','変更報告承認', isHandlerRole, 'handler'],
-    ['#/report','fileText','新人報告', true],
-    ['#/reports','clipboardList','報告一覧', true],
-    ['#/import','download','スプレッド取込', has('import_data'), 'handler'],
-    ['#/admin','shieldCheck','アカウント管理', has('account_manage'), 'admin'],
+    ['#/schedule','calendar','マイスケジュール', true, null, '個人'],
+    ['#/availability','handRaise','休み希望', true, null, '個人'],
+    ['#/report','fileText','新人報告', true, null, '個人'],
+    ['#/reports','clipboardList','報告一覧', true, null, '個人'],
+
+    ['#/edit','edit','スケジュール入力', ME.handler===1, 'handler', '手配・管理'],
+    ['#/availability-team','calendarDays','チーム希望一覧', isHandlerRole, 'handler', '手配・管理'],
+    ['#/nominate','user','メンバー指名', isChief, 'chief', '手配・管理'],
+    ['#/nominations','checkCircle','指名の承認', isHandlerRole, 'handler', '手配・管理'],
+    ['#/self-reports','mail','変更報告承認', isHandlerRole, 'handler', '手配・管理'],
+    ['#/members/mine','briefcase',`${h(ME.name)}手配`, isHandlerRole, 'handler', '手配・管理'],
+    ['#/import','download','スプレッド取込', has('import_data'), 'handler', '手配・管理'],
+
+    ['#/sites','stadium','現場一覧', has('sites_view'), 'chief', '一覧・分析'],
+    ['#/venues','mapPin','会場一覧', has('sites_view'), 'chief', '一覧・分析'],
+    ['#/artists','megaphone','公演一覧', has('sites_view'), 'chief', '一覧・分析'],
+    ['#/members','users','メンバー\n一覧', has('members_view'), 'chief', '一覧・分析'],
+    ['#/summary','barChart','稼働サマリー', has('summary_view'), 'chief', '一覧・分析'],
+    ['#/member-summary/search','barChart','個人の年間\nサマリー', has('member_summary_view'), 'handler', '一覧・分析'],
+    ['#/member-stats','trendingUp','メンバー分析', has('member_stats_view'), 'chief', '一覧・分析'],
+    ['#/day-schedule','layoutGrid','スケジュール一覧', has('day_schedule_view'), 'chief', '一覧・分析'],
+
+    ['#/dashboard','gauge','ダッシュボード', has('dashboard_view'), 'admin', '管理者'],
+    ['#/admin','shieldCheck','アカウント管理', has('account_manage'), 'admin', '管理者'],
   ].filter(m=>m[3]);
   const hidden = getHomeHidden();
   const menuItems = applyHomeOrder(allMenuItems.filter(m => !hidden.includes(m[0])));
@@ -2160,11 +2182,7 @@ async function pageHome(app){
       <button class="btn ghost sm" id="home-edit-toggle">${homeEditing?'完了':icon('edit',{size:'13px'})+' 編集'}</button>
     </div>
     <div class="home-menu" id="home-menu-grid">
-      ${menuItems.map(([hash,iconName,label,,role])=>`<a href="${homeEditing?'javascript:void(0)':hash}" class="home-menu-btn ${homeEditing?'editing':''}" data-hash="${hash}">
-        ${homeEditing?`<button class="home-menu-remove" data-hash="${hash}" type="button">${icon('x',{size:'12px'})}</button>`:''}
-        ${role?`<span class="role-dots" style="position:absolute;top:8px;right:8px">${roleDots(role)}</span>`:''}
-        <span class="home-menu-icon">${icon(iconName,{size:'22px'})}</span><span>${h(label)}</span>
-      </a>`).join('')}
+      ${renderHomeMenuItems(menuItems, homeEditing)}
       ${homeEditing?`<button class="home-menu-btn home-menu-add" id="home-menu-add-btn" type="button"><span class="home-menu-icon">${icon('plus',{size:'22px'})}</span><span>追加</span></button>`:''}
     </div>`;
 
@@ -2913,11 +2931,15 @@ async function pageSites(app){
           ${byDate[date].map(s=>`<div class="st-site-row">
           ${canRename ? `<input type="checkbox" class="st-site-check" data-key="${h(siteKey(s))}" ${stSites.selected.has(siteKey(s))?'checked':''}>` : ''}
           <button class="st-site" data-date="${s.date}" data-site="${h(s.site)}">
-            <span class="st-site-name">${h(s.site)}</span>
-            ${s.venue?`<span class="st-site-venue">${h(s.venue)}</span>`:''}
-            <span class="st-site-cnt">${s.cnt}名</span>
-            ${s.registryId?`<span class="muted" style="font-size:11px">(登録のみ・未配置)</span>`:''}
-            ${(s.blacklistNames&&s.blacklistNames.length)?`<span class="st-share blacklist" title="ブラックリスト登録あり:${s.blacklistNames.map(h).join('、')}">${icon('clockWarn')} ${s.blacklistNames.length}</span>`:''}
+            <div class="st-site-row1">
+              <span class="st-site-name">${h(s.site)}</span>
+              <span class="st-site-cnt">${s.cnt}名</span>
+            </div>
+            ${(s.venue || s.registryId || (s.blacklistNames&&s.blacklistNames.length)) ? `<div class="st-site-row2">
+              ${s.venue?`<span class="st-site-venue">${h(s.venue)}</span>`:''}
+              ${s.registryId?`<span class="st-site-tag">登録のみ・未配置</span>`:''}
+              ${(s.blacklistNames&&s.blacklistNames.length)?`<span class="st-share blacklist" title="ブラックリスト登録あり:${s.blacklistNames.map(h).join('、')}">${icon('clockWarn')} ${s.blacklistNames.length}</span>`:''}
+            </div>` : ''}
           </button>
           ${(s.registryId&&canRegister)?`<button type="button" class="st-site-unregister" data-id="${s.registryId}" title="登録した現場情報を削除">${icon('x',{size:'12px'})}</button>`:''}
           </div>
@@ -3195,9 +3217,11 @@ async function pageVenues(app){
     listEl.innerHTML = filtered.length ? filtered.map(v => `<div class="st-site-row">
         ${canRename ? `<input type="checkbox" class="st-site-check" data-venue="${h(v.venue)}" ${st.selected.has(v.venue)?'checked':''}>` : ''}
         <button type="button" class="st-site venue-item ${v.hasManual?'has-manual':''}" data-venue="${h(v.venue)}">
-          <span class="st-site-name">${h(v.venue)}</span>
-          ${v.hasManual?`<span class="venue-manual-badge" title="会場マニュアルあり">${icon('bookOpen',{size:'12px'})} マニュアルあり</span>`:''}
-          <span class="st-site-cnt">${v.cnt}名</span>
+          <div class="st-site-row1">
+            <span class="st-site-name">${h(v.venue)}</span>
+            <span class="st-site-cnt">${v.cnt}名</span>
+          </div>
+          ${v.hasManual?`<div class="st-site-row2"><span class="venue-manual-badge" title="会場マニュアルあり">${icon('bookOpen',{size:'12px'})} マニュアルあり</span></div>`:''}
         </button>
       </div>`).join('') : `<div class="muted" style="padding:20px 0;text-align:center">${q||st.manualOnly||st.groupFilter?'該当する会場はありません':'まだ会場のデータがありません'}</div>`;
     listEl.querySelectorAll('.venue-item').forEach(b => b.onclick = () => openVenueModal(b.dataset.venue));
