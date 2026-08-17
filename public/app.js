@@ -93,6 +93,8 @@ function roleDots(minRole){
   return ['chief','handler','admin'].filter(r => ROLE_DOT_LV[r] >= minLv)
     .map(r => `<span class="role-dot role-dot-${r}"></span>`).join('');
 }
+// ブラックリストの「既にアプリに登録されている」バッジ。一覧・詳細モーダル両方で使う。
+const matchedBadge = ka => ka ? `<span class="tag matched" title="既にアプリに登録されています">${icon('clockWarn')} 登録済(${h(ka)})</span>` : '';
 // ファイル名から日付を推測する(例:「7月15日_台帳」「2026-07-15」「0715」等、よくある命名パターンに対応)。
 // 台帳Excelの手動アップロード・台帳保管からの再取込、両方で使う。
 function guessDateFromName(name){
@@ -1191,7 +1193,7 @@ async function render(){
     else if(hash === '#/report') pageReportForm(app);
     else if(hash.startsWith('#/reports')) await pageReports(app, hash);
     else if(hash === '#/draft') await pageDraft(app);
-    else if(hash === '#/blacklist') await pageBlacklist(app);
+    else if(hash.startsWith('#/blacklist')) await pageBlacklist(app, hash);
     else if(hash === '#/report-export') await pageReportExport(app);
     else if(hash.startsWith('#/import')) await pageImport(app, hash);
     else if(hash === '#/handler-status') await pageHandlerStatus(app);
@@ -2935,16 +2937,18 @@ async function pageSites(app){
               <span class="st-site-name">${h(s.site)}</span>
               <span class="st-site-cnt">${s.cnt}名</span>
             </div>
-            ${(s.venue || s.registryId || (s.blacklistNames&&s.blacklistNames.length)) ? `<div class="st-site-row2">
+            ${(s.venue || s.registryId) ? `<div class="st-site-row2">
               ${s.venue?`<span class="st-site-venue">${h(s.venue)}</span>`:''}
               ${s.registryId?`<span class="st-site-tag">登録のみ・未配置</span>`:''}
-              ${(s.blacklistNames&&s.blacklistNames.length)?`<span class="st-share blacklist" title="ブラックリスト登録あり:${s.blacklistNames.map(h).join('、')}">${icon('clockWarn')} ${s.blacklistNames.length}</span>`:''}
             </div>` : ''}
           </button>
           ${(s.registryId&&canRegister)?`<button type="button" class="st-site-unregister" data-id="${s.registryId}" title="登録した現場情報を削除">${icon('x',{size:'12px'})}</button>`:''}
           </div>
           ${(s.rookies&&s.rookies.length)?`<div class="st-rookie-list">
             ${s.rookies.map(rk=>`<button type="button" class="st-rookie-item" data-report-id="${rk.reportId||''}">${icon('badge',{size:'11px'})} ${h(rk.name)}${rk.reporterName?`<span class="muted"> (報告:${h(rk.reporterName)})</span>`:''}</button>`).join('')}
+          </div>`:''}
+          ${(s.blacklistNames&&s.blacklistNames.length)?`<div class="st-rookie-list">
+            ${s.blacklistNames.map(b=>`<button type="button" class="st-blacklist-item" data-blacklist-id="${b.blacklistId||''}">${icon('clockWarn',{size:'11px'})} ${h(b.name)}</button>`).join('')}
           </div>`:''}`).join('')}
         </div>
       </details>`;
@@ -2968,6 +2972,9 @@ async function pageSites(app){
   app.querySelectorAll('.st-site').forEach(b => b.onclick = () => openSiteModal(b.dataset.date, b.dataset.site));
   app.querySelectorAll('.st-rookie-item').forEach(b => b.onclick = () => {
     location.hash = b.dataset.reportId ? `#/reports?open=${b.dataset.reportId}` : '#/reports';
+  });
+  app.querySelectorAll('.st-blacklist-item').forEach(b => b.onclick = () => {
+    location.hash = b.dataset.blacklistId ? `#/blacklist?open=${b.dataset.blacklistId}` : '#/blacklist';
   });
   app.querySelectorAll('.st-site-unregister').forEach(b => b.onclick = async (e) => {
     e.stopPropagation();
@@ -5180,12 +5187,11 @@ async function pageDraft(app){
 }
 
 /* ===== ブラックリスト ===== */
-async function pageBlacklist(app){
+async function pageBlacklist(app, hash){
   if(!has('blacklist_manage')){ notFound(app); return; }
   const rows = await api('/blacklist');
   const sc = id => `<select id="${id}" style="width:64px"><option value="">-</option>${[1,2,3,4,5].map(n=>`<option>${n}</option>`).join('')}</select>`;
   const scTh = ['会話','服装','身なり','遅刻','業務'];
-  const matchedBadge = ka => ka ? `<span class="tag matched" title="既にアプリに登録されています">${icon('clockWarn')} 登録済(${h(ka)})</span>` : '';
   app.innerHTML = `
   <h2>ブラックリスト</h2>
   <div class="card">
@@ -5206,7 +5212,7 @@ async function pageBlacklist(app){
   <div class="card">
     <div class="sched-wrap pc-only"><table class="list">
     <tr><th>提出日時</th><th>日付</th><th>報告者</th><th>名前</th>${scTh.map(t=>`<th>${t}</th>`).join('')}<th>理由</th><th>登録者</th><th>状態</th><th></th></tr>
-    ${rows.map(r=>`<tr>
+    ${rows.map(r=>`<tr class="click" data-id="${r.id}">
       <td>${h(r.ts)}</td><td>${h(r.date)}</td><td>${h(r.reporter)}</td><td><b>${h(r.name)}</b></td>
       <td class="c">${r.s_talk??''}</td><td class="c">${r.s_dress??''}</td><td class="c">${r.s_groom??''}</td><td class="c">${r.s_late??''}</td><td class="c">${r.s_work??''}</td>
       <td>${h(r.reason)}</td><td>${h(r.added_by)}</td><td>${matchedBadge(r.matched_ka)}</td>
@@ -5215,7 +5221,7 @@ async function pageBlacklist(app){
     <div class="cards sp-only">
     ${rows.map(r=>{
       const sc2 = [['会話',r.s_talk],['服装',r.s_dress],['身なり',r.s_groom],['遅刻',r.s_late],['業務',r.s_work]].filter(x=>x[1]!=null);
-      return `<div class="dcard">
+      return `<div class="dcard clickable" data-id="${r.id}">
       <div class="dcard-head"><span class="dcard-title">${h(r.name)}</span><span class="dcard-sub">${h(r.date)}</span></div>
       ${r.matched_ka?`<div class="drow"><span class="dk">状態</span><span class="dv">${matchedBadge(r.matched_ka)}</span></div>`:''}
       <div class="drow"><span class="dk">報告者</span><span class="dv">${h(r.reporter)}</span></div>
@@ -5226,7 +5232,17 @@ async function pageBlacklist(app){
     </div>`;}).join('') || '<div class="muted">登録はありません</div>'}
     </div>
   </div>`;
-  app.querySelectorAll('.bl-sitelog').forEach(b => b.onclick = () => openNameSiteLog(b.dataset.name));
+  app.querySelectorAll('.bl-sitelog').forEach(b => b.onclick = (e) => { e.stopPropagation(); openNameSiteLog(b.dataset.name); });
+  app.querySelectorAll('[data-id]').forEach(el => el.onclick = () => {
+    const target = rows.find(r => String(r.id) === el.dataset.id);
+    if(target) openBlacklistEntry(target);
+  });
+  // 現場一覧などから「この登録を見る」で遷移してきた場合(#/blacklist?open=123)、該当の登録を自動で開く
+  const openId = new URLSearchParams((hash||'').split('?')[1] || '').get('open');
+  if(openId){
+    const target = rows.find(r => String(r.id) === String(openId));
+    if(target) openBlacklistEntry(target);
+  }
   $('#b-add').onclick = async () => {
     const name = $('#b-name').value.trim();
     if(!name){ popup('名前は必須です', 'error'); return; }
@@ -5242,6 +5258,25 @@ async function pageBlacklist(app){
       }catch(e){ popup(e.message, 'error'); }
     });
   };
+}
+
+// ブラックリスト1件の詳細モーダル。現場一覧の要注意バッジ(#/blacklist?open=ID)から遷移した時にも使う。
+function openBlacklistEntry(r){
+  const sc2 = [['会話',r.s_talk],['服装',r.s_dress],['身なり',r.s_groom],['遅刻',r.s_late],['業務',r.s_work]].filter(x=>x[1]!=null);
+  modal(`<h3>${icon('ban',{size:'15px'})} ブラックリスト #${r.id} ${matchedBadge(r.matched_ka)}</h3>
+  <dl class="kv">
+    <dt>提出日時</dt><dd>${h(r.ts)}</dd>
+    <dt>対象日付</dt><dd>${h(r.date)}</dd>
+    <dt>報告者</dt><dd>${h(r.reporter)}</dd>
+    <dt>名前</dt><dd><b>${h(r.name)}</b></dd>
+    ${sc2.length?`<dt>評価</dt><dd>${sc2.map(x=>`${x[0]} ${x[1]}`).join(' / ')}</dd>`:''}
+    <dt>理由</dt><dd>${h(r.reason)||'—'}</dd>
+    <dt>登録者</dt><dd>${h(r.added_by)}</dd>
+  </dl>
+  <div class="row" style="margin-top:14px">
+    <button class="btn ghost sm" id="ble-sitelog">${icon('stadium',{size:'12px'})} 過去の現場を見る</button>
+  </div>`);
+  $('#ble-sitelog').onclick = () => openNameSiteLog(r.name);
 }
 
 /* ===== 新人報告・ブラックリストのスプレッドシート貼り付け用エクスポート(管理者専用) ===== */

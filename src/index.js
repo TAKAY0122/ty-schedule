@@ -1301,6 +1301,24 @@ async function matchRookieAndBlacklist(env, rows) {
   }
 }
 
+// 新人報告・ブラックリストが新規登録された直後、これまでの全期間のscheduleデータに対して
+// 即座に氏名照合を行う。matchRookieAndBlacklist()は以後の新規取込行にしか反応しないため、
+// これを呼ばないと「提出時点で既に過去の実績がある対象者」が現場一覧に一切出てこない
+// (次に何かインポートが走るまで気づけない)ことになるため、提出APIから都度呼び出す。
+async function matchNameAgainstFullHistory(env, name) {
+  const key = normName(name);
+  if (!key) return;
+  const users = (await env.DB.prepare('SELECT id, name FROM users').all()).results;
+  const matchedUsers = users.filter(u => normName(u.name) === key);
+  if (!matchedUsers.length) return;
+  const ids = matchedUsers.map(u => u.id);
+  const ph = ids.map(() => '?').join(',');
+  const rows = (await env.DB.prepare(
+    `SELECT date, site, venue FROM schedule WHERE type='work' AND user_id IN (${ph}) AND site<>''`
+  ).bind(...ids).all()).results;
+  await matchRookieAndBlacklist(env, rows.map(r => ({ personName: name, date: r.date, site: r.site, venue: r.venue })));
+}
+
 // グリッドからフォーマットを推定。Cは勤務表(打刻/退勤/集合などの語)、それ以外はAB(月間表)
 function detectFormat(grid) {
   const head = grid.slice(0, 14).flat().join(' ');
@@ -3703,7 +3721,7 @@ async function api(req, env, url) {
     // 良い人(新人報告)と悪い人(ブラックリスト)は別々に持たせ、表示側で混同しないようにする。
     // 新人報告は、誰が報告したか・タップで報告詳細に飛べるよう、report_id/reporter_nameも一緒に返す。
     const matches = (await env.DB.prepare(
-      `SELECT m.kind, m.date, m.site, m.matched_name, m.report_id, r.reporter_name
+      `SELECT m.kind, m.date, m.site, m.matched_name, m.report_id, m.blacklist_id, r.reporter_name
        FROM rookie_site_matches m LEFT JOIN reports r ON m.report_id = r.id
        WHERE m.date LIKE ?`
     ).bind(month + '%').all()).results;
@@ -3711,7 +3729,7 @@ async function api(req, env, url) {
     for (const m of matches) {
       const key = m.date + '|' + m.site;
       if (m.kind === 'report') (rookieMap[key] ||= []).push({ name: m.matched_name, reportId: m.report_id, reporterName: m.reporter_name || '' });
-      else (blacklistMap[key] ||= []).push(m.matched_name);
+      else (blacklistMap[key] ||= []).push({ name: m.matched_name, blacklistId: m.blacklist_id });
     }
     for (const r of rows) {
       const key = r.date + '|' + r.site;
@@ -4889,6 +4907,7 @@ async function api(req, env, url) {
     const newReportId = ins.meta && ins.meta.last_row_id;
     await notifyChiefs(env, 'report', `📝 新人報告:${r.candidate_name}(報告者:${me.name})${r.status === 'pending' ? ' — 2次チェックをお願いします' : ''}`, newReportId ? `#/reports?open=${newReportId}` : '');
     await rookieNotify(env, r);
+    try { await matchNameAgainstFullHistory(env, r.candidate_name); } catch (e) {}
     return J({ ok: 1 });
   }
   // 新人報告一覧: 1次(報告内容)は全員(メンツ含む)が閲覧可能。2次の編集はチーフ以上のみ(下のPATCHで制限)
@@ -4938,6 +4957,7 @@ async function api(req, env, url) {
       const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
       if (admins.length) await notify(env, admins.map(a => a.id), 'blacklist', `⚠️ ブラックリストに登録:${body.name}(登録者:${me.name})`, '#/blacklist');
     } catch (e) {}
+    try { await matchNameAgainstFullHistory(env, body.name); } catch (e) {}
     return J({ ok: 1 });
   }
 
