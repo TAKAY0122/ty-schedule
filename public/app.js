@@ -5052,6 +5052,7 @@ function openReport(r){
   const canCheck = has('report_check'); // 2次チェックの記入・修正
   const canBlacklist = has('blacklist_manage'); // ブラックリスト登録
   const canDelete = has('site_manage'); // 削除(手配者以上)
+  const canSiteLog = has('report_check') || has('blacklist_manage'); // 過去の現場を見る(名前一致検索)
   modal(`<h3>新人報告 #${r.id} ${pending?'<span class="tag pending">2次未チェック</span>':'<span class="tag checked">チェック済</span>'}</h3>
   <dl class="kv">
     <dt>タイムスタンプ</dt><dd>${h(r.ts)}</dd>
@@ -5082,9 +5083,12 @@ function openReport(r){
   <div class="row" style="margin-top:12px"><button class="btn gold" id="c-save">${pending ? 'チェック完了' : '修正を保存'}</button>${!pending?'<span class="muted" style="font-size:12px">※ ドラフト承認を「OK」にするとドラフト一覧に表示されます</span>':''}</div>`
   : (pending ? `<div class="msg" style="background:#f0efe9;padding:12px;border-radius:8px;margin-top:14px;font-size:13px">2次チェックはまだ行われていません。</div>` : '')}
   <div class="row" style="margin-top:14px;gap:8px">
+    ${canSiteLog ? `<button class="btn ghost sm" id="rp-sitelog">${icon('stadium',{size:'12px'})} 過去の現場を見る</button>` : ''}
     ${canBlacklist ? `<button class="btn danger sm" id="bl-add">ブラックリストに登録</button>` : ''}
-    ${canDelete ? `<button class="btn danger sm" id="report-del" style="margin-left:${canBlacklist?'0':'auto'}">${icon('trash',{size:'12px'})} この報告を削除</button>` : ''}
+    ${canDelete ? `<button class="btn danger sm" id="report-del" style="margin-left:auto">${icon('trash',{size:'12px'})} この報告を削除</button>` : ''}
   </div>`);
+  const siteLogBtn = $('#rp-sitelog');
+  if(siteLogBtn) siteLogBtn.onclick = () => openNameSiteLog(r.candidate_name);
 
   const cs = $('#c-save');
   if(cs) cs.onclick = async () => {
@@ -5124,6 +5128,32 @@ function openReport(r){
       }catch(e){ popup(e.message, 'error'); }
     });
   };
+}
+
+// 新人報告・ブラックリストの氏名(自由記述、uidが分からない)から、同じ名前のアプリ登録者を
+// 探して過去の現場ログを表示する。uidが分かっている場面ではopenMemberVenueList等を使うこと。
+async function openNameSiteLog(name){
+  modal(`<h3>${icon('stadium',{size:'15px'})} ${h(name)} さんの過去の現場</h3><div class="loading-box"><span class="spinner"></span>読み込み中…</div>`);
+  let data;
+  try{ data = await api(`/name-site-log?name=${encodeURIComponent(name)}`); }
+  catch(e){ modal(`<h3>${h(name)} さんの過去の現場</h3><div class="msg err">${h(e.message)}</div>`); return; }
+  const matchedUsers = data.matchedUsers || [], rows = data.rows || [];
+  if(!matchedUsers.length){
+    modal(`<h3>${icon('stadium',{size:'15px'})} ${h(name)} さんの過去の現場</h3>
+      <div class="muted" style="padding:16px 0;text-align:center">この名前でアプリに登録されているメンバーは見つかりませんでした。</div>`);
+    return;
+  }
+  const multi = matchedUsers.length > 1;
+  modal(`<h3>${icon('stadium',{size:'15px'})} ${h(name)} さんの過去の現場${rows.length?` <span class="muted" style="font-size:12px;font-weight:400">(${rows.length}件)</span>`:''}</h3>
+    ${multi?`<div class="muted" style="font-size:12px;margin-bottom:10px">同姓同名が${matchedUsers.length}名見つかったため、まとめて表示しています。</div>`:''}
+    ${rows.length ? `<div style="max-height:50vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px">
+      ${rows.map(r=>`<div style="font-size:12.5px;padding:6px 8px;background:#faf9f6;border:1px solid var(--line);border-radius:6px">
+        <b style="color:var(--ink)">${h(r.date)}</b> ${h(r.site)}${r.venue?` <span class="muted">(${h(r.venue)})</span>`:''}
+      </div>`).join('')}
+    </div>` : `<div class="muted" style="padding:16px 0;text-align:center">アプリへの登録はありますが、現場の実績はまだありません。</div>`}
+    ${!multi?`<div class="row" style="margin-top:14px"><a href="#/schedule/${matchedUsers[0].id}" class="btn ghost sm" id="nsl-goto">${icon('calendar',{size:'12px'})} このメンバーのスケジュールを見る</a></div>`:''}`);
+  const goto = $('#nsl-goto');
+  if(goto) goto.onclick = () => closeModal();
 }
 
 /* ===== ドラフトリスト ===== */
@@ -5175,11 +5205,12 @@ async function pageBlacklist(app){
   </div>
   <div class="card">
     <div class="sched-wrap pc-only"><table class="list">
-    <tr><th>提出日時</th><th>日付</th><th>報告者</th><th>名前</th>${scTh.map(t=>`<th>${t}</th>`).join('')}<th>理由</th><th>登録者</th><th>状態</th></tr>
+    <tr><th>提出日時</th><th>日付</th><th>報告者</th><th>名前</th>${scTh.map(t=>`<th>${t}</th>`).join('')}<th>理由</th><th>登録者</th><th>状態</th><th></th></tr>
     ${rows.map(r=>`<tr>
       <td>${h(r.ts)}</td><td>${h(r.date)}</td><td>${h(r.reporter)}</td><td><b>${h(r.name)}</b></td>
       <td class="c">${r.s_talk??''}</td><td class="c">${r.s_dress??''}</td><td class="c">${r.s_groom??''}</td><td class="c">${r.s_late??''}</td><td class="c">${r.s_work??''}</td>
-      <td>${h(r.reason)}</td><td>${h(r.added_by)}</td><td>${matchedBadge(r.matched_ka)}</td></tr>`).join('') || '<tr><td colspan="12" class="muted">登録はありません</td></tr>'}
+      <td>${h(r.reason)}</td><td>${h(r.added_by)}</td><td>${matchedBadge(r.matched_ka)}</td>
+      <td><button class="btn ghost sm icon-btn bl-sitelog" data-name="${h(r.name)}" title="過去の現場を見る">${icon('stadium')}</button></td></tr>`).join('') || '<tr><td colspan="13" class="muted">登録はありません</td></tr>'}
     </table></div>
     <div class="cards sp-only">
     ${rows.map(r=>{
@@ -5191,9 +5222,11 @@ async function pageBlacklist(app){
       ${sc2.length?`<div class="drow"><span class="dk">評価</span><span class="dv"><div class="dscore">${sc2.map(x=>`<span>${x[0]} ${x[1]}</span>`).join('')}</div></span></div>`:''}
       ${r.reason?`<div class="drow"><span class="dk">理由</span><span class="dv">${h(r.reason)}</span></div>`:''}
       <div class="drow"><span class="dk">登録者</span><span class="dv dcard-sub">${h(r.added_by)} / ${h(r.ts)}</span></div>
+      <div class="dcard-actions"><button class="btn ghost sm bl-sitelog" data-name="${h(r.name)}">${icon('stadium',{size:'12px'})} 過去の現場を見る</button></div>
     </div>`;}).join('') || '<div class="muted">登録はありません</div>'}
     </div>
   </div>`;
+  app.querySelectorAll('.bl-sitelog').forEach(b => b.onclick = () => openNameSiteLog(b.dataset.name));
   $('#b-add').onclick = async () => {
     const name = $('#b-name').value.trim();
     if(!name){ popup('名前は必須です', 'error'); return; }

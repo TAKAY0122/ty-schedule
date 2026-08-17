@@ -157,6 +157,7 @@ const APP_STRUCTURE_API_GROUPS = [
     ['GET', '/artist-members', '指定した公演を経験したことのあるメンバー一覧(準備中、チーフ以上)。sortパラメータ対応'],
     ['GET', '/member-artists', '指定したメンバーが行ったことのある公演一覧(準備中、チーフ以上)'],
     ['GET', '/member-site-log', '指定したメンバーの現場ログ(1稼働=1行、日付降順。チーフ以上)。集計はせず生ログを返す'],
+    ['GET', '/name-site-log', '新人報告・ブラックリストの氏名(自由記述)と同じ名前のアプリ登録者を探し、その人の過去の現場ログを返す(blacklist_manage/report_check権限者)。同姓同名は全員分を返す'],
     ['POST', '/artists/bulk-rename', 'チェックした複数の公演名をまとめて統一名称に変更(準備中、手配者以上)。【セクション等】表記は維持'],
     ['POST', '/artists/find-replace', '公演名(本体部分)に含まれる文字列の一部だけを一括置換(準備中、手配者以上)。body.preview=trueでプレビューのみ。body.artistsで対象を絞り込み可(フォルダ内実行時の誤爆防止)'],
     ['GET/POST', '/artist-folders', '公演フォルダの一覧取得・新規作成(準備中)。GETはチーフ以上、POSTは手配者以上'],
@@ -1233,11 +1234,14 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
   return { applied, skipped, skippedUnregistered, skippedUnchanged, skippedInvalid, skippedOtherOrg, skippedUnassigned, errors, changes, ts };
 }
 
+// 氏名比較用の正規化(空白除去のみ)。新人報告・ブラックリストの氏名(自由記述)を、
+// users.nameや他の氏名と突き合わせる箇所で共通して使う。
+const normName = s => String(s || '').replace(/[\s　]/g, '');
+
 // 新しくアカウントが作成された時、氏名が一致する新人報告・ブラックリストのレコードに
 // 所属課を記録する(「新人報告→ドラフト→登録」を飛ばして直接登録された場合の後追い対応)。
 // これにより、該当レコードは新人共有・ブラックリスト共有(matchRookieAndBlacklist)の対象から外れる。
 async function markAcquiredByName(env, name, ka) {
-  const normName = s => String(s || '').replace(/[\s　]/g, '');
   const key = normName(name);
   if (!key) return;
   const kaVal = ka || '(所属未設定)';
@@ -1256,7 +1260,6 @@ async function markAcquiredByName(env, name, ka) {
 // 通知する。新人報告(良い人の共有)とブラックリスト(悪い人の共有)は、通知の種類・文言を明確に分け、
 // 混同しないようにする。既にアプリに登録済み(acquired_ka/matched_kaが設定済み)の人はそもそも対象にしない。
 async function matchRookieAndBlacklist(env, rows) {
-  const normName = s => String(s || '').replace(/[\s　]/g, '');
   const rowsWithName = (rows || []).filter(r => r.personName && r.date && r.site);
   if (!rowsWithName.length) return;
 
@@ -3974,6 +3977,26 @@ async function api(req, env, url) {
     ).bind(uid).all()).results;
     const result = rows.map(r => ({ date: r.date, site: r.site, venue: r.venue, artist: extractArtistName(r.site) }));
     return J(result);
+  }
+
+  // ---- 新人報告・ブラックリストの氏名(自由記述)から、同じ名前のアプリ登録者を探し、
+  //      その人の過去の現場ログを返す(新人報告・ブラックリストの権限者向け)。氏名の一致判定は
+  //      markAcquiredByName/matchRookieAndBlacklistと同じnormName()を使い、表記の扱いを揃える。
+  //      同姓同名が複数いる場合は全員分をまとめて返す(誰の記録か取り違えるより、多めに見せる方が安全)。 ----
+  if (method === 'GET' && path === '/name-site-log') {
+    if (!has(me, 'blacklist_manage') && !has(me, 'report_check')) return ERR('ページが見つかりません', 404);
+    const name = (url.searchParams.get('name') || '').trim();
+    if (!name) return ERR('name が必要です');
+    const key = normName(name);
+    const users = (await env.DB.prepare('SELECT id, name FROM users').all()).results;
+    const matchedUsers = users.filter(u => normName(u.name) === key);
+    if (!matchedUsers.length) return J({ matchedUsers: [], rows: [] });
+    const ids = matchedUsers.map(u => u.id);
+    const ph = ids.map(() => '?').join(',');
+    const rows = (await env.DB.prepare(
+      `SELECT date, site, venue, user_id FROM schedule WHERE type='work' AND user_id IN (${ph}) AND site<>'' ORDER BY date DESC LIMIT 200`
+    ).bind(...ids).all()).results;
+    return J({ matchedUsers: matchedUsers.map(u => ({ id: u.id, name: u.name })), rows });
   }
 
   // ---- アーティスト一覧(準備中、chief以上)。現場名から「【セクション等】」を除いた本体名を
