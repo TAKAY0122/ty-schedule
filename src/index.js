@@ -273,6 +273,17 @@ async function getSetting(env, key, def) {
   return r ? r.value : def;
 }
 
+// 保存済み取り込みURL(import_urls)から、指定したURL群を取り除いて保存し直す。
+// 台帳の深夜自動再取り込み完了後の使い捨て削除(cronDaichoReload)と、
+// 手動削除(POST /import-urls/delete)の両方から使う共通処理。
+async function removeImportUrls(env, urlsToRemove) {
+  if (!urlsToRemove || !urlsToRemove.length) return;
+  const savedRaw = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
+  const saved = savedRaw.map(x => typeof x === 'string' ? { url: x, sheetTitle: '', savedAt: '', targetDate: '' } : x);
+  const next = saved.filter(x => !urlsToRemove.includes(x.url));
+  await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('import_urls',?)").bind(JSON.stringify(next)).run();
+}
+
 // 台帳・予定表の取り込み時に「現場名ではない」と判定する文言(×・休暇・1日OK等)を
 // キーワード→種別(x/off/ok/paid/ignore)のマップとして取得する。
 async function loadNonSiteKeywords(env) {
@@ -2731,9 +2742,12 @@ async function api(req, env, url) {
     const checkAbsent = body.checkAbsent !== undefined ? !!body.checkAbsent : isFullSet;
     try {
       // 進捗の保存先(import_urls_progress)は cronDaichoReload と共用のキーなので、手動実行では
-      // 触らない(opt.progressKeyを渡さない)。以前は import_urls (保存済みURL設定そのもの)へ
-      // 直接書き戻しており、完了後に元へ戻す処理も無かったため、手動実行するたびに保存済みURLの
-      // リストが空になってしまい、以後の自動取込が何日も止まる不具合があった(2026年8月修正)。
+      // 触らない(opt.progressKeyを渡さない)。以前は runDaichoReload の内部で import_urls
+      // (保存済みURL設定そのもの)へ進捗として直接書き戻しており、完了後に元へ戻す処理も無かった
+      // ため、手動実行するたびに保存済みURLのリストが空になってしまい、以後の自動取込が何日も
+      // 止まる不具合があった(2026年8月修正)。今はimport_urlsを進捗の一時置き場としては使わず、
+      // 実際に処理を終えたURLだけを、下のremoveImportUrls()で使い捨て削除する(1URL=1日分の
+      // データという運用のため。時間予算切れで手をつけられなかった分は残る)。
       const r = await runDaichoReload(env, targetUrls, { checkAbsent, sourceLabel: '台帳手動再取り込み' });
       // 手配担当者向けの管理者ダッシュボード「システム状態」が古い結果のまま表示され続けないよう、
       // 手動実行の場合も深夜自動実行(cronDaichoReload)と同じ内容をdaicho_reload_last_resultへ
@@ -2742,6 +2756,10 @@ async function api(req, env, url) {
       await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_result',?)").bind(
         JSON.stringify({ ts: jstTs(), count: targetUrls.length, results: r.results, clearedAbsent: r.absentResult.clearedPeople, clearedRegistrations: r.registryResult.clearedRegistrations })
       ).run();
+      // 実際に取り込みを試みたURL(成功・失敗どちらも)は使い捨てで保存済みリストから削除する
+      // (深夜自動実行と同じ扱い。1URL=1日分のデータという運用のため)。時間予算切れで
+      // 手をつけられなかった分(r.results に含まれない)は削除しない。
+      try { await removeImportUrls(env, r.results.map(x => x.url)); } catch (e) {}
       // 「本日実行済み」フラグは、保存済み全URLを対象にした手動実行が時間予算切れなく完了した
       // 場合のみ立てる。一部URLだけを選んだ手動実行(動作確認等)でこのフラグを立ててしまうと、
       // その夜のcronDaichoReloadが「今日はもう実行済み」とみなして他の未選択URLを一切自動取込
@@ -4806,15 +4824,14 @@ async function api(req, env, url) {
   // 保存済み取り込みURLの削除(手配者以上)
   if (method === 'POST' && path === '/import-urls/delete') {
     if (!has(me, 'import_data')) return ERR('ページが見つかりません', 404);
-    const savedRaw = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
-    const saved = savedRaw.map(x => typeof x === 'string' ? { url: x, sheetTitle: '', savedAt: '', targetDate: '' } : x);
-    let next;
-    if (body.all) next = [];
-    else if (body.url) next = saved.filter(x => x.url !== body.url);
-    else if (Array.isArray(body.urls)) next = saved.filter(x => !body.urls.includes(x.url));
-    else next = saved;
-    await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('import_urls',?)").bind(JSON.stringify(next)).run();
-    return J({ ok: 1, urls: next });
+    if (body.all) {
+      await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('import_urls',?)").bind('[]').run();
+      return J({ ok: 1, urls: [] });
+    }
+    const toRemove = body.url ? [body.url] : (Array.isArray(body.urls) ? body.urls : []);
+    await removeImportUrls(env, toRemove);
+    const raw = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
+    return J({ ok: 1, urls: raw.map(x => typeof x === 'string' ? { url: x, sheetTitle: '', savedAt: '', targetDate: '' } : x) });
   }
 
   // ---- 手配者専用 ----
@@ -5349,6 +5366,12 @@ async function cronDaichoReload(env) {
 
   // 全URLの取込を終えてからフラグを立てる(途中で予期せぬ例外が起きても、その日のうちに再試行できるようにするため)
   await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_run',?)").bind(today).run();
+
+  // 保存済みURLは、その日の深夜取り込み(確定版の上書き)を終えたら使い捨てで削除する
+  // (1URL=1日分のデータという運用のため。「毎日自動で」は、翌日以降は新しいURLを
+  // 保存し直すことで続けられる、という前提)。ここに到達した時点でincomplete=falseが
+  // 確定しているため、削除しても「時間切れで一部だけ処理した回に消してしまう」事故は起きない。
+  try { await removeImportUrls(env, urls); } catch (e) { console.error('[cronDaichoReload] failed to remove processed import_urls:', e); }
 
   // 取り込み結果を確定・通知しておく(この後の不在者判定・照合処理でタイムアウトしても、
   // 取り込み自体の成否は必ず管理者に届くようにするため)

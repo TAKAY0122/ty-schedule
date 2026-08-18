@@ -5409,8 +5409,8 @@ async function pageImport(app, hash){
   ${canReloadSettings ? `
   <div class="card" style="margin-top:16px">
     <h3 style="margin-bottom:8px">${icon('moon')} 台帳の深夜自動再取り込み</h3>
-    <div class="muted" style="margin-bottom:10px">上記で「URLを保存する」にチェックして取り込んだ台帳URLを、<b>設定した時刻に毎日自動で再取り込み</b>します。手動取り込みが「事前の仮確認」、この自動処理が「その日の夜に確定版で上書き」という運用です。</div>
-    <div class="muted" style="margin-bottom:12px">実行後、保存済みURLは自動的に削除されます。またR2台帳は<b>同じファイルの古いバージョンが削除され、最新版1件だけが残ります</b>。</div>
+    <div class="muted" style="margin-bottom:10px">上記で「URLを保存する」にチェックして取り込んだ台帳URLを、<b>設定した時刻に自動で再取り込み</b>します。手動取り込みが「事前の仮確認」、この自動処理が「その日の夜に確定版で上書き(不在者の休暇化を含む)」という運用です。</div>
+    <div class="muted" style="margin-bottom:12px">この夜間取り込みが完了すると、保存済みURLは<b>使い切りとして自動的に削除</b>されます(1URL=1日分のデータのため)。<b>翌日以降も自動で取り込ませたい場合は、その日ごとに新しいURLを保存し直してください。</b>またR2台帳は<b>同じファイルの古いバージョンが削除され、最新版1件だけが残ります</b>。</div>
     <div class="form-grid" style="max-width:420px">
       <label>実行時刻</label>
       <select id="dr-hour" style="width:120px;max-width:100%">${Array.from({length:24},(_,i)=>`<option value="${i}" ${daichoReloadSettings&&daichoReloadSettings.hour===i?'selected':''}>${String(i).padStart(2,'0')}:00</option>`).join('')}</select>
