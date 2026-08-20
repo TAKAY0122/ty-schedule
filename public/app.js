@@ -414,6 +414,33 @@ async function api(path, opt = {}) {
 function logoutLocal(){ TOKEN=''; ME=null; localStorage.removeItem('tk'); goTo('#/login'); }
 function clearTimers(){ timers.forEach(clearInterval); timers=[]; }
 function shiftMonth(m, d){ const [y,mm]=m.split('-').map(Number); const dt=new Date(y, mm-1+d, 1); return dt.getFullYear()+'-'+pad(dt.getMonth()+1); }
+// 「年月を選択」モーダルの共通処理。月見出しをタップした際に、◀▶での1ヶ月ずつの移動に加えて
+// カレンダーから年月を直接選んで一気に移動できるようにする(元はマイスケジュールのみの機能だったが、
+// 同様に月をまたいで移動する他のページにも共通化して展開している)。
+// input[type=month]は、モーダル(backdrop-filter+border-radius+overflow:hidden)内でiOS Safariが
+// ネイティブのフォームコントロールを正しくクリップできず枠からはみ出す不具合が実機で確認されたため、
+// 年・月を別々のselectで選ばせる方式にしてある(どのブラウザでも確実に同じ見た目になる)。
+function openMonthJumpModal(currentYM, onSelect){
+  const [curY, curM] = currentYM.split('-').map(Number);
+  const nowY = Number(jstToday().slice(0,4));
+  const years = []; for(let y=nowY-5; y<=nowY+2; y++) years.push(y);
+  modal(`<h3>${icon('calendar',{size:'15px'})} 表示する年月を選択</h3>
+    <div class="row" style="gap:8px;flex-wrap:nowrap">
+      <select id="jump-year-input" style="flex:1;min-width:0;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:16px">
+        ${years.map(y=>`<option value="${y}" ${y===curY?'selected':''}>${y}年</option>`).join('')}
+      </select>
+      <select id="jump-month-input" style="flex:1;min-width:0;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:16px">
+        ${Array.from({length:12},(_,i)=>i+1).map(m=>`<option value="${m}" ${m===curM?'selected':''}>${m}月</option>`).join('')}
+      </select>
+    </div>
+    <div class="row" style="margin-top:14px"><button class="btn gold" id="jump-month-go">この年月を表示する</button></div>`);
+  $('#jump-month-go').onclick = () => {
+    const y = $('#jump-year-input').value;
+    const m = String($('#jump-month-input').value).padStart(2,'0');
+    closeModal();
+    onSelect(`${y}-${m}`);
+  };
+}
 async function getUsers(force){ if(!USERS_CACHE||force) USERS_CACHE = await api('/users'); return USERS_CACHE; }
 
 // 認証ヘッダ付きでファイルを取得しブラウザにダウンロードさせる
@@ -1653,7 +1680,7 @@ async function pageAvailability(app){
   <div class="card" style="margin-bottom:14px">
     <div class="row" style="align-items:center;gap:10px">
       <button class="btn ghost sm" id="av-prev">◀</button>
-      <div class="mtitle" style="margin:0">${y}年 ${mo}月</div>
+      <div class="mtitle" id="av-jump-month" title="タップして年月を選択" style="margin:0;cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px">${y}年 ${mo}月</div>
       <button class="btn ghost sm" id="av-next">▶</button>
     </div>
   </div>
@@ -1709,6 +1736,9 @@ async function pageAvailability(app){
 
   $('#av-prev').onclick = () => { MONTH = shiftMonth(MONTH,-1); pageAvailability(app); };
   $('#av-next').onclick = () => { MONTH = shiftMonth(MONTH, 1); pageAvailability(app); };
+  $('#av-jump-month').onclick = () => {
+    openMonthJumpModal(MONTH, (ym) => { MONTH = ym; pageAvailability(app); });
+  };
 }
 
 /* ===== チームの休み希望・稼働可能時間の一覧(手配担当者向け) ===== */
@@ -1730,7 +1760,7 @@ async function pageAvailabilityTeam(app){
   <div class="card sticky-filters" style="margin-bottom:14px">
     <div class="row" style="align-items:center;gap:10px">
       <button class="btn ghost sm" id="avt-prev">◀</button>
-      <div class="mtitle" style="margin:0">${y}年 ${mo}月</div>
+      <div class="mtitle" id="avt-jump-month" title="タップして年月を選択" style="margin:0;cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px">${y}年 ${mo}月</div>
       <button class="btn ghost sm" id="avt-next">▶</button>
     </div>
   </div>
@@ -1745,6 +1775,9 @@ async function pageAvailabilityTeam(app){
 
   $('#avt-prev').onclick = () => { MONTH = shiftMonth(MONTH,-1); pageAvailabilityTeam(app); };
   $('#avt-next').onclick = () => { MONTH = shiftMonth(MONTH, 1); pageAvailabilityTeam(app); };
+  $('#avt-jump-month').onclick = () => {
+    openMonthJumpModal(MONTH, (ym) => { MONTH = ym; pageAvailabilityTeam(app); });
+  };
 }
 
 /* ===== メンバーを希望する(チーフ以上) ===== */
@@ -2467,30 +2500,7 @@ async function pageSchedule(app, hash){
   $('#prev-m').onclick = () => { MONTH = shiftMonth(MONTH,-1); render(); };
   $('#next-m').onclick = () => { MONTH = shiftMonth(MONTH, 1); render(); };
   $('#jump-month-btn').onclick = () => {
-    // input[type=month]は、モーダル(backdrop-filter+border-radius+overflow:hidden)内で
-    // iOS Safariがネイティブのフォームコントロールを正しくクリップできず、枠からはみ出す
-    // 不具合が実機で確認されたため、年・月を別々のselectで選ばせる方式に変更した
-    // (どのブラウザでも確実に同じ見た目になる)。
-    const [curY, curM] = MONTH.split('-').map(Number);
-    const nowY = Number(jstToday().slice(0,4));
-    const years = []; for(let y=nowY-5; y<=nowY+2; y++) years.push(y);
-    modal(`<h3>${icon('calendar',{size:'15px'})} 表示する年月を選択</h3>
-      <div class="row" style="gap:8px;flex-wrap:nowrap">
-        <select id="jump-year-input" style="flex:1;min-width:0;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:16px">
-          ${years.map(y=>`<option value="${y}" ${y===curY?'selected':''}>${y}年</option>`).join('')}
-        </select>
-        <select id="jump-month-input" style="flex:1;min-width:0;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:16px">
-          ${Array.from({length:12},(_,i)=>i+1).map(m=>`<option value="${m}" ${m===curM?'selected':''}>${m}月</option>`).join('')}
-        </select>
-      </div>
-      <div class="row" style="margin-top:14px"><button class="btn gold" id="jump-month-go">この年月を表示する</button></div>`);
-    $('#jump-month-go').onclick = () => {
-      const y = $('#jump-year-input').value;
-      const m = String($('#jump-month-input').value).padStart(2,'0');
-      MONTH = `${y}-${m}`;
-      closeModal();
-      render();
-    };
+    openMonthJumpModal(MONTH, (ym) => { MONTH = ym; render(); });
   };
   const vh = $('#view-history');
   if(vh) vh.onclick = () => openScheduleHistory(uid, u.name);
@@ -2913,7 +2923,7 @@ async function pageSites(app){
     <div class="sticky-filters">
       <div class="row" style="margin-bottom:12px;align-items:center;flex-wrap:wrap;gap:8px">
         <button class="btn ghost sm" id="st-prev">◀</button>
-        <b style="min-width:110px;text-align:center">${y}年 ${mo}月</b>
+        <b id="st-jump-month" title="タップして年月を選択" style="min-width:110px;text-align:center;cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px">${y}年 ${mo}月</b>
         <button class="btn ghost sm" id="st-next">▶</button>
         ${dates.length ? `<button class="btn ghost sm" id="st-toggle-all">${allOpen ? icon('chevronsUp',{size:'12px'}) : icon('chevronsDown',{size:'12px'})} ${allOpen ? '全て閉じる' : '全て開く'}</button>` : ''}
         ${canRegister ? `<button class="btn ghost sm" id="st-register-btn">${icon('plus',{size:'12px'})} 現場を登録</button>` : ''}
@@ -2956,6 +2966,9 @@ async function pageSites(app){
   </div>`;
   $('#st-prev').onclick = () => { stSites.month = shiftMonth(month,-1); stSites.openDates = new Set(); stSites.selected = new Set(); pageSites(app); };
   $('#st-next').onclick = () => { stSites.month = shiftMonth(month, 1); stSites.openDates = new Set(); stSites.selected = new Set(); pageSites(app); };
+  $('#st-jump-month').onclick = () => {
+    openMonthJumpModal(month, (ym) => { stSites.month = ym; stSites.openDates = new Set(); stSites.selected = new Set(); pageSites(app); });
+  };
   const toggleAllBtn = $('#st-toggle-all');
   if(toggleAllBtn) toggleAllBtn.onclick = () => {
     if(allOpen) stSites.openDates = new Set();
@@ -3917,7 +3930,7 @@ async function pageSummary(app){
     <h2 style="margin-bottom:0">${icon('barChart')} 稼働サマリー</h2>
     <div class="row" style="gap:8px;align-items:center">
       <button class="btn ghost sm" id="sum-prev">◀</button>
-      <b>${y}年${mo}月</b>
+      <b id="sum-jump-month" title="タップして年月を選択" style="cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px">${y}年${mo}月</b>
       <button class="btn ghost sm" id="sum-next">▶</button>
     </div>
   </div>
@@ -3990,6 +4003,9 @@ async function pageSummary(app){
 
   $('#sum-prev').onclick = () => { st.month = shiftMonth(st.month,-1); pageSummary(app); };
   $('#sum-next').onclick = () => { st.month = shiftMonth(st.month, 1); pageSummary(app); };
+  $('#sum-jump-month').onclick = () => {
+    openMonthJumpModal(st.month, (ym) => { st.month = ym; pageSummary(app); });
+  };
   app.querySelectorAll('[data-stat]').forEach(el => el.onclick = () => {
     st.stat = st.stat === el.dataset.stat ? null : el.dataset.stat;
     pageSummary(app);
@@ -4102,7 +4118,7 @@ async function pageDaySchedule(app){
     <div class="card" style="margin-bottom:14px">
       <div class="row" style="align-items:center;gap:10px">
         <button class="btn ghost sm" id="ds-prev">◀ 前の${st.days}日間</button>
-        <b style="min-width:120px;text-align:center">${dateHead[0].mo}/${dateHead[0].da} 〜 ${dateHead[dateHead.length-1].mo}/${dateHead[dateHead.length-1].da}</b>
+        <b id="ds-jump-date" title="タップして開始日を選択" style="min-width:120px;text-align:center;cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px">${dateHead[0].mo}/${dateHead[0].da} 〜 ${dateHead[dateHead.length-1].mo}/${dateHead[dateHead.length-1].da}</b>
         <button class="btn ghost sm" id="ds-next">次の${st.days}日間 ▶</button>
         ${st.from!==today?'<button class="btn ghost sm" id="ds-today">今日に戻る</button>':''}
       </div>
@@ -4134,6 +4150,18 @@ async function pageDaySchedule(app){
   $('#ds-prev').onclick = () => { st.from = shiftDate(st.from,-st.days); pageDaySchedule(app); };
   $('#ds-next').onclick = () => { st.from = shiftDate(st.from, st.days); pageDaySchedule(app); };
   const tb = $('#ds-today'); if(tb) tb.onclick = () => { st.from = jstToday(); pageDaySchedule(app); };
+  $('#ds-jump-date').onclick = () => {
+    modal(`<h3>${icon('calendar',{size:'15px'})} 表示する開始日を選択</h3>
+      <input type="date" id="ds-jump-date-input" value="${h(st.from)}" style="width:100%;box-sizing:border-box;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:16px">
+      <div class="row" style="margin-top:14px"><button class="btn gold" id="ds-jump-date-go">この日から表示する</button></div>`);
+    $('#ds-jump-date-go').onclick = () => {
+      const v = $('#ds-jump-date-input').value;
+      if(!v) return;
+      st.from = v;
+      closeModal();
+      pageDaySchedule(app);
+    };
+  };
   $('#ds-sort').onchange = (e) => { st.sort = e.target.value; localStorage.setItem('ds-sort', st.sort); pageDaySchedule(app); };
   $('#ds-ka').onchange = (e) => { st.ka = e.target.value; pageDaySchedule(app); };
   $('#ds-han').onchange = (e) => { st.han = e.target.value; pageDaySchedule(app); };
