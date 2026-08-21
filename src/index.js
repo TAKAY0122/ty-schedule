@@ -2183,12 +2183,18 @@ async function buildScheduleMatrixRows(env, dates, uidList) {
 
 // 現場名を軸に、指定日を含む「連続した日程」の範囲を求める。複数日にわたる現場
 // (仕込み〜本番〜バラシ等)を、暦日の連続性から機械的に推定するためのヘルパー。
-// 現場名の完全一致のみで判定する(会場が同じでも現場名が違えば別の現場とみなす。
+// 既定では現場名の完全一致のみで判定する(会場が同じでも現場名が違えば別の現場とみなす。
 // 会場だけが同じ別公演を誤って同一期間に取り込んでいた不具合を修正)。現場の合間
 // (その現場が入っていない中日)は最大3日までまたいで連続とみなし、それを超えて
 // 現場が入っていない日が続く場合はそこで期間を打ち切る(合間が無く連続している限り、
 // 期間の長さ自体に上限は無い)。
-async function findGigDateRange(env, date, site) {
+// opts.groupByArtist を渡すと、現場名の完全一致ではなく extractArtistName()(【セクション等】
+// 表記を除いた本体名)での一致に切り替わる。1つの公演を「【物販】〇〇」「【設営】〇〇」のように
+// セクションごとに現場名を分けて入力している場合でも、構造的には同じ現場として日程を通しで
+// 拾いたい用途(現場の稼働表)のためのオプション。現場一覧・現場情報の「同アーティストの公演」等、
+// 【】表記ごとに別項目として扱いたい既存の呼び出し元には影響しない(既定はfalseのまま)。
+async function findGigDateRange(env, date, site, opts = {}) {
+  const groupByArtist = !!opts.groupByArtist;
   const siteRow = await env.DB.prepare(
     "SELECT venue FROM schedule WHERE date=? AND site=? AND type='work' LIMIT 1"
   ).bind(date, site).first();
@@ -2201,10 +2207,19 @@ async function findGigDateRange(env, date, site) {
     return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10);
   };
   const winFrom = addDays(date, -SAFETY_WINDOW), winTo = addDays(date, SAFETY_WINDOW);
-  const matchRows = (await env.DB.prepare(
-    "SELECT DISTINCT date FROM schedule WHERE type='work' AND date>=? AND date<=? AND site=?"
-  ).bind(winFrom, winTo, site).all()).results;
-  const matchDates = new Set(matchRows.map(r => r.date));
+  let matchDates;
+  if (groupByArtist) {
+    const artist = extractArtistName(site);
+    const rangeRows = (await env.DB.prepare(
+      "SELECT DISTINCT date, site FROM schedule WHERE type='work' AND date>=? AND date<=?"
+    ).bind(winFrom, winTo).all()).results;
+    matchDates = new Set(rangeRows.filter(r => extractArtistName(r.site) === artist).map(r => r.date));
+  } else {
+    const matchRows = (await env.DB.prepare(
+      "SELECT DISTINCT date FROM schedule WHERE type='work' AND date>=? AND date<=? AND site=?"
+    ).bind(winFrom, winTo, site).all()).results;
+    matchDates = new Set(matchRows.map(r => r.date));
+  }
 
   const extend = (start, dir) => {
     let cur = start;
@@ -3850,16 +3865,26 @@ async function api(req, env, url) {
   }
 
   // ---- 現場の稼働表(チーフ以上)。複数日にわたる現場について、その現場が行われている
-  //      期間(findGigDateRangeで算出)を対象に、実際にその現場名へ入っている人だけを
-  //      抜き出して、スケジュール一覧と同じマトリックス形式で返す。 ----
+  //      期間(findGigDateRangeで算出)を対象に、実際にその現場へ入っている人だけを
+  //      抜き出して、スケジュール一覧と同じマトリックス形式で返す。
+  //      「【物販】〇〇」「【設営】〇〇」のようにセクションごとに現場名を分けて入力していても
+  //      構造的には同じ現場なので、findGigDateRangeにgroupByArtistを渡し、本体名(extractArtistName)
+  //      が一致する【】表記違いをまとめて1つの現場として扱う(日程の連続判定・対象メンバーの
+  //      抽出の両方)。現場一覧側は現場名の完全一致のまま(【】表記ごとに別項目)で、この画面には
+  //      影響しない。 ----
   if (method === 'GET' && path === '/site-roster') {
     if (!has(me, 'sites_view')) return ERR('ページが見つかりません', 404);
     const date = url.searchParams.get('date'), site = url.searchParams.get('site');
     if (!date || !site) return ERR('date/site が必要です');
-    const { venue, dates } = await findGigDateRange(env, date, site);
+    const { venue, dates } = await findGigDateRange(env, date, site, { groupByArtist: true });
 
     const ph = dates.map(() => '?').join(',');
-    const relevantRows = (await env.DB.prepare(`SELECT DISTINCT user_id FROM schedule WHERE type='work' AND date IN (${ph}) AND site=?`).bind(...dates, site).all()).results;
+    const artist = extractArtistName(site);
+    const siteRowsInRange = (await env.DB.prepare(`SELECT DISTINCT site FROM schedule WHERE type='work' AND date IN (${ph})`).bind(...dates).all()).results;
+    const targetSites = siteRowsInRange.map(r => r.site).filter(s => extractArtistName(s) === artist);
+    if (!targetSites.length) targetSites.push(site);
+    const sph = targetSites.map(() => '?').join(',');
+    const relevantRows = (await env.DB.prepare(`SELECT DISTINCT user_id FROM schedule WHERE type='work' AND date IN (${ph}) AND site IN (${sph})`).bind(...dates, ...targetSites).all()).results;
     const uids = relevantRows.map(r => r.user_id);
     const rows = uids.length ? await buildScheduleMatrixRows(env, dates, uids) : [];
     return J({ site, venue, dates, rows });
