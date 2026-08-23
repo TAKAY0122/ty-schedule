@@ -1454,6 +1454,10 @@ body.ops-page #app table.list{background:var(--ops-panel);color:var(--ops-txt)}
 body.ops-page #app table.list th{background:var(--ops-panel2);color:var(--ops-txt);border-color:var(--ops-line)}
 body.ops-page #app table.list td{border-color:var(--ops-line);color:var(--ops-txt)}
 body.ops-page #app table.list tr.click:hover{background:var(--ops-panel2)}
+/* 停止中アカウントの行(元は#fafafa/#999という明るい背景+薄文字。ダークテーブルの中に
+   ほぼ白い行が浮いて見える不具合が実際に報告されたため、暗色テーブルに合わせて上書きする) */
+body.ops-page #app tr.is-suspended{background:var(--ops-panel2);color:var(--ops-dim)}
+body.ops-page #app tr.is-suspended td{color:var(--ops-dim)}
 body.ops-page #app .sched-wrap{background:var(--ops-panel);border-color:var(--ops-line)}
 body.ops-page #app .list-scroll{background:transparent}
 
@@ -1465,6 +1469,8 @@ body.ops-page #app .form-grid label{color:var(--ops-txt)}
 body.ops-page #app .btn{background:#2563a8;color:#fff;box-shadow:none}
 body.ops-page #app .btn.gold{background:var(--ops-gold);color:#1b2333}
 body.ops-page #app .btn.ghost{background:var(--ops-panel2);color:var(--ops-txt);border-color:var(--ops-line)}
+@media(hover:hover){ body.ops-page #app .btn.ghost:not(:disabled):hover{background:#233049;border-color:var(--ops-accent)} }
+body.ops-page #app .loading-box{color:var(--ops-dim)}
 body.ops-page #app .btn.danger{background:var(--ops-danger)}
 
 body.ops-page #app .msg.ok{background:rgba(63,185,80,.14);color:var(--ops-ok)}
