@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS users(
   promotion_pending_date TEXT DEFAULT NULL, -- D→C自動昇格の適用予定日(2部+SU完了の翌月1日)
   promotion_pending_rank TEXT DEFAULT NULL, -- 上記の適用予定日に、実際に切り替える先のランク(D または C)
   graduate_flag INTEGER DEFAULT 0,       -- 卒業予定
+  is_manager INTEGER DEFAULT 0,          -- 手配グループを持つか(1=担当手配者として選べる)。roleとは独立
   created TEXT DEFAULT (datetime('now'))
 );
 

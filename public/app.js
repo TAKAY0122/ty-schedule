@@ -152,8 +152,17 @@ function pageLabelFromHash(hash){
 }
 const LV = { member:0, chief:1, handler:2, admin:3 };
 // 個別追加権限の基準レベル(バックエンドのPERMSと対応)
+// 各権限の基準レベル(どのロールから標準で使えるか)。ここに書いてあるのはコード上の既定値で、
+// 管理者がアプリ構造ビューアの権限マトリクスから変更した場合は、ログイン時に /me が返す
+// permBaseLv(サーバー側の実効値)で上書きされる。サーバーのhas()と判定を一致させるための仕組み。
+// 新しい権限を追加する時は、src/index.jsのPERMSとこことの両方に1行ずつ追記すること。
 const PERM_BASE_LV = { report_check:1, blacklist_manage:1, summary_view:1, day_schedule_view:1, member_stats_view:1, sites_view:1, members_view:1, site_pay:2, site_manage:2, import_data:2, handler_tools:2, wage_settings:3, account_manage:3, daicho_manage:3, dashboard_view:3, member_summary_view:2, activity_view:3 };
 // has(key): MEがその機能を使えるか(基本権限を満たす、または個別に追加権限がある)
+// サーバーが返した実効の基準レベルをPERM_BASE_LVへ反映する(/me の取得直後に呼ぶ)
+function applyPermBaseLv(map){
+  if(!map || typeof map !== 'object') return;
+  for(const [k, v] of Object.entries(map)) if(Number.isInteger(v)) PERM_BASE_LV[k] = v;
+}
 function has(key){
   if(!ME) return false;
   if(Array.isArray(ME.revoked_perms) && ME.revoked_perms.includes(key)) return false;
@@ -1179,6 +1188,8 @@ async function render(){
   if(!ME){
     try{ ME = await api('/me'); } catch(e){ renderLogin(e.message); return; }
   }
+  // 管理者が権限マトリクスで基準レベルを変えている場合に、フロント側の判定もそれに合わせる
+  applyPermBaseLv(ME.permBaseLv);
   // 初期パスワードのまま or 強制変更フラグが立っている場合は、変更するまで他を使えない
   if(ME.must_change){ renderForcedPassword(); return; }
   // 給与ロック日数を取得(手配者以上のみ。表示用の目安。最終判定はサーバー側)
@@ -1272,7 +1283,7 @@ function renderLogin(err){
     await withLoading($('#l-btn'), async () => {
       try{
         const d = await api('/login', { method:'POST', body:{ regno:$('#l-regno').value.trim(), password:$('#l-pw').value } });
-        TOKEN = d.token; localStorage.setItem('tk', TOKEN); ME = d.user;
+        TOKEN = d.token; localStorage.setItem('tk', TOKEN); ME = d.user; applyPermBaseLv(ME.permBaseLv);
         goHome();
       }catch(e){ $('#l-err').innerHTML = `<div class="msg err">${h(e.message)}</div>`; }
     });
@@ -4837,6 +4848,16 @@ function openMemberEdit(u, users, managers){
         <option value="">チーフ手配(未設定)</option>
         ${managers.map(m=>`<option value="${m.id}" ${String(u.manager_id)===String(m.id)?'selected':''}>${h(m.name)}手配</option>`).join('')}</select>
       ${isAdmin?`<label>役割</label><select id="ue-role">${Object.keys(LV).map(r=>`<option value="${r}" ${u.role===r?'selected':''}>${ROLE_JP[r]}</option>`).join('')}</select>`:''}
+      ${isAdmin?`<label>手配グループ</label>
+      <div>
+        <label style="display:flex;align-items:center;gap:6px;font-weight:400">
+          <input type="checkbox" id="ue-ismgr" ${u.is_manager?'checked':''}> 自分の手配グループを持つ
+        </label>
+        <div class="muted" style="font-size:11.5px;margin-top:3px;line-height:1.6">
+          チェックすると、この人が「担当手配者」のプルダウンに現れ、メンバーを所属させられるようになります。
+          手配者の権限だけ与えてグループは持たせない場合は、チェックを外したままにしてください。
+        </div>
+      </div>`:''}
     </div>
     <datalist id="ue-ranks">${ranks.map(r=>`<option value="${h(r)}"></option>`).join('')}</datalist>
 
@@ -4905,7 +4926,10 @@ function openMemberEdit(u, users, managers){
       su_done: $('#ue-su').checked ? 1 : 0,
       graduate_flag: $('#ue-grad').checked ? 1 : 0,
     };
-    if(isAdmin){ const r=$('#ue-role'); if(r) body.role = r.value; }
+    if(isAdmin){
+      const r=$('#ue-role'); if(r) body.role = r.value;
+      const im=$('#ue-ismgr'); if(im) body.is_manager = im.checked ? 1 : 0;
+    }
     await withLoading($('#ue-save'), async () => {
       try{
         await api('/users/'+u.id, { method:'PATCH', body });
@@ -7302,12 +7326,17 @@ async function pageAppStructure(app){
 
   // ---------- 権限 ----------
   function renderPerms(){
-    const roleByLv = { 1: 'チーフ以上', 2: '手配者以上', 3: '管理者のみ' };
+    const roleByLv = { 0: '全員(メンツ以上)', 1: 'チーフ以上', 2: '手配者以上', 3: '管理者のみ', 4: '標準では誰も持たない(個別付与のみ)' };
     // rgbの三つ組で持つ(CSS側で rgb()/rgba() の両方に使うため)
-    const lvColor = { 1: '63,185,80', 2: '210,153,34', 3: '248,81,73' };
+    const lvColor = { 0: '139,148,177', 1: '63,185,80', 2: '210,153,34', 3: '248,81,73', 4: '109,118,139' };
     // ロール×権限のマトリクス。「どのロールが何をできるか」は表よりも塗り分けの方が圧倒的に速く読める
     const roles = data.roles;
-    const byLv = [1, 2, 3].map(lv => ({ lv, items: data.permissions.filter(p => p.baseLv === lv) }));
+    // 下部の一覧は、実際に使われている基準レベルの分だけ出す(マトリクスで0や4に変更された分も拾う)
+    const byLv = [0, 1, 2, 3, 4]
+      .map(lv => ({ lv, items: data.permissions.filter(p => p.baseLv === lv) }))
+      .filter(g => g.items.length);
+    // account_manage を持つ管理者だけ、マトリクスから基準レベルを直接編集できる
+    const canEditPerms = has('account_manage');
 
     panel.innerHTML = `
       <div class="ops-card">
@@ -7322,17 +7351,34 @@ async function pageAppStructure(app){
 
       <div class="ops-card">
         <div class="ops-card-h"><b>${icon('layoutGrid', { size: '15px' })} 権限マトリクス</b><span class="ops-card-sub">${data.permissions.length}権限 × ${roles.length}ロール</span></div>
+        <div class="ops-scroll-hint">← 横にスクロールすると、すべてのロールを確認できます →</div>
         <div class="ops-matrix-scroll">
           <div class="ops-matrix" style="--cols:${roles.length}">
             <div class="ops-mx-corner">権限キー</div>
             ${roles.map(r => `<div class="ops-mx-head r${r.level}">${h(r.label)}</div>`).join('')}
-            ${data.permissions.map((p, i) => `
-              <div class="ops-mx-key" style="animation-delay:${Math.min(i * 22, 400)}ms"><code>${h(p.key)}</code><em>${h(p.label)}</em></div>
-              ${roles.map(r => `<div class="ops-mx-cell ${r.level >= p.baseLv ? 'on' : ''}" style="--c:${lvColor[p.baseLv]};animation-delay:${Math.min(i * 22, 400)}ms" title="${h(r.label)} / ${h(p.key)}: ${r.level >= p.baseLv ? '標準で使える' : '既定では使えない(個別付与は可能)'}">${r.level >= p.baseLv ? icon('check', { size: '13px' }) : ''}</div>`).join('')}
-            `).join('')}
+            ${data.permissions.map((p, i) => {
+              // baseLvは「このレベル以上のロールが標準で使える」という閾値。4はどのロールも標準では持たない。
+              const changed = p.defaultBaseLv !== undefined && p.baseLv !== p.defaultBaseLv;
+              const cells = roles.map(r => {
+                const on = r.level >= p.baseLv;
+                // クリック時: OFF→ONならそのロールを閾値にする / ON→OFFならそのロールを含まない一段上へ
+                const next = on ? r.level + 1 : r.level;
+                const tip = canEditPerms
+                  ? `${r.label} / ${p.key}
+今: ${on ? '標準で使える' : '既定では使えない(個別付与は可能)'}
+クリックで${on ? '外す' : '付ける'}`
+                  : `${r.label} / ${p.key}: ${on ? '標準で使える' : '既定では使えない(個別付与は可能)'}`;
+                return `<${canEditPerms ? 'button type="button"' : 'div'} class="ops-mx-cell ${on ? 'on' : ''} ${canEditPerms ? 'editable' : ''}"
+                  ${canEditPerms ? `data-perm="${h(p.key)}" data-next="${next}"` : ''}
+                  style="--c:${lvColor[p.baseLv] || lvColor[3]};animation-delay:${Math.min(i * 22, 400)}ms" title="${h(tip)}">${on ? icon('check', { size: '13px' }) : ''}</${canEditPerms ? 'button' : 'div'}>`;
+              }).join('');
+              return `
+              <div class="ops-mx-key ${changed ? 'changed' : ''}" style="animation-delay:${Math.min(i * 22, 400)}ms"><code>${h(p.key)}</code><em>${h(p.label)}</em>${changed ? `<span class="ops-mx-tag" title="コード上の既定値から変更されています">変更済み</span>` : ''}</div>
+              ${cells}`;
+            }).join('')}
           </div>
         </div>
-        <div class="ops-note">塗られているセルが「そのロールなら標準で使える」範囲です。個別付与(extra_perms)を使えば、塗られていない組み合わせも許可できます。</div>
+        <div class="ops-note">塗られているセルが「そのロールなら標準で使える」範囲です。${canEditPerms ? 'セルをクリックすると、その権限を<b>標準で持たせるロールの範囲</b>を変更できます(即時反映)。ロールは上位が下位を包含するため、例えばチーフに付けると手配者・管理者にも自動的に付きます。' : ''}個別付与(extra_perms)を使えば、塗られていない組み合わせも個人単位で許可できます。</div>
       </div>
 
       <div class="ops-grid3">
@@ -7342,6 +7388,21 @@ async function pageAppStructure(app){
         </div>`).join('')}
       </div>`;
     opsAfterRender(panel);
+
+    if(canEditPerms){
+      panel.querySelectorAll('.ops-mx-cell.editable').forEach(btn => btn.onclick = async () => {
+        const key = btn.dataset.perm, next = Number(btn.dataset.next);
+        btn.disabled = true;
+        try{
+          const r = await api('/perm-base', { method:'PUT', body:{ key, baseLv: next } });
+          // 変更後の基準レベルを手元のデータにも反映し、マトリクスを描き直す
+          const p = data.permissions.find(x => x.key === key);
+          if(p) p.baseLv = r.baseLv;
+          applyPermBaseLv({ [key]: r.baseLv });
+          renderPerms();
+        }catch(e){ btn.disabled = false; popup(e.message, 'error'); }
+      });
+    }
   }
 
   // ---------- API ----------

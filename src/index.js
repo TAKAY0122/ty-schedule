@@ -31,6 +31,33 @@ const PERMS = {
   member_summary_view: { label: '個人の年間稼働サマリー・備考欄の閲覧', baseLv: 2 },
   activity_view:   { label: 'ログイン中メンバーの閲覧中ページの確認', baseLv: 3 },
 };
+// 各権限の「基準レベル」は上のPERMSがコード上の既定値だが、権限マトリクス(アプリ構造ビューア)から
+// 管理者が変更でき、その上書き分は settings.perm_base_overrides にJSONで保存される。
+// この値はユーザーごとではなく全体で共通の設定なので、モジュール変数に置いて使い回してよい
+// (同じisolate上の別リクエストと共有されるが、内容はどのリクエストでも同一のため問題にならない)。
+// リクエストのたびに loadPermBaseOverrides() で読み直すので、変更は即座に全体へ反映される。
+let PERM_BASE_OVERRIDES = {};
+async function loadPermBaseOverrides(env) {
+  try {
+    const raw = await getSetting(env, 'perm_base_overrides', '');
+    const obj = raw ? JSON.parse(raw) : {};
+    const out = {};
+    for (const [k, v] of Object.entries(obj)) {
+      const n = Number(v);
+      if (PERMS[k] && Number.isInteger(n) && n >= 0 && n <= 4) out[k] = n;
+    }
+    PERM_BASE_OVERRIDES = out;
+  } catch (e) { PERM_BASE_OVERRIDES = {}; }
+  return PERM_BASE_OVERRIDES;
+}
+// 実際に適用される基準レベル(上書きがあればそれ、無ければコード上の既定値)。
+// 4 は「どのロールも標準では持たない(個別付与のみ)」を表す。
+function effBaseLv(key) {
+  const p = PERMS[key];
+  if (!p) return 99;
+  const o = PERM_BASE_OVERRIDES[key];
+  return o === undefined ? p.baseLv : o;
+}
 function getPerms(u) { try { return JSON.parse(u.extra_perms || '[]'); } catch (e) { return []; } }
 function getRevokedPerms(u) { try { return JSON.parse(u.revoked_perms || '[]'); } catch (e) { return []; } }
 // has: その機能を使えるか。
@@ -41,7 +68,7 @@ function has(u, key) {
   const p = PERMS[key];
   if (!p) return false;
   if (getRevokedPerms(u).includes(key)) return false;
-  if (lv(u) >= p.baseLv) return true;
+  if (lv(u) >= effBaseLv(key)) return true;
   return getPerms(u).includes(key);
 }
 
@@ -107,11 +134,12 @@ const APP_STRUCTURE_API_GROUPS = [
     ['POST', '/handler-mode', 'PIN照合、手配者モードへ切替'],
     ['DELETE', '/handler-mode', '手配者モード終了'],
     ['GET/POST', '/users', 'アカウント一覧取得・新規作成'],
-    ['PATCH', '/users/:id', 'アカウント情報の更新(役割・停止・登録番号等)。役割を下位に変更、またはアカウント停止した場合、対象者を強制ログアウトする'],
+    ['PATCH', '/users/:id', 'アカウント情報の更新(役割・停止・登録番号・手配グループの有無is_manager等)。役割を下位に変更、またはアカウント停止した場合、対象者を強制ログアウトする'],
     ['DELETE', '/users/:id', 'アカウント削除(管理者のみ)'],
     ['POST', '/users/bulk-suspend', 'アカウントの一括停止/復活'],
     ['GET/PUT', '/users/:id/perms', '個別権限(追加extraPerms・剥奪revokedPerms)の取得・更新'],
     ['GET/PUT', '/role-perms/:role', 'ロール単位の一括権限設定(追加perms・剥奪revokedPerms)'],
+    ['PUT', '/perm-base', '権限の基準レベル(どのロールから標準で使えるか)の変更。アプリ構造ビューアの権限マトリクスから使う(管理者専用)'],
     ['POST', '/users/:id/resetpw', 'パスワードの初期化'],
     ['POST', '/users/:id/assess', '査定によるランク変更(C→B/C→A/B→A、即時反映・当月給与も再計算)'],
     ['GET', '/users/:id/rank-history', 'ランク変更履歴の取得(自動昇格・査定・手動変更)'],
@@ -367,7 +395,7 @@ async function pbkdf2(pw, salt) {
 // ログインした際、seen_update_version がこれより小さければ「アップデートのお知らせ」を表示する。
 const CURRENT_UPDATE_VERSION = 11;
 
-const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0, must_change: u.must_change ? 1 : 0, extra_perms: getPerms(u), revoked_perms: getRevokedPerms(u), notify_rookie: u.notify_rookie === null || u.notify_rookie === undefined ? null : (u.notify_rookie ? 1 : 0), manner_done: u.manner_done ? 1 : 0, team2_done: u.team2_done ? 1 : 0, su_done: u.su_done ? 1 : 0, graduate_flag: u.graduate_flag ? 1 : 0, promotion_pending_date: u.promotion_pending_date || null, promotion_pending_rank: u.promotion_pending_rank || null, needsUpdateNotice: !u.must_change && (u.seen_update_version || 0) < CURRENT_UPDATE_VERSION, seenUpdateVersion: u.seen_update_version || 0, currentUpdateVersion: CURRENT_UPDATE_VERSION });
+const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0, must_change: u.must_change ? 1 : 0, extra_perms: getPerms(u), revoked_perms: getRevokedPerms(u), notify_rookie: u.notify_rookie === null || u.notify_rookie === undefined ? null : (u.notify_rookie ? 1 : 0), is_manager: u.is_manager ? 1 : 0, manner_done: u.manner_done ? 1 : 0, team2_done: u.team2_done ? 1 : 0, su_done: u.su_done ? 1 : 0, graduate_flag: u.graduate_flag ? 1 : 0, promotion_pending_date: u.promotion_pending_date || null, promotion_pending_rank: u.promotion_pending_rank || null, needsUpdateNotice: !u.must_change && (u.seen_update_version || 0) < CURRENT_UPDATE_VERSION, seenUpdateVersion: u.seen_update_version || 0, currentUpdateVersion: CURRENT_UPDATE_VERSION });
 
 // ===== 給与計算 (RB事業2課ルール) =====
 // 業務名 → 計算区分。 g5=案内料金(最低5h) / l3=搬入出料金(最低3h) / lg,gl,lgl=時間帯分割 / skip=対象外
@@ -2149,7 +2177,8 @@ async function buildScheduleMatrixRows(env, dates, uidList) {
     uidList
       ? env.DB.prepare(`SELECT user_id, date, type, site, venue, note FROM schedule WHERE date IN (${ph}) AND user_id IN (${uidList.map(() => '?').join(',')}) ORDER BY user_id, date, slot`).bind(...dates, ...uidList).all()
       : env.DB.prepare(`SELECT user_id, date, type, site, venue, note FROM schedule WHERE date IN (${ph}) ORDER BY user_id, date, slot`).bind(...dates).all(),
-    env.DB.prepare("SELECT id, name FROM users WHERE role IN ('handler','admin')").all(),
+    // 手配グループを持つ人だけ(ロールが handler/admin でも is_manager=0 ならグループを持たない)
+    env.DB.prepare("SELECT id, name FROM users WHERE COALESCE(is_manager,0)=1").all(),
   ]);
   const members = membersRes.results;
   const scheduleRows = scheduleRes.results;
@@ -2290,7 +2319,9 @@ async function api(req, env, url) {
     if (attempt) await env.DB.prepare('DELETE FROM login_attempts WHERE regno=?').bind(regnoTrim).run();
     const token = rnd();
     await env.DB.prepare('INSERT INTO sessions(token,user_id,handler,last_seen,created) VALUES(?,?,0,?,?)').bind(token, u.id, Date.now(), Date.now()).run();
-    return J({ token, user: { ...pub(u), handler: 0 } });
+    const loginPermBaseLv = {};
+    for (const k of Object.keys(PERMS)) loginPermBaseLv[k] = effBaseLv(k);
+    return J({ token, user: { ...pub(u), handler: 0, permBaseLv: loginPermBaseLv } });
   }
 
   // ---- Googleカレンダー等への購読フィード配信(認証不要・専用トークンで本人確認) ----
@@ -2323,6 +2354,7 @@ async function api(req, env, url) {
     return J({ ok: 1, ...result });
   }
 
+  await loadPermBaseOverrides(env); // 権限の基準レベルの上書き設定を反映してから権限判定に入る
   const me = await auth(req, env);
   if (!me) return ERR('ログインしてください', 401);
   if (me.suspended) { await env.DB.prepare('DELETE FROM sessions WHERE user_id=?').bind(me.id).run(); return ERR('このアカウントは停止されています', 403); }
@@ -2332,7 +2364,12 @@ async function api(req, env, url) {
     await env.DB.prepare('DELETE FROM sessions WHERE token=?').bind(me._tk).run();
     return J({ ok: 1 });
   }
-  if (method === 'GET' && path === '/me') return J({ ...pub(me), handler: handlerMode ? 1 : 0 });
+  if (method === 'GET' && path === '/me') {
+    // フロント側のhas()も同じ基準で判定できるよう、実効の基準レベル表を一緒に返す
+    const permBaseLv = {};
+    for (const k of Object.keys(PERMS)) permBaseLv[k] = effBaseLv(k);
+    return J({ ...pub(me), handler: handlerMode ? 1 : 0, permBaseLv });
+  }
 
   if (method === 'POST' && path === '/password') {
     const { oldpw, newpw } = body;
@@ -2459,7 +2496,23 @@ async function api(req, env, url) {
   // 利用可能な権限キー一覧(ラベル・基準レベル付き)
   if (method === 'GET' && path === '/perm-defs') {
     if (!has(me, 'account_manage')) return ERR('ページが見つかりません', 404);
-    return J({ perms: Object.entries(PERMS).map(([key, p]) => ({ key, label: p.label, baseLv: p.baseLv })) });
+    return J({ perms: Object.entries(PERMS).map(([key, p]) => ({ key, label: p.label, baseLv: effBaseLv(key), defaultBaseLv: p.baseLv })) });
+  }
+  // 権限の「基準レベル」を変更する(アプリ構造ビューアの権限マトリクスから使う、管理者専用)。
+  // baseLv: 0=メンツ以上 / 1=チーフ以上 / 2=手配者以上 / 3=管理者のみ / 4=どのロールも標準では持たない。
+  // ロールは上位が下位を包含するため、あるロールにチェックを入れると、それより上位のロールにも自動的に付く。
+  if (method === 'PUT' && path === '/perm-base') {
+    if (!has(me, 'account_manage')) return ERR('権限がありません', 403);
+    const key = String(body.key || '');
+    const baseLv = Number(body.baseLv);
+    if (!PERMS[key]) return ERR('不明な権限キーです');
+    if (!Number.isInteger(baseLv) || baseLv < 0 || baseLv > 4) return ERR('基準レベルの指定が不正です');
+    const cur = { ...PERM_BASE_OVERRIDES };
+    // コード上の既定値に戻す場合は、上書きを持たせず削除しておく(既定値を後から変えた時に追随させるため)
+    if (baseLv === PERMS[key].baseLv) delete cur[key]; else cur[key] = baseLv;
+    await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('perm_base_overrides',?)").bind(JSON.stringify(cur)).run();
+    PERM_BASE_OVERRIDES = cur;
+    return J({ ok: 1, key, baseLv: effBaseLv(key), defaultBaseLv: PERMS[key].baseLv });
   }
   // 特定ユーザーの基本権限+追加権限を取得
   let pum;
@@ -2518,7 +2571,8 @@ async function api(req, env, url) {
   // 手配担当の一覧(担当グループのプルダウン用)
   if (method === 'GET' && path === '/managers') {
     if (lv(me) < 1) return ERR('ページが見つかりません', 404);
-    const rows = (await env.DB.prepare("SELECT * FROM users WHERE role IN ('handler','admin') ORDER BY regno").all()).results;
+    // 手配グループを持つ人だけを担当手配者の候補として返す(is_manager=0 の手配者は出さない)
+    const rows = (await env.DB.prepare("SELECT * FROM users WHERE COALESCE(is_manager,0)=1 ORDER BY regno").all()).results;
     // 各手配担当が受け持つメンバー数も付ける
     const counts = (await env.DB.prepare('SELECT manager_id, COUNT(*) AS n FROM users WHERE manager_id IS NOT NULL GROUP BY manager_id').all()).results;
     const cmap = {}; for (const c of counts) cmap[c.manager_id] = c.n;
@@ -3094,6 +3148,18 @@ async function api(req, env, url) {
         if (mid) { const mgr = await env.DB.prepare('SELECT role FROM users WHERE id=?').bind(mid).first(); if (!mgr || LV[mgr.role] < 2) return ERR('担当手配者は手配担当以上を指定してください'); }
         await env.DB.prepare('UPDATE users SET manager_id=? WHERE id=?').bind(mid, uid).run();
       }
+      if (body.is_manager !== undefined) {
+        // 手配グループを持たせるかどうか。ロール(権限)とは独立した設定で、
+        // 1 の人だけが「担当手配者」のプルダウンやメンバー分析のグループ欄に現れる。
+        if (!has(me, 'account_manage')) return ERR('権限がありません', 403);
+        const want = body.is_manager ? 1 : 0;
+        if (!want) {
+          // まだメンバーが紐付いているグループは、外すとそのメンバーの担当が宙に浮くため止める
+          const n = await env.DB.prepare('SELECT COUNT(*) AS c FROM users WHERE manager_id=?').bind(uid).first();
+          if (n && n.c > 0) return ERR(`このグループにはまだ${n.c}人が所属しています。先に担当手配者を変更してください`);
+        }
+        await env.DB.prepare('UPDATE users SET is_manager=? WHERE id=?').bind(want, uid).run();
+      }
       if (body.notify_rookie !== undefined) { // 新人報告リマインドの個人設定(NULL=基本ルール/1=常に対象/0=常に対象外)
         if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
         const v = body.notify_rookie === null ? null : (body.notify_rookie ? 1 : 0);
@@ -3104,7 +3170,9 @@ async function api(req, env, url) {
         const cur = await env.DB.prepare('SELECT rank FROM users WHERE id=?').bind(uid).first();
         const beforeRank = cur ? cur.rank : '';
         if (beforeRank !== body.rank) {
-          await env.DB.prepare('UPDATE users SET rank=? WHERE id=?').bind(body.rank, uid).run();
+          // 手動でランクを変えた時点で、研修による昇格予約は意味を失うため一緒に取り消す。
+          // (残したままだとダッシュボードの「昇格予定」に、既に済んだ古い予定が出続ける)
+          await env.DB.prepare('UPDATE users SET rank=?, promotion_pending_date=NULL, promotion_pending_rank=NULL WHERE id=?').bind(body.rank, uid).run();
           await env.DB.prepare('INSERT INTO rank_history(user_id,before_rank,after_rank,reason,changed_by,ts) VALUES(?,?,?,?,?,?)')
             .bind(uid, beforeRank, body.rank, 'manual', me.id, jstTs()).run();
           try { await recalcPayForMonth(env, uid, jstDate().slice(0, 7), body.rank); } catch (e) {}
@@ -3147,7 +3215,8 @@ async function api(req, env, url) {
     // C→B、C→A、B→A のみ許可(降格・同ランクへの変更は査定では行わない)
     const allowed = (cur === 'C' && (target === 'B' || target === 'A')) || (cur === 'B' && target === 'A');
     if (!allowed) return ERR(`現在${cur || '未設定'}ランクのため、査定で${target}ランクへは変更できません(C→B、C→A、B→Aのみ)`);
-    await env.DB.prepare('UPDATE users SET rank=? WHERE id=?').bind(target, uid).run();
+    // 査定で上がった時点で、研修による昇格予約(D→C等)は不要になるため一緒に取り消す
+    await env.DB.prepare('UPDATE users SET rank=?, promotion_pending_date=NULL, promotion_pending_rank=NULL WHERE id=?').bind(target, uid).run();
     await env.DB.prepare('INSERT INTO rank_history(user_id,before_rank,after_rank,reason,changed_by,ts) VALUES(?,?,?,?,?,?)')
       .bind(uid, u.rank, target, 'assessment', me.id, jstTs()).run();
     const month = jstDate().slice(0, 7);
@@ -4354,7 +4423,8 @@ async function api(req, env, url) {
     if (!has(me, 'member_stats_view')) return ERR('ページが見つかりません', 404);
     const [membersRes, managersRes] = await Promise.all([
       env.DB.prepare("SELECT id, name, regno, rank, ka, han, manager_id, suspended FROM users").all(),
-      env.DB.prepare("SELECT id, name, ka FROM users WHERE role IN ('handler','admin')").all(),
+      // グループ内訳を出す対象は「手配グループを持つ人」
+      env.DB.prepare("SELECT id, name, ka FROM users WHERE COALESCE(is_manager,0)=1").all(),
     ]);
     const members = membersRes.results;
     for (const m of members) m.base = baseFromRegno(m.regno); // 都度計算(DB保存はしない)
@@ -4518,11 +4588,23 @@ async function api(req, env, url) {
     // ⑤ 昇格予定(今月・来月)、研修待ち人数
     const nextMonthEnd = (() => { const d = new Date(Date.now() + 9 * 3600e3); d.setUTCMonth(d.getUTCMonth() + 2, 0); return d.toISOString().slice(0, 10); })();
     const users = usersRes.results;
+    // 「昇格予定」は、実際にこれから上がる人だけを出す。過去に手動変更・査定で先にランクが上がった等の
+    // 理由で無効になった予約がDBに残っていることがあるため、以下を満たすものだけに絞る:
+    //   ・予約先ランクが入っている ・停止中でない ・予約先が現在のランクより上位(＝まだ上がっていない)
+    const RANK_ORDER = { E: 0, D: 1, C: 2, B: 3, A: 4 };
     const upcoming = users
-      .filter(u => u.promotion_pending_date && u.promotion_pending_date <= nextMonthEnd)
+      .filter(u => {
+        if (!u.promotion_pending_date || !u.promotion_pending_rank) return false;
+        if (u.suspended) return false;
+        if (u.promotion_pending_date > nextMonthEnd) return false;
+        const from = RANK_ORDER[rankLetter(u.rank)];
+        const to = RANK_ORDER[String(u.promotion_pending_rank).toUpperCase()];
+        if (to === undefined) return false;
+        return from === undefined || to > from; // 現ランク未設定なら予約を尊重、そうでなければ上位への予約のみ
+      })
       .sort((a, b) => a.promotion_pending_date.localeCompare(b.promotion_pending_date))
       .slice(0, 10)
-      .map(u => ({ name: u.name, from: rankLetter(u.rank) || '?', to: u.promotion_pending_rank, date: u.promotion_pending_date }));
+      .map(u => ({ name: u.name, from: rankLetter(u.rank) || '未設定', to: u.promotion_pending_rank, date: u.promotion_pending_date }));
     const waitingTeam2Only = users.filter(u => rankLetter(u.rank) === 'D' && u.team2_done && !u.su_done).length;
     const waitingSuOnly = users.filter(u => rankLetter(u.rank) === 'D' && u.su_done && !u.team2_done).length;
     const promotions = { upcoming, waitingTeam2Only, waitingSuOnly };
@@ -5107,7 +5189,7 @@ async function api(req, env, url) {
       columns: parseCreateTableSql(t.sql || ''),
       rows: rowCounts[t.name] ?? null,
     }));
-    const permissions = Object.entries(PERMS).map(([key, p]) => ({ key, label: p.label, baseLv: p.baseLv }));
+    const permissions = Object.entries(PERMS).map(([key, p]) => ({ key, label: p.label, baseLv: effBaseLv(key), defaultBaseLv: p.baseLv }));
     const apiEndpointCount = APP_STRUCTURE_API_GROUPS.reduce((n, g) => n + g.rows.length, 0);
     const jst = new Date(Date.now() + 9 * 3600 * 1000);
     return J({
