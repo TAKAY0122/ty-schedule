@@ -189,6 +189,7 @@ const APP_STRUCTURE_API_GROUPS = [
     ['GET/POST', '/blacklist', 'ブラックリストの取得・登録(matched_ka含む)'],
   ]},
   { title: 'システム設定・通知', rows: [
+    ['GET', '/dashboard', '管理者ダッシュボード(#/dashboard)の全データ。cron4種の最終実行日、承認待ち件数、当月実績と前月比、直近6ヶ月の推移、当月の日別配置人数、ランク構成、気になる人、データの不備、給与確定状況をまとめて返す'],
     ['GET/PUT', '/wage-rates', '時給テーブルの取得・更新(PUTは新しいeffective_fromの追加も可)'],
     ['POST', '/wage-rates/delete', '時給改定(effective_from)をまるごと削除'],
     ['GET/PUT', '/notify-settings', '新人報告リマインドの設定'],
@@ -4417,6 +4418,8 @@ async function api(req, env, url) {
     const today = jstDate();
     const month = today.slice(0, 7);
     const prevMonth = (() => { const d = new Date(Date.now() + 9 * 3600e3); d.setUTCMonth(d.getUTCMonth() - 1, 1); return d.toISOString().slice(0, 7); })();
+    // 直近6ヶ月(当月含む)の推移グラフ用。5ヶ月前の月初を下限にする
+    const trendStart = (() => { const d = new Date(Date.now() + 9 * 3600e3); d.setUTCMonth(d.getUTCMonth() - 5, 1); return d.toISOString().slice(0, 10); })();
     // cronが「今日」「昨日」のいずれでもない日付なら、実行が滞っているとみなす
     const yesterday = (() => { const d = new Date(Date.now() + 9 * 3600e3); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); })();
     const isStale = (d) => !d || (d !== today && d !== yesterday);
@@ -4429,7 +4432,7 @@ async function api(req, env, url) {
     const [
       daichoLastRun, rankLastRun, notifyLastRun, schedSourcesRes,
       selfReportsRes, nominationsRes, reportsRes,
-      monthRowsRes, prevMonthRowsRes, usersRes, lockDays,
+      monthRowsRes, prevMonthRowsRes, usersRes, lockDays, trendRes,
     ] = await Promise.all([
       safe(getSetting(env, 'daicho_reload_last_run', ''), ''),
       safe(getSetting(env, 'rank_promotion_last_run', ''), ''),
@@ -4442,6 +4445,7 @@ async function api(req, env, url) {
       safe(env.DB.prepare("SELECT hours, overtime, pay FROM schedule WHERE type='work' AND site<>'' AND date LIKE ?").bind(prevMonth + '%').all(), emptyAll),
       safe(env.DB.prepare("SELECT id, name, regno, rank, manager_id, suspended, manner_done, team2_done, su_done, promotion_pending_date, promotion_pending_rank FROM users").all(), emptyAll),
       safe(getLockDays(env), 14),
+      safe(env.DB.prepare("SELECT substr(date,1,7) AS ym, COUNT(*) AS headcount, COUNT(DISTINCT site) AS sites, SUM(hours) AS hours, SUM(pay) AS pay FROM schedule WHERE type='work' AND site<>'' AND date>=? GROUP BY ym ORDER BY ym").bind(trendStart).all(), emptyAll),
     ]);
 
     // ① システム状態
@@ -4540,7 +4544,40 @@ async function api(req, env, url) {
     const unlockedDays = Math.max(0, Math.floor((Date.parse(today) - Date.parse(lockedUntil)) / 86400000));
     const payLock = { lockedUntil, unlockedDays };
 
-    return J({ systemStatus, todo, monthly, attention, promotions, dataIssues, payLock, canPay });
+    // ⑧ 直近6ヶ月の推移(折れ線グラフ用)。実績が無い月も0で埋め、必ず6件返す
+    const trendMap = {};
+    for (const r of (trendRes.results || [])) trendMap[r.ym] = r;
+    const trend = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(Date.now() + 9 * 3600e3);
+      d.setUTCMonth(d.getUTCMonth() - i, 1);
+      const ym = d.toISOString().slice(0, 7);
+      const r = trendMap[ym];
+      trend.push({
+        ym,
+        sites: r ? r.sites : 0,
+        headcount: r ? r.headcount : 0,
+        hours: r ? Math.round(r.hours || 0) : 0,
+        pay: canPay ? (r ? Math.round(r.pay || 0) : 0) : null,
+      });
+    }
+
+    // ⑨ 当月の日別の配置人数(棒グラフ用)。月末までの全日を0埋めして返す
+    const daysInMonth = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0)).getUTCDate();
+    const dailyCount = {};
+    for (const r of dateRows) dailyCount[r.date] = (dailyCount[r.date] || 0) + 1;
+    const daily = [];
+    for (let d = 1; d <= daysInMonth; d++) {
+      const ds = `${month}-${String(d).padStart(2, '0')}`;
+      daily.push({ date: ds, count: dailyCount[ds] || 0 });
+    }
+
+    // ⑩ ランク構成(在籍者のみ。ドーナツグラフ用)
+    const activeUsers = users.filter(u => !u.suspended);
+    const rankDist = ['A', 'B', 'C', 'D', 'E'].map(letter => ({ rank: letter, count: activeUsers.filter(u => rankLetter(u.rank) === letter).length }));
+    const rankNone = activeUsers.filter(u => !rankLetter(u.rank)).length;
+
+    return J({ systemStatus, todo, monthly, attention, promotions, dataIssues, payLock, canPay, trend, daily, rankDist, rankNone, today });
   }
 
   // ---- 稼働サマリー(チーフ以上)。月間の出勤日数・現場数・最長連勤・手配偏りを集計 ----
@@ -5049,10 +5086,26 @@ async function api(req, env, url) {
       }
       return cols;
     };
+    // 各テーブルの行数(どこにデータが溜まっているかの可視化用)。テーブル名はsqlite_master由来の
+    // 実在する識別子なのでSQLに直接埋めてよい。UNION ALLでまとめようとするとD1の
+    // 「too many terms in compound SELECT」制限に掛かるため、1テーブル=1文のままbatch()に渡して
+    // 1往復で取得する。
+    const rowCounts = {};
+    try {
+      const stmts = tableRows.map(t => env.DB.prepare(`SELECT COUNT(*) AS c FROM "${t.name}"`));
+      if (stmts.length) {
+        const res = await env.DB.batch(stmts);
+        res.forEach((r, i) => {
+          const c = (r.results || [])[0];
+          if (c) rowCounts[tableRows[i].name] = c.c;
+        });
+      }
+    } catch (e) { console.error('[app-structure] row count failed:', e); }
     const tables = tableRows.map(t => ({
       name: t.name,
       comment: APP_STRUCTURE_TABLE_COMMENTS[t.name] || '',
       columns: parseCreateTableSql(t.sql || ''),
+      rows: rowCounts[t.name] ?? null,
     }));
     const permissions = Object.entries(PERMS).map(([key, p]) => ({ key, label: p.label, baseLv: p.baseLv }));
     const apiEndpointCount = APP_STRUCTURE_API_GROUPS.reduce((n, g) => n + g.rows.length, 0);

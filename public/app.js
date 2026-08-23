@@ -38,6 +38,7 @@ const ICONS = {
   scroll:'<path d="M8 21h12a2 2 0 0 0 2-2v-2H10v2a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v3h4"/><path d="M19 17V5a2 2 0 0 0-2-2H4"/>',
   refresh:'<path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M8 16H3v5"/>',
   x:'<path d="M18 6L6 18M6 6l12 12"/>',
+  check:'<path d="M20 6L9 17l-5-5"/>',
   xCircle:'<circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/>',
   circle:'<circle cx="12" cy="12" r="10"/>',
   circleFilled:'<circle cx="12" cy="12" r="8" fill="currentColor" stroke="none"/>',
@@ -2015,125 +2016,393 @@ async function pageCalendarGuide(app){
 
 // 管理者ダッシュボード。自動処理の稼働状況、承認待ち、月次サマリー、
 // 気になる人、昇格予定、データ不備、給与ロック状況を1画面に集約する。
+// ===== 管理者ダッシュボード / アプリ構造ビューア 共通の計器盤(ops)基盤 =====
+// この2画面は「システムが今どう動いているか」を一目で掴むための、エンジニア向けの計器盤として
+// 作ってある。数値を読む前に、色・動き・グラフの形で状態が分かることを最優先にしているため、
+// アプリ全体の配色(白地 × 濃紺 × 金)とは意図的に別系統の暗色テーマ(.ops-root配下)にしている。
+// グラフは外部ライブラリを一切使わず、すべて自前のSVG/CSSで組み立てる(ビルド不要の方針を維持)。
+//
+// 動きは全てCSSアニメーション/トランジションで表現している。OSの「視差効果を減らす」設定時は
+// style.cssのprefers-reduced-motionルールが一括で無効化するため、ここでは個別対応しない。
+
+const OPS_NUM = n => Number(n || 0).toLocaleString('ja-JP');
+
+// タブ切り替え等でパネルの中身を差し替えた後に呼ぶ。挿入し直した数値のカウントアップを再実行する。
+function opsAfterRender(root){ animateCounts(root || document); }
+
+// 日付文字列(YYYY-MM-DD)を「今日/昨日/N日前」に変換する。cronの最終実行日の鮮度表示に使う。
+function opsDaysAgo(dateStr, today){
+  if(!dateStr) return null;
+  const d = Math.round((Date.parse(today) - Date.parse(dateStr)) / 86400000);
+  if(Number.isNaN(d)) return null;
+  return d <= 0 ? '今日' : d === 1 ? '昨日' : `${d}日前`;
+}
+
+// 折れ線+塗りのチャート。points=[{label,value}]。線は左から引かれ、点が順に浮かび上がる。
+// 値が全て0の場合も、軸と点だけは描いて「データが無い」ことが分かるようにする。
+function opsLineChart(points, opt = {}){
+  const W = 320, H = 118, padL = 6, padR = 6, padT = 10, padB = 22;
+  const vals = points.map(p => Number(p.value) || 0);
+  const max = Math.max(...vals, 1);
+  const n = points.length;
+  const x = i => padL + (n <= 1 ? (W - padL - padR) / 2 : i * (W - padL - padR) / (n - 1));
+  const y = v => H - padB - (v / max) * (H - padT - padB);
+  const line = points.map((p, i) => `${x(i).toFixed(1)},${y(vals[i]).toFixed(1)}`).join(' ');
+  const area = `M${x(0).toFixed(1)},${(H - padB)} L${line.split(' ').join(' L')} L${x(n - 1).toFixed(1)},${H - padB} Z`;
+  // 目盛り線(0・中間・最大の3本)。値の目安が無いと折れ線の高さが読めないため必ず出す
+  const grid = [0, .5, 1].map(f => {
+    const gy = (H - padB) - f * (H - padT - padB);
+    return `<line class="ops-grid" x1="${padL}" y1="${gy.toFixed(1)}" x2="${W - padR}" y2="${gy.toFixed(1)}"/>`;
+  }).join('');
+  return `<svg class="ops-linechart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${h(opt.label || '推移')}">
+    ${grid}
+    <path class="ops-area" d="${area}"/>
+    <polyline class="ops-line" points="${line}"/>
+    ${points.map((p, i) => `<circle class="ops-pt" cx="${x(i).toFixed(1)}" cy="${y(vals[i]).toFixed(1)}" r="3.5" style="animation-delay:${(i * 90 + 420)}ms"><title>${h(p.label)}: ${OPS_NUM(vals[i])}${h(opt.unit || '')}</title></circle>`).join('')}
+    ${points.map((p, i) => `<text class="ops-xlab" x="${x(i).toFixed(1)}" y="${H - 6}" text-anchor="middle">${h(p.short || p.label)}</text>`).join('')}
+    <text class="ops-ymax" x="${padL}" y="${padT - 1}">${OPS_NUM(max)}</text>
+  </svg>`;
+}
+
+// KPIタイルの中に置く極小の折れ線(軸・目盛り無し)。傾向だけを見せる。
+function opsSpark(vals){
+  const W = 90, H = 26;
+  const max = Math.max(...vals, 1);
+  const n = vals.length;
+  const pts = vals.map((v, i) => `${(n <= 1 ? W / 2 : i * W / (n - 1)).toFixed(1)},${(H - 2 - (v / max) * (H - 5)).toFixed(1)}`).join(' ');
+  return `<svg class="ops-spark" viewBox="0 0 ${W} ${H}" aria-hidden="true"><polyline class="ops-line" points="${pts}"/></svg>`;
+}
+
+// 縦棒グラフ(日別の配置人数など)。barsは[{label,value,cls,title}]。
+function opsColumns(bars, opt = {}){
+  const max = Math.max(...bars.map(b => Number(b.value) || 0), 1);
+  return `<div class="ops-cols" style="--h:${opt.height || 104}px">
+    ${bars.map((b, i) => {
+      const v = Number(b.value) || 0;
+      const pct = (v / max) * 100;
+      return `<div class="ops-col ${b.cls || ''}" title="${h(b.title || (b.label + ': ' + v))}">
+        <i style="--h:${pct.toFixed(1)}%;animation-delay:${Math.min(i * 18, 500)}ms"></i>
+        <b>${h(b.label)}</b>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+// ドーナツ。segs=[{label,value,color}]。各弧がstroke-dashoffsetで順に描かれる。
+function opsDonut(segs, opt = {}){
+  const R = 54, C = 2 * Math.PI * R;
+  const total = segs.reduce((s, x) => s + (Number(x.value) || 0), 0);
+  let acc = 0;
+  const arcs = segs.map((s, i) => {
+    const v = Number(s.value) || 0;
+    if(!v) return '';
+    const dash = (v / total) * C;
+    const rot = -90 + (acc / total) * 360;
+    acc += v;
+    return `<circle class="ops-arc" cx="60" cy="60" r="${R}" stroke="${s.color}"
+      stroke-dasharray="${dash.toFixed(2)} ${C.toFixed(2)}"
+      style="--dash:${dash.toFixed(2)};--rot:${rot.toFixed(2)}deg;animation-delay:${i * 110}ms"><title>${h(s.label)}: ${v}</title></circle>`;
+  }).join('');
+  return `<div class="ops-donut-wrap">
+    <svg class="ops-donut" viewBox="0 0 120 120" role="img" aria-label="${h(opt.label || '構成比')}">
+      <circle class="ops-arc-bg" cx="60" cy="60" r="${R}"/>
+      ${arcs}
+    </svg>
+    <div class="ops-donut-mid"><span data-count="${total}">0</span><em>${h(opt.unit || '')}</em></div>
+  </div>`;
+}
+
+// 横棒リスト。items=[{label,value,color,max,href,hint}]
+function opsBars(items, opt = {}){
+  const max = opt.max || Math.max(...items.map(i => Number(i.value) || 0), 1);
+  return `<div class="ops-bars">${items.map((it, i) => {
+    const v = Number(it.value) || 0;
+    const tag = it.href ? 'a' : 'div';
+    return `<${tag} class="ops-bar-row ${it.cls || ''}" ${it.href ? `href="${it.href}"` : ''}>
+      <span class="ops-bar-lab">${h(it.label)}</span>
+      <span class="ops-bar-track"><i style="--w:${((v / max) * 100).toFixed(1)}%;background:${it.color || 'var(--ops-accent)'};animation-delay:${Math.min(i * 70, 480)}ms"></i></span>
+      <span class="ops-bar-val">${OPS_NUM(v)}${h(it.unit || '')}</span>
+    </${tag}>`;
+  }).join('')}</div>`;
+}
+
+// 60分ダイヤル。毎時どのタイミングでどのcronが起動するかを示し、現在の分に針を立てる。
+// 針はrenderTick()が毎秒動かすため、「今まさに動いているシステム」であることが視覚的に分かる。
+function opsCronDial(marks){
+  const R = 42, cx = 50, cy = 50;
+  const pos = (min, r) => {
+    const a = (min / 60) * 2 * Math.PI - Math.PI / 2;
+    return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+  };
+  const ticks = Array.from({ length: 12 }, (_, i) => {
+    const [x1, y1] = pos(i * 5, R), [x2, y2] = pos(i * 5, R - (i % 3 === 0 ? 6 : 3));
+    return `<line class="ops-tick" x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"/>`;
+  }).join('');
+  const dots = marks.map((m, i) => {
+    const [mx, my] = pos(m.min, R);
+    return `<circle class="ops-cron-dot ${m.bad ? 'bad' : ''}" cx="${mx.toFixed(1)}" cy="${my.toFixed(1)}" r="4.5" style="animation-delay:${i * 160}ms"><title>${h(m.label)}(毎時${String(m.min).padStart(2, '0')}分)</title></circle>`;
+  }).join('');
+  return `<svg class="ops-dial" viewBox="0 0 100 100" role="img" aria-label="毎時の自動処理スケジュール">
+    <circle class="ops-dial-ring" cx="${cx}" cy="${cy}" r="${R}"/>
+    ${ticks}${dots}
+    <line class="ops-hand" id="ops-cron-hand" x1="${cx}" y1="${cy}" x2="${cx}" y2="${cy - R + 8}"/>
+    <circle class="ops-hand-pin" cx="${cx}" cy="${cy}" r="3"/>
+  </svg>`;
+}
+
+// 半円ゲージ(給与確定の進み具合など)。pctは0〜100。
+function opsGauge(pct, opt = {}){
+  // 左右の端(8,60)〜(112,60)をちょうど結ぶ半円にするため、半径は弦の半分=52で固定する。
+  // ここがずれるとSVG側が半径を自動補正し、stroke-dasharrayで計算した弧長と食い違って表示が崩れる。
+  const R = 52, C = Math.PI * R; // 半円の弧長
+  const v = Math.max(0, Math.min(100, pct));
+  const dash = (v / 100) * C;
+  return `<div class="ops-gauge-wrap">
+    <svg class="ops-gauge" viewBox="0 0 120 70" role="img" aria-label="${h(opt.label || '')}">
+      <path class="ops-gauge-bg" d="M8,60 A${R},${R} 0 0 1 112,60"/>
+      <path class="ops-gauge-fg" d="M8,60 A${R},${R} 0 0 1 112,60"
+        stroke-dasharray="${dash.toFixed(2)} ${C.toFixed(2)}" style="--dash:${dash.toFixed(2)};stroke:${opt.color || 'var(--ops-ok)'}"/>
+    </svg>
+    <div class="ops-gauge-txt"><span data-count="${v.toFixed(0)}" data-suffix="%">0</span></div>
+  </div>`;
+}
+
 async function pageDashboard(app){
   if(!has('dashboard_view')){ notFound(app); return; }
-  app.innerHTML = `<div class="loading-box"><span class="spinner"></span>読み込み中…</div>`;
+  app.innerHTML = `<div class="ops-root"><div class="ops-boot"><span class="spinner"></span> システム状態を取得しています…</div></div>`;
   let data;
   try{ data = await api('/dashboard'); }
   catch(e){ app.innerHTML = `<div class="msg err">${h(e.message)}</div>`; return; }
 
-  const jobLabel = (key, pcLabel, spLabel) => `<span class="dash-pc-only">${pcLabel}</span><span class="dash-sp-only">${spLabel}</span>`;
-  const jobShort = { daicho:'台帳取込', schedSources:'予定表取込', rankPromotion:'ランク昇格', notify:'リマインド' };
-  // 異常時、そのジョブを手動実行・確認できる画面へ直接飛べるようにする(権限がない場合はリンクにしない)。
-  // ランク昇格は手動実行UIが存在しないため対象外。
+  const today = data.today || jstToday();
+  const st = data.systemStatus;
+  const okCount = st.jobs.filter(j => !j.bad).length;
+
+  // 異常時に、その処理を手動実行・確認できる画面へ直接飛べるようにする(権限がある場合のみ)。
+  // ランク昇格の適用は手動実行の入口が無いためリンクしない。
   const jobLink = {
     daicho: has('import_data') ? '#/import' : null,
     schedSources: has('wage_settings') ? '#/sched-sources' : null,
     notify: has('wage_settings') ? '#/admin-settings' : null,
   };
-  const diffStr = (n) => n == null ? '' : (n > 0 ? `+${n}` : (n < 0 ? `${n}` : '±0'));
-  const diffCls = (n) => n > 0 ? 'dash-up' : (n < 0 ? 'dash-down' : '');
+  // wrangler.tomlのcron設定と対応する起動タイミング(毎時何分か)
+  const jobMin = { daicho: 0, schedSources: 5, rankPromotion: 10, notify: 15 };
+  const jobShort = { daicho: '台帳取込', schedSources: '予定表取込', rankPromotion: 'ランク昇格', notify: 'リマインド' };
+
+  const trend = data.trend || [];
+  const trendShort = trend.map(t => ({ ...t, short: Number(t.ym.slice(5)) + '月' }));
+  const diffChip = (n, unit) => {
+    if(n == null) return '';
+    const cls = n > 0 ? 'up' : n < 0 ? 'down' : 'flat';
+    const sign = n > 0 ? '▲' : n < 0 ? '▼' : '±';
+    return `<span class="ops-diff ${cls}">${sign}${OPS_NUM(Math.abs(n))}${h(unit || '')}</span>`;
+  };
+
+  // KPIタイル(前月比と6ヶ月スパークライン付き)
+  const kpis = [
+    { key: 'sites', label: '現場数', value: data.monthly.sites, diff: data.monthly.diffSites, unit: '' },
+    { key: 'headcount', label: 'のべ人数', value: data.monthly.headcount, diff: data.monthly.diffHeadcount, unit: '' },
+    { key: 'hours', label: '総稼働時間', value: data.monthly.hours, diff: data.monthly.diffHours, unit: 'h' },
+  ];
+  if(data.canPay) kpis.push({ key: 'pay', label: '給与見込み', value: Math.round(data.monthly.pay / 10000), diff: data.monthly.diffPay == null ? null : Math.round(data.monthly.diffPay / 10000), unit: '万' });
+
+  const rankColors = { A: '#f0b429', B: '#4fd1c5', C: '#5b9cf8', D: '#a78bfa', E: '#94a3b8' };
+  const rankSegs = (data.rankDist || []).filter(r => r.count).map(r => ({ label: r.rank + 'ランク', value: r.count, color: rankColors[r.rank] }));
+  if(data.rankNone) rankSegs.push({ label: '未設定', value: data.rankNone, color: '#4b5563' });
+
+  const attentionItems = [
+    { label: '月100h超', value: data.attention.overTotal, color: 'var(--ops-danger)', href: '#/summary' },
+    { label: '6連勤以上', value: data.attention.streak, color: 'var(--ops-danger)', href: '#/summary' },
+    { label: '稼働少なめ', value: data.attention.few, color: 'var(--ops-warn)', href: '#/summary' },
+    { label: '同じ現場ばかり', value: data.attention.samesite, color: 'var(--ops-accent)', href: '#/summary' },
+    { label: '残業50h+', value: data.attention.overtime, color: 'var(--ops-warn)', href: '#/summary' },
+  ];
+
+  const todoRows = [];
+  if(data.todo.selfReports.count) todoRows.push({ icon: 'mail', label: '現場変更報告の承認', sub: `最長${data.todo.selfReports.maxDays}日待ち`, n: data.todo.selfReports.count, href: '#/self-reports', urgent: data.todo.selfReports.maxDays >= 3 });
+  if(data.todo.nominations.count) todoRows.push({ icon: 'user', label: 'メンバー指名の承認', sub: `最長${data.todo.nominations.maxDays}日待ち`, n: data.todo.nominations.count, href: '#/nominations', urgent: data.todo.nominations.maxDays >= 3 });
+  if(data.todo.reportChecks.count) todoRows.push({ icon: 'fileText', label: '新人報告の2次チェック', sub: '未チェック', n: data.todo.reportChecks.count, href: '#/reports', urgent: false });
+
+  const issueRows = [
+    { label: 'ランク未設定', value: data.dataIssues.noRank, href: '#/members', icon: 'user' },
+    { label: '手配担当が未設定', value: data.dataIssues.noManager, href: '#/members', icon: 'user' },
+    { label: '停止中だが予定あり', value: data.dataIssues.suspendedButScheduled, href: '#/admin', icon: 'clock' },
+  ];
+
+  // 当月の日別配置。土日と今日を色分けし、月の稼働の山谷が形で分かるようにする
+  const wd = '日月火水木金土';
+  const dailyBars = (data.daily || []).map(d => {
+    const dow = new Date(d.date + 'T00:00:00+09:00').getDay();
+    return {
+      label: String(Number(d.date.slice(8))),
+      value: d.count,
+      cls: [d.date === today ? 'today' : '', dow === 0 ? 'sun' : dow === 6 ? 'sat' : ''].filter(Boolean).join(' '),
+      title: `${d.date}(${wd[dow]}) ${d.count}人`,
+    };
+  });
+  const dailyMax = Math.max(...dailyBars.map(b => b.value), 0);
+  const dailyTotal = dailyBars.reduce((s, b) => s + b.value, 0);
 
   app.innerHTML = `
-  <div class="dash-wrap">
-    <h2 style="display:flex;align-items:center;gap:8px;margin-bottom:3px">${icon('gauge')} ダッシュボード</h2>
-    <div class="dash-sub">${jstToday()} 時点</div>
+  <div class="ops-root">
+    <div class="ops-head">
+      <div class="ops-head-l">
+        <div class="ops-title">${icon('gauge')} <span>システム計器盤</span></div>
+        <div class="ops-sub">RB事業2課 スケジュール管理システム / ${h(today)}</div>
+      </div>
+      <div class="ops-clock"><span id="ops-clock">--:--:--</span><em>JST</em></div>
+    </div>
 
-    <div class="dash-card dash-status ${data.systemStatus.hasIssue?'bad':''}">
-      <div class="dash-status-badge">${icon(data.systemStatus.hasIssue?'alertTriangle':'checkCircle',{size:'18px'})} ${data.systemStatus.hasIssue?'1件以上の異常':'すべて正常'}</div>
-      <div class="dash-status-sub">${data.systemStatus.hasIssue?'自動処理のうち一部が24時間以上動いていません':'自動処理はすべて正常に動作しています'}</div>
-      <div class="dash-jobs">
-        ${data.systemStatus.jobs.map(j=>{
-          const link = j.bad ? jobLink[j.key] : null;
-          const tag = link ? 'a' : 'div';
-          return `<${tag} ${link?`href="${link}"`:''} class="dash-job ${j.bad?'bad':''} ${link?'linked':''}">
-          <span class="dash-dot"></span>
-          <span class="dash-nm">${jobLabel(j.key, j.label, jobShort[j.key]||j.label)}</span>
-          <span class="dash-tm">${h(j.lastRun||'未実行')}</span>
-          <span class="dash-rs">${j.bad?(j.lastRun?'実行が滞っています':'未実行です'):'正常'}</span>
-          ${link?icon('arrowRight',{size:'12px'}):''}
-        </${tag}>${j.bad && j.detail ? `<div class="dash-job-detail">${h(j.detail)}</div>` : ''}`;
-        }).join('')}
+    <div class="ops-hero ${st.hasIssue ? 'bad' : 'ok'}">
+      <div class="ops-hero-main">
+        <div class="ops-hero-ring ${st.hasIssue ? 'bad' : 'ok'}">
+          <span class="ops-ring-pulse"></span>
+          ${icon(st.hasIssue ? 'alertTriangle' : 'checkCircle', { size: '30px' })}
+        </div>
+        <div class="ops-hero-txt">
+          <b>${st.hasIssue ? '異常を検知' : 'すべて正常'}</b>
+          <span>自動処理 <em data-count="${okCount}">0</em> / ${st.jobs.length} が正常に稼働中</span>
+        </div>
+      </div>
+      <div class="ops-dial-box">
+        ${opsCronDial(st.jobs.map(j => ({ min: jobMin[j.key] ?? 0, label: j.label, bad: j.bad })))}
+        <span class="ops-dial-cap">毎時の起動タイミング</span>
       </div>
     </div>
 
-    <div class="dash-card">
-      <div class="dash-card-h"><div class="dash-card-t">${icon('inbox')} 対応が必要</div><span></span></div>
-      <div class="dash-todo">
-        ${data.todo.selfReports.count?`<a href="#/self-reports" class="dash-todo-row ${data.todo.selfReports.maxDays>=3?'urgent':''}">
-          <div class="dash-todo-ic">${icon('mail',{size:'15px'})}</div>
-          <div><div class="dash-todo-l">${jobLabel('sr','現場変更報告の承認','現場変更の承認')}</div><div class="dash-todo-s">最長${data.todo.selfReports.maxDays}日待ち</div></div>
-          <div class="dash-todo-n">${data.todo.selfReports.count}</div>
-          ${icon('arrowRight',{size:'14px'})}
-        </a>`:''}
-        ${data.todo.nominations.count?`<a href="#/nominations" class="dash-todo-row ${data.todo.nominations.maxDays>=3?'urgent':''}">
-          <div class="dash-todo-ic">${icon('user',{size:'15px'})}</div>
-          <div><div class="dash-todo-l">${jobLabel('nm','メンバー指名の承認','指名の承認')}</div><div class="dash-todo-s">最長${data.todo.nominations.maxDays}日待ち</div></div>
-          <div class="dash-todo-n">${data.todo.nominations.count}</div>
-          ${icon('arrowRight',{size:'14px'})}
-        </a>`:''}
-        ${data.todo.reportChecks.count?`<a href="#/reports" class="dash-todo-row">
-          <div class="dash-todo-ic">${icon('fileText',{size:'15px'})}</div>
-          <div><div class="dash-todo-l">${jobLabel('rc','新人報告の2次チェック','2次チェック')}</div><div class="dash-todo-s">未チェック</div></div>
-          <div class="dash-todo-n">${data.todo.reportChecks.count}</div>
-          ${icon('arrowRight',{size:'14px'})}
-        </a>`:''}
-        ${(!data.todo.selfReports.count && !data.todo.nominations.count && !data.todo.reportChecks.count)?'<div class="dash-todo-empty">対応が必要なものはありません</div>':''}
+    <div class="ops-jobs">
+      ${st.jobs.map((j, i) => {
+        const link = j.bad ? jobLink[j.key] : null;
+        const tag = link ? 'a' : 'div';
+        const rel = opsDaysAgo(j.lastRun, today);
+        return `<${tag} ${link ? `href="${link}"` : ''} class="ops-job ${j.bad ? 'bad' : 'ok'} ${link ? 'linked' : ''}" style="animation-delay:${i * 70}ms">
+          <div class="ops-job-top">
+            <span class="ops-led"></span>
+            <span class="ops-job-nm">${h(jobShort[j.key] || j.label)}</span>
+            <span class="ops-job-min">:${String(jobMin[j.key] ?? 0).padStart(2, '0')}</span>
+          </div>
+          <div class="ops-job-time">${h(j.lastRun || '未実行')}</div>
+          <div class="ops-job-rel">${j.bad ? (j.lastRun ? `${h(rel || '')}・滞留中` : '一度も実行されていません') : `${h(rel || '')}に実行`}</div>
+          ${j.bad && j.detail ? `<div class="ops-job-detail">${h(j.detail)}</div>` : ''}
+          ${link ? `<div class="ops-job-go">対処する ${icon('arrowRight', { size: '12px' })}</div>` : ''}
+        </${tag}>`;
+      }).join('')}
+    </div>
+
+    ${todoRows.length ? `<div class="ops-card ops-todo-card">
+      <div class="ops-card-h"><b>${icon('inbox', { size: '15px' })} 対応が必要</b><span class="ops-badge">${todoRows.reduce((s, r) => s + r.n, 0)}件</span></div>
+      <div class="ops-todo">
+        ${todoRows.map((r, i) => `<a href="${r.href}" class="ops-todo-row ${r.urgent ? 'urgent' : ''}" style="animation-delay:${i * 80}ms">
+          <span class="ops-todo-ic">${icon(r.icon, { size: '15px' })}</span>
+          <span class="ops-todo-l"><b>${h(r.label)}</b><em>${h(r.sub)}</em></span>
+          <span class="ops-todo-n" data-count="${r.n}">0</span>
+          ${icon('arrowRight', { size: '14px' })}
+        </a>`).join('')}
+      </div>
+    </div>` : `<div class="ops-card ops-empty-card">${icon('checkCircle', { size: '16px' })} 対応が必要なものはありません</div>`}
+
+    <div class="ops-kpis">
+      ${kpis.map((k, i) => `<div class="ops-kpi" style="animation-delay:${i * 70}ms">
+        <div class="ops-kpi-h">${h(k.label)}${diffChip(k.diff, k.unit)}</div>
+        <div class="ops-kpi-n"><span data-count="${k.value}">0</span><em>${h(k.unit)}</em></div>
+        ${opsSpark(trend.map(t => t[k.key] || 0))}
+      </div>`).join('')}
+    </div>
+
+    <div class="ops-grid2">
+      <div class="ops-card">
+        <div class="ops-card-h">
+          <b>${icon('trendingUp', { size: '15px' })} 直近6ヶ月の推移</b>
+          <span class="ops-seg" id="ops-trend-seg">
+            ${kpis.map((k, i) => `<button type="button" class="${i === 0 ? 'on' : ''}" data-metric="${k.key}" data-unit="${h(k.unit)}">${h(k.label)}</button>`).join('')}
+          </span>
+        </div>
+        <div id="ops-trend-chart"></div>
+      </div>
+
+      <div class="ops-card">
+        <div class="ops-card-h"><b>${icon('users', { size: '15px' })} ランク構成</b><span class="ops-card-sub">在籍者</span></div>
+        <div class="ops-rank">
+          ${opsDonut(rankSegs, { unit: '人' })}
+          <div class="ops-legend">
+            ${rankSegs.map(s => `<span><i style="background:${s.color}"></i>${h(s.label)}<b>${s.value}</b></span>`).join('')}
+          </div>
+        </div>
       </div>
     </div>
 
-    <div class="dash-card">
-      <div class="dash-card-h"><div class="dash-card-t">${icon('barChart')} 今月の状況(${data.monthly.month.slice(5)}月)</div><span class="dash-card-more">前月比</span></div>
-      <div class="dash-kpis">
-        <div class="dash-kpi"><div class="dash-kpi-n" data-count="${data.monthly.sites}">0</div><div class="dash-kpi-l">現場数</div><div class="dash-kpi-d ${diffCls(data.monthly.diffSites)}">${diffStr(data.monthly.diffSites)}</div></div>
-        <div class="dash-kpi"><div class="dash-kpi-n" data-count="${data.monthly.headcount}">0</div><div class="dash-kpi-l">のべ人数</div><div class="dash-kpi-d ${diffCls(data.monthly.diffHeadcount)}">${diffStr(data.monthly.diffHeadcount)}</div></div>
-        <div class="dash-kpi"><div class="dash-kpi-n" data-count="${data.monthly.hours}">0</div><div class="dash-kpi-l">総稼働時間(h)</div><div class="dash-kpi-d ${diffCls(data.monthly.diffHours)}">${diffStr(data.monthly.diffHours)}</div></div>
-        ${data.canPay?`<div class="dash-kpi"><div class="dash-kpi-n" data-count="${Math.round(data.monthly.pay/10000)}">0<span class="dash-kpi-u">万</span></div><div class="dash-kpi-l">給与見込み</div><div class="dash-kpi-d ${diffCls(data.monthly.diffPay)}">${data.monthly.diffPay==null?'':diffStr(Math.round(data.monthly.diffPay/10000))+'万'}</div></div>`:''}
+    <div class="ops-card">
+      <div class="ops-card-h">
+        <b>${icon('barChart', { size: '15px' })} 当月の日別 配置人数</b>
+        <span class="ops-card-sub">${h(data.monthly.month)} / のべ${OPS_NUM(dailyTotal)}人・最大${dailyMax}人</span>
+      </div>
+      ${opsColumns(dailyBars)}
+      <div class="ops-cols-legend"><span><i class="sat"></i>土</span><span><i class="sun"></i>日</span><span><i class="today"></i>今日</span></div>
+    </div>
+
+    <div class="ops-grid2">
+      <div class="ops-card">
+        <div class="ops-card-h"><b>${icon('alertTriangle', { size: '15px' })} 気になる人</b><a href="#/summary" class="ops-link">稼働サマリー ${icon('arrowRight', { size: '11px' })}</a></div>
+        ${opsBars(attentionItems, { unit: '人' })}
+      </div>
+
+      <div class="ops-card">
+        <div class="ops-card-h"><b>${icon('wrench', { size: '15px' })} データの不備</b></div>
+        ${opsBars(issueRows.map(r => ({ label: r.label, value: r.value, href: r.href, color: r.value ? 'var(--ops-warn)' : '#3d4657', unit: '人' })))}
+        <div class="ops-note">「手配担当が未設定」はチーフ手配として意図的に空にしている場合も含む参考値です。</div>
       </div>
     </div>
 
-    <div class="dash-cols">
-      <div>
-        <div class="dash-card">
-          <div class="dash-card-h"><div class="dash-card-t">${icon('alertTriangle')} 気になる人</div><a href="#/summary" class="dash-card-more">稼働サマリーへ ${icon('arrowRight',{size:'12px'})}</a></div>
-          <div class="dash-chips">
-            <a href="#/summary" class="dash-chip ${data.attention.overTotal?'hot':''}"><span class="el">月100h超</span><span class="dash-c">${data.attention.overTotal}</span></a>
-            <a href="#/summary" class="dash-chip ${data.attention.streak?'hot':''}"><span class="el">6連勤以上</span><span class="dash-c">${data.attention.streak}</span></a>
-            <a href="#/summary" class="dash-chip"><span class="el">稼働少なめ</span><span class="dash-c">${data.attention.few}</span></a>
-            <a href="#/summary" class="dash-chip"><span class="el">同じ現場ばかり</span><span class="dash-c">${data.attention.samesite}</span></a>
-            <a href="#/summary" class="dash-chip"><span class="el">残業50h+</span><span class="dash-c">${data.attention.overtime}</span></a>
-          </div>
-        </div>
-
-        <div class="dash-card">
-          <div class="dash-card-h"><div class="dash-card-t">${icon('wrench')} データの不備</div><span></span></div>
-          <div class="dash-warns">
-            <a href="#/members" class="dash-warn-row">${icon('user',{size:'13px'})}<span class="dash-lbl">ランク未設定</span><span class="dash-c">${data.dataIssues.noRank}人</span></a>
-            <a href="#/members" class="dash-warn-row">${icon('user',{size:'13px'})}<span class="dash-lbl">手配担当が未設定</span><span class="dash-c">${data.dataIssues.noManager}人</span></a>
-            <a href="#/admin" class="dash-warn-row">${icon('clock',{size:'13px'})}<span class="dash-lbl">停止中だが予定あり</span><span class="dash-c">${data.dataIssues.suspendedButScheduled}人</span></a>
-          </div>
-        </div>
+    <div class="ops-grid2">
+      <div class="ops-card">
+        <div class="ops-card-h"><b>${icon('star', { size: '15px' })} 昇格予定</b><span class="ops-card-sub">今月・来月</span></div>
+        ${data.promotions.upcoming.length ? `<div class="ops-plist">${data.promotions.upcoming.map((p, i) => `<div class="ops-prow" style="animation-delay:${i * 60}ms">
+          <span class="ops-pname">${h(p.name)}</span>
+          <span class="ops-prank"><i>${h(p.from)}</i>${icon('arrowRight', { size: '11px' })}<b>${h(p.to)}</b></span>
+          <span class="ops-pdate">${h(p.date.slice(5).replace('-', '/'))}</span>
+        </div>`).join('')}</div>` : '<div class="ops-none">昇格予定はいません</div>'}
+        <div class="ops-note">研修待ち — 2部のみ ${data.promotions.waitingTeam2Only}人 / SUのみ ${data.promotions.waitingSuOnly}人</div>
       </div>
 
-      <div>
-        <div class="dash-card">
-          <div class="dash-card-h"><div class="dash-card-t">${icon('star')} 昇格予定</div><span class="dash-card-more">今月・来月</span></div>
-          <div class="dash-plist">
-            ${data.promotions.upcoming.map(p=>`<div class="dash-prow"><span class="dash-nm">${h(p.name)}</span><span class="dash-rankbadge">${h(p.from)} → ${h(p.to)}</span><span class="dash-dt">${h(p.date.slice(5).replace('-','/'))}</span></div>`).join('') || '<div class="dash-todo-empty">昇格予定はいません</div>'}
+      <div class="ops-card">
+        <div class="ops-card-h"><b>${icon('lock', { size: '15px' })} 給与の確定状況</b></div>
+        <div class="ops-lock">
+          ${opsGauge(data.payLock.unlockedDays ? Math.max(0, 100 - (data.payLock.unlockedDays / 31) * 100) : 100, { color: data.payLock.unlockedDays > 20 ? 'var(--ops-warn)' : 'var(--ops-ok)' })}
+          <div class="ops-lock-txt">
+            <div><em>確定済み</em><b>${h(data.payLock.lockedUntil)} まで</b></div>
+            <div><em>未確定</em><b>${data.payLock.unlockedDays}日分</b></div>
           </div>
-          <div class="dash-pfoot">研修待ち:2部のみ ${data.promotions.waitingTeam2Only}人 / SUのみ ${data.promotions.waitingSuOnly}人</div>
-        </div>
-
-        <div class="dash-card">
-          <div class="dash-card-h"><div class="dash-card-t">${icon('lock')} 給与の確定状況</div><span></span></div>
-          <div class="dash-lockrow"><span class="el">確定済み</span><span class="dash-v">${h(data.payLock.lockedUntil)}まで</span></div>
-          <div class="dash-lock-sub">未確定:${data.payLock.unlockedDays}日分</div>
         </div>
       </div>
     </div>
   </div>`;
 
+  // --- 推移グラフ(指標の切り替え) ---
+  const drawTrend = (metric, unit) => {
+    const box = $('#ops-trend-chart');
+    if(!box) return;
+    box.innerHTML = opsLineChart(trendShort.map(t => ({ label: t.ym, short: t.short, value: t[metric] || 0 })), { unit, label: '直近6ヶ月の推移' });
+  };
+  drawTrend('sites', '');
+  $('#ops-trend-seg').addEventListener('click', e => {
+    const b = e.target.closest('button'); if(!b) return;
+    $('#ops-trend-seg').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+    drawTrend(b.dataset.metric, b.dataset.unit);
+  });
+
   animateCounts(app);
+
+  // --- 毎秒の時計 + cron針。要素が画面から消えたら自動的に止める(ページ遷移時のタイマー残りを防ぐ) ---
+  const tick = () => {
+    const clock = document.getElementById('ops-clock');
+    if(!clock || !document.body.contains(clock)){ clearInterval(timer); return; }
+    const j = new Date(Date.now() + 9 * 3600e3);
+    clock.textContent = j.toISOString().slice(11, 19);
+    const hand = document.getElementById('ops-cron-hand');
+    if(hand) hand.style.transform = `rotate(${((j.getUTCMinutes() * 60 + j.getUTCSeconds()) / 3600) * 360}deg)`;
+  };
+  const timer = setInterval(tick, 1000);
+  tick();
 }
 
 async function pageHome(app){
@@ -6853,130 +7122,229 @@ async function pageLegacyImportDetail(app, ym){
   if(rejBtn) rejBtn.onclick = () => runLegacyReject(ym, [], () => goTo('#/legacy-import'));
 }
 
-// アプリ構造ビューア(管理者専用): このアプリ自身の画面・API・DB・権限モデル・ファイル構成を
-// 一覧できる開発者向け診断画面。権限一覧・機能公開キー・DBテーブルの列構成は、リクエストのたびに
-// PERMS/FEATURE_KEYS・実際のD1(sqlite_master)から取得するため、コード変更に自動追従する
-// (schema.sqlと本番の食い違いにも気づける)。画面一覧・API一覧・ファイル説明はsrc/index.jsの
-// APP_STRUCTURE_*静的データを返しているだけなので、新しい画面/APIを追加したらそちらに追記する。
+// ===== アプリ構造ビューア(#/app-structure、管理者専用) =====
+// このアプリ自身の画面・API・DB・権限モデル・ファイル構成を、開発者(SE)が短時間で把握するための
+// 診断画面。ダッシュボードと同じ計器盤テーマ(.ops-root)を使う。
+// 権限一覧・機能公開キーはPERMS/FEATURE_KEYS定数から、DBのテーブル構造と行数は実際のD1から
+// リクエストのたびに取得しているため、コード変更や本番の実態に自動追従する
+// (schema.sqlと本番DBの食い違いにも気づける)。画面一覧・API一覧・ファイル説明はsrc/index.jsの
+// APP_STRUCTURE_*静的データなので、新しい画面/APIを追加したらそちらに追記する。
+
+// リクエストが流れる経路を、実際にパケットが動いて見える形で描いた構成図。
+// 「どのファイルが何をして、どこへ繋がるのか」を文章より先に掴ませるのが目的。
 function appStructureArchSvg(){
-  const box = (x,y,w,bh,lines,cls) => `<g>
-    <rect x="${x}" y="${y}" width="${w}" height="${bh}" rx="8" class="as-arch-box ${cls||''}"/>
-    <text x="${x+w/2}" y="${y+bh/2 - (lines.length-1)*7}" text-anchor="middle" class="as-arch-text">
-      ${lines.map((l,i)=>`<tspan x="${x+w/2}" dy="${i===0?0:16}">${h(l)}</tspan>`).join('')}
+  const box = (x, y, w, hgt, lines, cls, delay) => `<g class="ops-arch-g" style="animation-delay:${delay}ms">
+    <rect x="${x}" y="${y}" width="${w}" height="${hgt}" rx="9" class="ops-arch-box ${cls || ''}"/>
+    <text x="${x + w / 2}" y="${y + hgt / 2 - (lines.length - 1) * 8 + 4}" text-anchor="middle" class="ops-arch-text ${cls === 'worker' ? 'inv' : ''}">
+      ${lines.map((l, i) => `<tspan x="${x + w / 2}" dy="${i === 0 ? 0 : 15}" class="${i === 0 ? 'ttl' : 'sub'}">${h(l)}</tspan>`).join('')}
     </text>
   </g>`;
-  const arrow = (x1,y1,x2,y2,label) => `<g>
-    <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" class="as-arch-line" marker-end="url(#as-arrow)"/>
-    ${label ? `<text x="${(x1+x2)/2}" y="${(y1+y2)/2 - 6}" text-anchor="middle" class="as-arch-line-label">${h(label)}</text>` : ''}
+  // 経路。dur/delayを変えて、複数のパケットが別々のリズムで流れるようにする
+  // ldx: 垂直な経路など、線の真上にラベルが重なってしまう場合に横へずらす量
+  const flow = (x1, y1, x2, y2, label, dur, delay, cls, ldx) => `<g class="ops-arch-edge ${cls || ''}">
+    <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" class="ops-arch-line" marker-end="url(#ops-arrow)"/>
+    ${label ? `<text x="${(x1 + x2) / 2 + (ldx || 0)}" y="${(y1 + y2) / 2 - 7}" text-anchor="middle" class="ops-arch-lab">${h(label)}</text>` : ''}
+    <circle r="3.5" class="ops-packet" style="--x1:${x1}px;--y1:${y1}px;--x2:${x2}px;--y2:${y2}px;animation-duration:${dur}s;animation-delay:${delay}s"/>
   </g>`;
-  return `
-  <div class="as-svg-wrap">
-  <svg viewBox="0 0 900 400" class="as-arch-svg" role="img" aria-label="システム構成図">
-    <defs><marker id="as-arrow" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" class="as-arch-arrowhead"/></marker></defs>
-    ${arrow(240,80,340,120)}
-    ${arrow(560,150,650,120,'D1へ読み書き')}
-    ${arrow(560,190,650,230,'R2へ保存/取得')}
-    ${arrow(450,70,450,120,'毎時0分')}
-    ${arrow(240,220,340,180,'GASからPOST')}
-    ${arrow(560,180,240,300,'.ics配信')}
-    ${box(20,50,220,60,['ブラウザ','public/app.js + style.css'],'as-arch-client')}
-    ${box(340,120,220,80,['Cloudflare Worker','src/index.js (fetch/scheduled)'],'as-arch-worker')}
-    ${box(650,90,220,60,['D1: schedule-db'],'as-arch-store')}
-    ${box(650,200,220,60,['R2: 台帳ファイル保管'],'as-arch-store')}
-    ${box(340,20,220,50,['Cron trigger','wrangler.toml crons'],'as-arch-ext')}
-    ${box(20,180,220,60,['Googleスプレッドシート','(予定表ソース・台帳URL取込)'],'as-arch-ext')}
-    ${box(20,290,220,60,['Googleカレンダー等','(.ics購読フィード)'],'as-arch-ext')}
+  return `<div class="ops-arch-wrap">
+  <svg class="ops-arch" viewBox="0 0 900 420" role="img" aria-label="システム構成図">
+    <defs><marker id="ops-arrow" markerWidth="9" markerHeight="9" refX="8" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" class="ops-arrowhead"/></marker></defs>
+    ${flow(250, 90, 335, 150, 'HTTPS / api()', 2.4, 0, '')}
+    ${flow(575, 165, 645, 120, 'SQL', 1.8, .5, '')}
+    ${flow(575, 205, 645, 250, 'get/put', 2.0, 1.1, '')}
+    ${flow(450, 78, 450, 140, '毎時 cron', 2.2, .3, '', 42)}
+    ${flow(250, 250, 335, 200, 'シート取得', 2.6, .8, '')}
+    ${flow(560, 230, 250, 340, '.ics 配信', 3.0, 1.4, '')}
+    ${box(30, 60, 220, 62, ['ブラウザ', 'public/app.js + style.css'], 'client', 0)}
+    ${box(335, 140, 240, 84, ['Cloudflare Worker', 'src/index.js', 'fetch() / scheduled()'], 'worker', 120)}
+    ${box(645, 88, 225, 62, ['D1: schedule-db', '33テーブル'], 'store', 240)}
+    ${box(645, 218, 225, 62, ['R2: ty-daicho', '台帳ファイル保管'], 'store', 300)}
+    ${box(335, 26, 240, 52, ['Cron Trigger', '0/5/10/15分'], 'ext', 60)}
+    ${box(30, 220, 220, 62, ['Googleスプレッドシート', '予定表ソース・台帳URL'], 'ext', 180)}
+    ${box(30, 320, 220, 62, ['Googleカレンダー等', '.ics 購読フィード'], 'ext', 360)}
   </svg>
   </div>
-  <div class="muted as-svg-hint">◀ 画面が狭い場合は図を横にスクロールできます ▶</div>`;
+  <div class="ops-arch-cap">${icon('activity', { size: '12px' })} 光の粒はリクエストの流れです。矢印の向きがデータの向きを表します。</div>`;
 }
-function appStructureFileFlowHtml(){
-  return `<div class="as-flow">
-    <div class="as-flow-box">index.html</div><div class="as-flow-arrow">→</div>
-    <div class="as-flow-box">app.js ⇄ style.css</div><div class="as-flow-arrow">→ api() →</div>
-    <div class="as-flow-box strong">src/index.js</div><div class="as-flow-arrow">→</div>
-    <div class="as-flow-box">D1 / R2</div>
-  </div>
-  <div class="muted" style="font-size:12px;margin-top:6px">上記はリクエスト単位の実行時の関係。schema.sql・migrate-*.sql・wrangler.tomlはデプロイ作業時にのみ関わり、Workerの実行中に読み込まれるものではない。</div>`;
-}
+
 async function pageAppStructure(app){
   if(ME.role !== 'admin'){ notFound(app); return; }
-  app.innerHTML = `<h2>${icon('sitemap')} アプリ構造ビューア</h2><div class="card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>`;
+  app.innerHTML = `<div class="ops-root"><div class="ops-boot"><span class="spinner"></span> 構造情報を取得しています…</div></div>`;
   let data;
   try{ data = await api('/app-structure'); }
-  catch(e){ app.innerHTML = `<h2>${icon('sitemap')} アプリ構造ビューア</h2><div class="card"><div class="msg err">${h(e.message)}</div></div>`; return; }
+  catch(e){ app.innerHTML = `<div class="msg err">${h(e.message)}</div>`; return; }
 
-  const st = PAGE_STATE.appStructure || (PAGE_STATE.appStructure = { tab:'overview', pageQ:'', apiQ:'', dbQ:'', openTables:new Set() });
+  const st = PAGE_STATE.appStructure || (PAGE_STATE.appStructure = { tab: 'overview', pageQ: '', apiQ: '', dbQ: '', dbSort: 'rows', openTables: new Set() });
   const TABS = [
-    ['overview','概要'], ['pages','画面一覧'], ['perms','権限モデル'], ['api','API仕様'],
-    ['db','DB設計'], ['features','機能公開キー'], ['arch','ファイル構成・アーキテクチャ'],
+    ['overview', '俯瞰', 'layoutGrid'], ['pages', '画面', 'sitemap'], ['perms', '権限', 'shieldCheck'],
+    ['api', 'API', 'download'], ['db', 'DB', 'package'], ['arch', 'ファイル構成', 'wrench'],
   ];
 
+  const METHOD_COLORS = { GET: '#3fb950', POST: '#4f9df7', PUT: '#d29922', PATCH: '#a371f7', DELETE: '#f85149' };
+
+  // API一覧からメソッドの内訳を数える(1行に「GET/POST」のように複数書かれている場合は両方数える)
+  const methodCount = {};
+  for(const g of data.apiGroups) for(const r of g.rows) for(const m of r[0].split('/')) methodCount[m] = (methodCount[m] || 0) + 1;
+
   app.innerHTML = `
-    <h2>${icon('sitemap')} アプリ構造ビューア</h2>
-    <div class="muted" style="margin-bottom:12px">このアプリ自身の画面・API・DB・権限モデルの構造を確認できる管理者専用の開発者向け診断画面です。権限一覧・機能公開キー・DBテーブル構造は、今この瞬間の実際のコード・データベースから取得しています(取得日: ${h(data.meta.generated)})。</div>
-    <div class="as-tabs" id="as-tabs">${TABS.map(([k,l])=>`<button type="button" class="as-tab ${st.tab===k?'on':''}" data-tab="${k}">${h(l)}</button>`).join('')}</div>
-    <div id="as-panel"></div>`;
+  <div class="ops-root">
+    <div class="ops-head">
+      <div class="ops-head-l">
+        <div class="ops-title">${icon('sitemap')} <span>アプリ構造ビューア</span></div>
+        <div class="ops-sub">${h(data.meta.title)} / 構造の取得日 ${h(data.meta.generated)}</div>
+      </div>
+      <div class="ops-live"><span class="ops-live-dot"></span>実データから生成</div>
+    </div>
+    <div class="ops-tabs" id="as-tabs">
+      ${TABS.map(([k, l, ic]) => `<button type="button" class="ops-tab ${st.tab === k ? 'on' : ''}" data-tab="${k}">${icon(ic, { size: '14px' })}<span>${h(l)}</span></button>`).join('')}
+    </div>
+    <div id="as-panel"></div>
+  </div>`;
   const panel = $('#as-panel');
 
+  // ---------- 俯瞰 ----------
   function renderOverview(){
-    const m = data.meta;
     const stats = [
-      [data.pages.length,'画面'], [data.apiEndpointCount,'APIエンドポイント'], [data.db.tableCount,'DBテーブル'],
-      [data.permissions.length,'個別権限'], [data.featureKeys.length,'機能公開キー'], [data.roles.length,'ロール階層'],
+      { n: data.pages.length, l: '画面', ic: 'sitemap' },
+      { n: data.apiEndpointCount, l: 'APIエンドポイント', ic: 'download' },
+      { n: data.db.tableCount, l: 'DBテーブル', ic: 'package' },
+      { n: data.permissions.length, l: '個別権限', ic: 'shieldCheck' },
+      { n: data.featureKeys.length, l: '機能公開キー', ic: 'star' },
+      { n: data.cronJobs.length, l: '定期処理', ic: 'clock' },
     ];
+    const totalRows = data.db.tables.reduce((s, t) => s + (t.rows || 0), 0);
+    // 1エンドポイントが GET/POST の両方に対応する場合は2件として数えるため、件数より合計は多くなる
+    const totalMethods = Object.values(methodCount).reduce((a, b) => a + b, 0);
+    const topTables = [...data.db.tables].filter(t => t.rows != null).sort((a, b) => b.rows - a.rows).slice(0, 8);
+    const cronMin = { cronDaichoReload: 0, cronScheduleSources: 5, cronRankPromotion: 10, cronNotify: 15 };
+
     panel.innerHTML = `
-      <div class="as-stat-row">${stats.map(([n,l])=>`<div class="as-stat"><div class="as-stat-num">${n}</div><div class="as-stat-lbl">${h(l)}</div></div>`).join('')}</div>
-      <div class="as-grid">
-        <div class="card"><h3>構成ファイル</h3><ul>
-          <li><b>バックエンド</b>: ${h(m.files.backend)}</li>
-          <li><b>フロントエンド</b>: ${h(m.files.frontend)}</li>
-          <li><b>スタイル</b>: ${h(m.files.css)}</li>
-        </ul></div>
-        <div class="card"><h3>技術スタック</h3><ul>${m.stack.map(s=>`<li>${h(s)}</li>`).join('')}</ul></div>
-        <div class="card"><h3>定期実行(cron)</h3><ul class="as-cron-list">${data.cronJobs.map(c=>`<li><code>${h(c.name)}</code><span>${h(c.desc)}</span></li>`).join('')}</ul></div>
+      <div class="ops-stats">
+        ${stats.map((s, i) => `<div class="ops-stat" style="animation-delay:${i * 60}ms">
+          <span class="ops-stat-ic">${icon(s.ic, { size: '15px' })}</span>
+          <span class="ops-stat-n" data-count="${s.n}">0</span>
+          <span class="ops-stat-l">${h(s.l)}</span>
+        </div>`).join('')}
+      </div>
+
+      <div class="ops-card">
+        <div class="ops-card-h"><b>${icon('layoutGrid', { size: '15px' })} システム構成とデータの流れ</b><span class="ops-card-sub">${h(data.meta.stack[0])}</span></div>
+        ${appStructureArchSvg()}
+      </div>
+
+      <div class="ops-grid2">
+        <div class="ops-card">
+          <div class="ops-card-h"><b>${icon('download', { size: '15px' })} HTTPメソッドの内訳</b><span class="ops-card-sub">${data.apiEndpointCount}エンドポイント / 延べ${totalMethods}</span></div>
+          <div class="ops-rank">
+            ${opsDonut(Object.entries(methodCount).map(([m, c]) => ({ label: m, value: c, color: METHOD_COLORS[m] || '#8b949e' })), { unit: 'メソッド' })}
+            <div class="ops-legend">
+              ${Object.entries(methodCount).sort((a, b) => b[1] - a[1]).map(([m, c]) => `<span><i style="background:${METHOD_COLORS[m] || '#8b949e'}"></i>${h(m)}<b>${c}</b></span>`).join('')}
+            </div>
+          </div>
+        </div>
+
+        <div class="ops-card">
+          <div class="ops-card-h"><b>${icon('package', { size: '15px' })} データ量が多いテーブル</b><span class="ops-card-sub">全${OPS_NUM(totalRows)}行</span></div>
+          ${opsBars(topTables.map(t => ({ label: t.name, value: t.rows, color: 'var(--ops-accent)', unit: '行' })))}
+        </div>
+      </div>
+
+      <div class="ops-grid2">
+        <div class="ops-card">
+          <div class="ops-card-h"><b>${icon('clock', { size: '15px' })} 定期実行(cron)</b><span class="ops-card-sub">毎時</span></div>
+          <div class="ops-cron-list">
+            ${data.cronJobs.map((c, i) => `<div class="ops-cron-row" style="animation-delay:${i * 70}ms">
+              <span class="ops-cron-min">:${String(cronMin[c.name] ?? 0).padStart(2, '0')}</span>
+              <span class="ops-cron-body"><code>${h(c.name)}</code><em>${h(c.desc)}</em></span>
+            </div>`).join('')}
+          </div>
+          <div class="ops-note">4つの処理はそれぞれ専用のcronトリガーを持ち、1つが重くても他を巻き込まないようにしてあります。</div>
+        </div>
+
+        <div class="ops-card">
+          <div class="ops-card-h"><b>${icon('wrench', { size: '15px' })} 技術スタック</b></div>
+          <div class="ops-chips">${data.meta.stack.map(s => `<span class="ops-chip">${h(s)}</span>`).join('')}</div>
+          <div class="ops-files-mini">
+            <div><em>バックエンド</em><code>${h(data.meta.files.backend)}</code></div>
+            <div><em>フロントエンド</em><code>${h(data.meta.files.frontend)}</code></div>
+            <div><em>スタイル</em><code>${h(data.meta.files.css)}</code></div>
+          </div>
+        </div>
       </div>`;
+    opsAfterRender(panel);
   }
 
+  // ---------- 画面 ----------
   function renderPages(){
     const draw = () => {
       const ql = st.pageQ.toLowerCase();
-      const items = data.pages.filter(p => !ql || (p.name+p.hash+p.role+p.desc).toLowerCase().includes(ql));
-      $('#as-page-count').textContent = `${items.length} / ${data.pages.length} 件`;
-      $('#as-page-list').innerHTML = items.map(p => {
-        // :uidのような動的パラメータを含むパスは実在するURLではないためリンクにしない
-        const hashEl = p.hash.includes(':') ? `<span class="as-hash">${h(p.hash)}</span>` : `<a href="${h(p.hash)}" class="as-hash as-hash-link">${h(p.hash)} ${icon('arrowRight',{size:'10px'})}</a>`;
-        return `
-        <div class="as-page-card">
-          <div class="as-page-hh"><span class="as-page-name">${h(p.name)}</span>${hashEl}<span class="as-role-pill">${h(p.role)}</span></div>
-          <div class="as-desc">${h(p.desc)}</div>
+      const items = data.pages.filter(p => !ql || (p.name + p.hash + p.role + p.desc).toLowerCase().includes(ql));
+      $('#as-page-count').textContent = `${items.length} / ${data.pages.length}`;
+      $('#as-page-list').innerHTML = items.map((p, i) => {
+        // :uid のような動的パラメータを含むパスは実在するURLではないためリンクにしない
+        const linkable = !p.hash.includes(':');
+        return `<div class="ops-pcard" style="animation-delay:${Math.min(i * 25, 400)}ms">
+          <div class="ops-pcard-h">
+            <b>${h(p.name)}</b>
+            ${linkable ? `<a href="${h(p.hash)}" class="ops-hash link">${h(p.hash)} ${icon('arrowRight', { size: '10px' })}</a>` : `<span class="ops-hash">${h(p.hash)}</span>`}
+          </div>
+          <div class="ops-role">${h(p.role)}</div>
+          <div class="ops-pdesc">${h(p.desc)}</div>
         </div>`;
-      }).join('') || '<p class="muted">該当する画面がありません。</p>';
+      }).join('') || '<div class="ops-none">該当する画面がありません</div>';
     };
     panel.innerHTML = `
-      <div class="as-searchbar"><input type="text" id="as-page-search" placeholder="画面名・パス・説明文で検索…" value="${h(st.pageQ)}"><span class="muted" id="as-page-count"></span></div>
-      <div id="as-page-list"></div>`;
+      <div class="ops-search"><input type="text" id="as-page-search" placeholder="画面名・パス・説明文で検索…" value="${h(st.pageQ)}"><span class="ops-count" id="as-page-count"></span></div>
+      <div class="ops-pgrid" id="as-page-list"></div>`;
     draw();
     $('#as-page-search').addEventListener('input', e => { st.pageQ = e.target.value; draw(); });
   }
 
+  // ---------- 権限 ----------
   function renderPerms(){
-    const roleByLv = {1:'chief以上',2:'handler以上',3:'admin以上'};
+    const roleByLv = { 1: 'チーフ以上', 2: '手配者以上', 3: '管理者のみ' };
+    // rgbの三つ組で持つ(CSS側で rgb()/rgba() の両方に使うため)
+    const lvColor = { 1: '63,185,80', 2: '210,153,34', 3: '248,81,73' };
+    // ロール×権限のマトリクス。「どのロールが何をできるか」は表よりも塗り分けの方が圧倒的に速く読める
+    const roles = data.roles;
+    const byLv = [1, 2, 3].map(lv => ({ lv, items: data.permissions.filter(p => p.baseLv === lv) }));
+
     panel.innerHTML = `
-      <div class="card" style="margin-bottom:16px">
-        <h3>ロール階層(下から上へ包含)</h3>
-        <div class="as-role-track">${data.roles.map(r=>`<div class="as-r${r.level}">${h(r.label)}</div>`).join('')}</div>
-        <p class="muted" style="font-size:12.5px;margin-top:4px">4段階のロールに加え、ユーザーごとに個別権限(extra_perms/revoked_perms)を追加・剥奪できるハイブリッド方式。剥奪が最優先で判定される。</p>
+      <div class="ops-card">
+        <div class="ops-card-h"><b>${icon('shieldCheck', { size: '15px' })} ロール階層</b><span class="ops-card-sub">下位を包含</span></div>
+        <div class="ops-ladder">
+          ${roles.map((r, i) => `<div class="ops-rung r${r.level}" style="animation-delay:${i * 90}ms">
+            <span class="ops-rung-lv">Lv${r.level}</span><b>${h(r.label)}</b><code>${h(r.key)}</code>
+          </div>`).join('')}
+        </div>
+        <div class="ops-note">4段階のロールに加え、ユーザーごとに <code>extra_perms</code>(追加)/<code>revoked_perms</code>(剥奪)を持てるハイブリッド方式。剥奪が最優先で判定されます。</div>
       </div>
-      <div class="card">
-        <h3>個別追加権限 一覧(${data.permissions.length}件)</h3>
-        <div class="as-table-scroll"><table class="list as-perm-table as-responsive"><tr><th>キー</th><th>説明</th><th>基準ロール</th></tr>
-        ${data.permissions.map(p=>`<tr><td class="as-lvl${p.baseLv}"><code>${h(p.key)}</code></td><td data-label="説明">${h(p.label)}</td><td data-label="基準ロール"><span class="as-lvl-badge as-l${p.baseLv}">${h(roleByLv[p.baseLv]||p.baseLv)}</span></td></tr>`).join('')}
-        </table></div>
+
+      <div class="ops-card">
+        <div class="ops-card-h"><b>${icon('layoutGrid', { size: '15px' })} 権限マトリクス</b><span class="ops-card-sub">${data.permissions.length}権限 × ${roles.length}ロール</span></div>
+        <div class="ops-matrix-scroll">
+          <div class="ops-matrix" style="--cols:${roles.length}">
+            <div class="ops-mx-corner">権限キー</div>
+            ${roles.map(r => `<div class="ops-mx-head r${r.level}">${h(r.label)}</div>`).join('')}
+            ${data.permissions.map((p, i) => `
+              <div class="ops-mx-key" style="animation-delay:${Math.min(i * 22, 400)}ms"><code>${h(p.key)}</code><em>${h(p.label)}</em></div>
+              ${roles.map(r => `<div class="ops-mx-cell ${r.level >= p.baseLv ? 'on' : ''}" style="--c:${lvColor[p.baseLv]};animation-delay:${Math.min(i * 22, 400)}ms" title="${h(r.label)} / ${h(p.key)}: ${r.level >= p.baseLv ? '標準で使える' : '既定では使えない(個別付与は可能)'}">${r.level >= p.baseLv ? icon('check', { size: '13px' }) : ''}</div>`).join('')}
+            `).join('')}
+          </div>
+        </div>
+        <div class="ops-note">塗られているセルが「そのロールなら標準で使える」範囲です。個別付与(extra_perms)を使えば、塗られていない組み合わせも許可できます。</div>
+      </div>
+
+      <div class="ops-grid3">
+        ${byLv.map(g => `<div class="ops-card">
+          <div class="ops-card-h"><b style="color:rgb(${lvColor[g.lv]})">${h(roleByLv[g.lv])}</b><span class="ops-card-sub">${g.items.length}件</span></div>
+          <div class="ops-permlist">${g.items.map(p => `<div class="ops-perm" style="--c:${lvColor[g.lv]}"><code>${h(p.key)}</code><em>${h(p.label)}</em></div>`).join('')}</div>
+        </div>`).join('')}
       </div>`;
+    opsAfterRender(panel);
   }
 
-  function methodBadges(m){ return m.split('/').map(x=>`<span class="as-method as-m-${h(x)}">${h(x)}</span>`).join(' '); }
+  // ---------- API ----------
   function renderApi(){
     const draw = () => {
       const ql = st.apiQ.toLowerCase();
@@ -6985,96 +7353,131 @@ async function pageAppStructure(app){
         const rows = g.rows.filter(r => !ql || r.join(' ').toLowerCase().includes(ql));
         if(!rows.length) continue;
         shown += rows.length;
-        html += `<div class="as-group-title">${h(g.title)}(${rows.length}件)</div>`;
-        html += `<div class="as-table-scroll"><table class="list as-api-table as-responsive"><tr><th>Method</th><th>パス</th><th>概要</th></tr>${rows.map(r=>`<tr><td>${methodBadges(r[0])}</td><td data-label="パス"><code>${h(r[1])}</code></td><td data-label="概要">${h(r[2])}</td></tr>`).join('')}</table></div>`;
+        html += `<div class="ops-agroup"><div class="ops-agroup-h"><b>${h(g.title)}</b><span>${rows.length}</span></div>
+          <div class="ops-alist">${rows.map((r, i) => `<div class="ops-arow" style="animation-delay:${Math.min(i * 18, 300)}ms">
+            <span class="ops-methods">${r[0].split('/').map(m => `<em class="ops-m" style="background:${METHOD_COLORS[m] || '#8b949e'}">${h(m)}</em>`).join('')}</span>
+            <code class="ops-path">${h(r[1])}</code>
+            <span class="ops-adesc">${h(r[2])}</span>
+          </div>`).join('')}</div></div>`;
       }
-      $('#as-api-count').textContent = `${shown} / ${data.apiEndpointCount} 件`;
-      $('#as-api-groups').innerHTML = html || '<p class="muted">該当するAPIがありません。</p>';
+      $('#as-api-count').textContent = `${shown} / ${data.apiEndpointCount}`;
+      $('#as-api-groups').innerHTML = html || '<div class="ops-none">該当するAPIがありません</div>';
     };
     panel.innerHTML = `
-      <div class="as-searchbar"><input type="text" id="as-api-search" placeholder="パス・メソッド・説明文で検索…" value="${h(st.apiQ)}"><span class="muted" id="as-api-count"></span></div>
+      <div class="ops-card">
+        <div class="ops-card-h"><b>${icon('barChart', { size: '15px' })} グループ別のエンドポイント数</b></div>
+        ${opsBars(data.apiGroups.map(g => ({ label: g.title, value: g.rows.length, color: 'var(--ops-accent)', unit: '件' })))}
+      </div>
+      <div class="ops-search"><input type="text" id="as-api-search" placeholder="パス・メソッド・説明文で検索…" value="${h(st.apiQ)}"><span class="ops-count" id="as-api-count"></span></div>
       <div id="as-api-groups"></div>`;
     draw();
     $('#as-api-search').addEventListener('input', e => { st.apiQ = e.target.value; draw(); });
+    opsAfterRender(panel);
   }
 
+  // ---------- DB ----------
   function renderDb(){
+    const maxRows = Math.max(...data.db.tables.map(t => t.rows || 0), 1);
     const draw = () => {
       const ql = st.dbQ.toLowerCase();
-      const tables = data.db.tables.filter(t => {
+      let tables = data.db.tables.filter(t => {
         if(!ql) return true;
-        const hay = t.name+' '+t.comment+' '+t.columns.map(c=>(c.name||'')+' '+c.note).join(' ');
-        return hay.toLowerCase().includes(ql);
+        return (t.name + ' ' + t.comment + ' ' + t.columns.map(c => (c.name || '') + ' ' + c.note).join(' ')).toLowerCase().includes(ql);
       });
-      $('#as-db-count').textContent = `${tables.length} / ${data.db.tableCount} テーブル`;
-      $('#as-db-list').innerHTML = tables.map(t => {
-        const rows = t.columns.map(c => c.type==='CONSTRAINT'
-          ? `<tr class="as-constraint-row"><td colspan="3">${h(c.note)}</td></tr>`
-          : `<tr><td class="as-col-name">${h(c.name)}</td><td class="as-col-type" data-label="型">${h(c.type)}</td><td class="as-col-note" data-label="備考">${h(c.note)}</td></tr>`
-        ).join('');
+      const cols = t => t.columns.filter(c => c.type !== 'CONSTRAINT').length;
+      if(st.dbSort === 'rows') tables = [...tables].sort((a, b) => (b.rows || 0) - (a.rows || 0));
+      else if(st.dbSort === 'cols') tables = [...tables].sort((a, b) => cols(b) - cols(a));
+      else tables = [...tables].sort((a, b) => a.name.localeCompare(b.name));
+
+      $('#as-db-count').textContent = `${tables.length} / ${data.db.tableCount}`;
+      $('#as-db-list').innerHTML = tables.map((t, i) => {
         const open = st.openTables.has(t.name);
-        return `<div class="as-tbl-card ${open?'open':''}" data-table="${h(t.name)}">
-          <div class="as-tbl-th">
-            <span class="as-tname">${h(t.name)}</span>
-            <span class="as-tcount">${t.columns.filter(c=>c.type!=='CONSTRAINT').length}列</span>
-            <span class="as-tcomment">${h(t.comment)}</span>
-            <span class="as-arrow">▸</span>
-          </div>
-          <div class="as-tbl-body"><div class="as-table-scroll"><table class="list as-responsive"><tr><th>列名</th><th>型</th><th>備考</th></tr>${rows}</table></div></div>
+        const rows = t.columns.map(c => c.type === 'CONSTRAINT'
+          ? `<div class="ops-colrow constraint">${h(c.note)}</div>`
+          : `<div class="ops-colrow"><code>${h(c.name)}</code><em>${h(c.type)}</em>${c.note ? `<span>${h(c.note)}</span>` : ''}</div>`
+        ).join('');
+        return `<div class="ops-tbl ${open ? 'open' : ''}" data-table="${h(t.name)}" style="animation-delay:${Math.min(i * 22, 400)}ms">
+          <button type="button" class="ops-tbl-h">
+            <span class="ops-tbl-nm"><code>${h(t.name)}</code><span class="ops-arrow">${icon('arrowRight', { size: '12px' })}</span></span>
+            <span class="ops-tbl-meta"><em>${cols(t)}列</em><b>${t.rows == null ? '—' : OPS_NUM(t.rows) + '行'}</b></span>
+            <span class="ops-tbl-bar"><i style="--w:${(((t.rows || 0) / maxRows) * 100).toFixed(1)}%"></i></span>
+            <span class="ops-tbl-cm">${h(t.comment)}</span>
+          </button>
+          <div class="ops-tbl-body">${rows}</div>
         </div>`;
-      }).join('') || '<p class="muted">該当するテーブルがありません。</p>';
-      $('#as-db-list').querySelectorAll('.as-tbl-th').forEach(th => {
-        th.onclick = () => {
-          const card = th.closest('.as-tbl-card');
-          const name = card.dataset.table;
-          if(st.openTables.has(name)) st.openTables.delete(name); else st.openTables.add(name);
-          card.classList.toggle('open');
-        };
+      }).join('') || '<div class="ops-none">該当するテーブルがありません</div>';
+      $('#as-db-list').querySelectorAll('.ops-tbl-h').forEach(b => b.onclick = () => {
+        const card = b.closest('.ops-tbl'), nm = card.dataset.table;
+        if(st.openTables.has(nm)) st.openTables.delete(nm); else st.openTables.add(nm);
+        card.classList.toggle('open');
       });
+      opsAfterRender($('#as-db-list'));
     };
     panel.innerHTML = `
-      <div class="as-searchbar"><input type="text" id="as-db-search" placeholder="テーブル名・列名・コメントで検索…" value="${h(st.dbQ)}"><span class="muted" id="as-db-count"></span></div>
-      <div class="muted" style="margin-bottom:8px;font-size:12px">テーブルの列構成は、このリクエストの時点で実際のデータベース(D1)から取得しています。schema.sqlと内容がずれていても、ここには常に本番の実態が表示されます。</div>
+      <div class="ops-search">
+        <input type="text" id="as-db-search" placeholder="テーブル名・列名・コメントで検索…" value="${h(st.dbQ)}">
+        <span class="ops-seg" id="as-db-sort">
+          <button type="button" data-s="rows" class="${st.dbSort === 'rows' ? 'on' : ''}">行数順</button>
+          <button type="button" data-s="cols" class="${st.dbSort === 'cols' ? 'on' : ''}">列数順</button>
+          <button type="button" data-s="name" class="${st.dbSort === 'name' ? 'on' : ''}">名前順</button>
+        </span>
+        <span class="ops-count" id="as-db-count"></span>
+      </div>
+      <div class="ops-note" style="margin-bottom:10px">列構成・行数は、この画面を開いた時点の実際のデータベース(D1)から取得しています。schema.sqlと内容がずれていても、ここには常に本番の実態が出ます。</div>
       <div id="as-db-list"></div>`;
     draw();
     $('#as-db-search').addEventListener('input', e => { st.dbQ = e.target.value; draw(); });
+    $('#as-db-sort').addEventListener('click', e => {
+      const b = e.target.closest('button'); if(!b) return;
+      st.dbSort = b.dataset.s;
+      $('#as-db-sort').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+      draw();
+    });
   }
 
-  function renderFeatures(){
-    panel.innerHTML = `<div class="card">
-      <h3>機能公開設定キー(${data.featureKeys.length}件)</h3>
-      <p class="muted" style="font-size:12.5px;margin-bottom:10px">システム設定 → 機能公開設定 で、それぞれ「公開中/準備中/メンテナンス中」を切り替えられる画面キー。</p>
-      <div>${data.featureKeys.map(k=>`<span class="as-chip"><code>${h(k)}</code></span>`).join('')}</div>
-    </div>`;
-  }
-
+  // ---------- ファイル構成 ----------
   function renderArch(){
     panel.innerHTML = `
-      <div class="card" style="margin-bottom:14px">
-        <h3>システム構成図</h3>
+      <div class="ops-card">
+        <div class="ops-card-h"><b>${icon('layoutGrid', { size: '15px' })} システム構成とデータの流れ</b></div>
         ${appStructureArchSvg()}
       </div>
-      <div class="card">
-        <h3>ファイル構成・依存関係</h3>
-        ${appStructureFileFlowHtml()}
-        <div class="as-table-scroll"><table class="list as-file-table as-responsive" style="margin-top:14px">
-          <tr><th>ファイル</th><th>役割</th><th>説明</th></tr>
-          ${data.files.map(f=>`<tr><td><code>${h(f.name)}</code></td><td data-label="役割">${h(f.role)}</td><td data-label="説明">${h(f.desc)}${f.dependsOn && f.dependsOn.length ? `<div class="muted" style="font-size:11.5px;margin-top:3px">依存先: ${f.dependsOn.map(d=>`<code>${h(d)}</code>`).join(', ')}</div>` : ''}</td></tr>`).join('')}
-        </table></div>
+
+      <div class="ops-card">
+        <div class="ops-card-h"><b>${icon('wrench', { size: '15px' })} 実行時の依存関係</b></div>
+        <div class="ops-flow">
+          <span class="ops-flow-b">index.html</span><span class="ops-flow-a">${icon('arrowRight', { size: '13px' })}</span>
+          <span class="ops-flow-b">app.js + style.css</span><span class="ops-flow-a">api()${icon('arrowRight', { size: '13px' })}</span>
+          <span class="ops-flow-b strong">src/index.js</span><span class="ops-flow-a">${icon('arrowRight', { size: '13px' })}</span>
+          <span class="ops-flow-b">D1 / R2</span>
+        </div>
+        <div class="ops-note">上記はリクエスト単位の実行時の関係です。schema.sql・migrate-*.sql・wrangler.tomlはデプロイ作業時にだけ関わり、Workerの実行中に読み込まれるものではありません。</div>
+      </div>
+
+      <div class="ops-card">
+        <div class="ops-card-h"><b>${icon('package', { size: '15px' })} ファイル一覧</b><span class="ops-card-sub">${data.files.length}件</span></div>
+        <div class="ops-fgrid">
+          ${data.files.map((f, i) => `<div class="ops-fcard" style="animation-delay:${Math.min(i * 45, 400)}ms">
+            <div class="ops-fcard-h"><code>${h(f.name)}</code><span class="ops-frole">${h(f.role)}</span></div>
+            <div class="ops-fdesc">${h(f.desc)}</div>
+            ${f.dependsOn && f.dependsOn.length ? `<div class="ops-fdep">依存先 ${f.dependsOn.map(d => `<code>${h(d)}</code>`).join('')}</div>` : ''}
+          </div>`).join('')}
+        </div>
       </div>`;
+    opsAfterRender(panel);
   }
 
-  const RENDERERS = { overview:renderOverview, pages:renderPages, perms:renderPerms, api:renderApi, db:renderDb, features:renderFeatures, arch:renderArch };
+  const RENDERERS = { overview: renderOverview, pages: renderPages, perms: renderPerms, api: renderApi, db: renderDb, arch: renderArch };
   function switchTab(tab){
     st.tab = tab;
-    $('#as-tabs').querySelectorAll('.as-tab').forEach(b => b.classList.toggle('on', b.dataset.tab===tab));
-    RENDERERS[tab]();
+    $('#as-tabs').querySelectorAll('.ops-tab').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
+    (RENDERERS[tab] || renderOverview)();
   }
   $('#as-tabs').addEventListener('click', e => {
-    const btn = e.target.closest('.as-tab'); if(!btn) return;
+    const btn = e.target.closest('.ops-tab'); if(!btn) return;
     switchTab(btn.dataset.tab);
   });
-  switchTab(st.tab);
+  switchTab(RENDERERS[st.tab] ? st.tab : 'overview');
 }
 
 async function pageDaicho(app){
