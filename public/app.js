@@ -7300,7 +7300,9 @@ function appStructureArchSvg(){
     ${flow(575, 205, 645, 250, 'get/put', 2.0, 1.1, '')}
     ${flow(450, 78, 450, 140, '毎時 cron', 2.2, .3, '', 42)}
     ${flow(250, 250, 335, 200, 'シート取得', 2.6, .8, '')}
-    ${flow(560, 230, 250, 340, '.ics 配信', 3.0, 1.4, '')}
+    // .ics配信は、SQL/get-putの矢印(Workerの右辺から出る)と始点が重なって交差して見えていたため、
+    // Workerの下辺(左寄り)から出してGoogleカレンダー等の右辺へ向かうよう経路を分離する
+    ${flow(400, 224, 250, 350, '.ics 配信', 3.0, 1.4, '')}
     ${box(30, 60, 220, 62, ['ブラウザ', 'public/app.js + style.css'], 'client', 0)}
     ${box(335, 140, 240, 84, ['Cloudflare Worker', 'src/index.js', 'fetch() / scheduled()'], 'worker', 120)}
     ${box(645, 88, 225, 62, ['D1: schedule-db', '33テーブル'], 'store', 240)}
