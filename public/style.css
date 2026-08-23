@@ -19,6 +19,14 @@
   --shadow-sm:0 1px 2px rgba(20,20,30,.04),0 1px 3px rgba(20,20,30,.06);
   --shadow-md:0 2px 6px rgba(20,20,30,.06),0 8px 20px rgba(20,20,30,.08);
   --shadow-lg:0 8px 24px rgba(20,20,30,.10),0 24px 60px rgba(20,20,30,.16);
+  /* 「軽く強調した行・パネル」用の薄い背景2色。管理者専用画面(body.ops-page)ではダーク側の
+     色に差し替える(以前はJS側に#f7f5ef/#faf9f6を直書きしていたため、暗色テーマのページでも
+     明るい背景のまま残ってしまっていた)。 */
+  --adm-highlight:#f7f5ef;
+  --adm-highlight2:#faf9f6;
+  /* 同様に、エラー・警告文言の赤系文字色/枠線色(元は#b03030・#b85042・#e0b0b0を直書き)。 */
+  --adm-err:#b03030;
+  --adm-err-border:#e0b0b0;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",Meiryo,sans-serif;background:var(--paper);color:#222;font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
@@ -956,22 +964,29 @@ td.sm-edit-cell{text-align:center;color:var(--gold);font-size:15px}
    この2画面は「システムが今どう動いているか」を色と動きで掴ませることを最優先にしているため、
    アプリ全体の配色(白地 × 濃紺 × 金)とは意図的に別系統の暗色テーマにしている。
    影響範囲を閉じるため、全ルールを .ops-root 配下に限定すること。 */
-.ops-root{
-  --ops-bg:#0e1420; --ops-panel:#151d2c; --ops-panel2:#1b2436; --ops-line:#28324a;
+/* 計器盤テーマの配色変数。body.ops-page に定義することで、.ops-root で囲まれた画面
+   (ダッシュボード等)だけでなく、既存の.card/.adm-sec等をそのまま使う管理者専用画面
+   (アカウント管理等)からも同じ変数を参照できる(.ops-root配下限定だと、それらの画面では
+   var()が未定義値になり色が当たらない)。 */
+body.ops-page{
+  --ops-bg:#0e1420; --ops-bg-page:#0e1420; --ops-panel:#151d2c; --ops-panel2:#1b2436; --ops-line:#28324a;
   --ops-txt:#dfe6f3; --ops-dim:#8a97b1; --ops-accent:#4f9df7; --ops-gold:#e0b84a;
   --ops-ok:#3fb950; --ops-warn:#d29922; --ops-danger:#f85149;
+  --adm-highlight:var(--ops-panel2); --adm-highlight2:var(--ops-panel2);
+  --adm-err:var(--ops-danger); --adm-err-border:var(--ops-danger);
+}
+.ops-root{
   color:var(--ops-txt);
   padding:2px 0 40px;
   font-feature-settings:"palt";
 }
-/* 計器盤の2画面だけ、ページ全体の背景を暗色にする。
+/* 計器盤テーマの画面は、ページ全体の背景も暗色にする。
    以前は .ops-root に負のマージンを付けて main の幅いっぱいまで広げていたが、
    main には max-width があるため、画面が広いと左右に元の明るい背景が帯状に残っていた。
    背景そのものを body 側で塗ることで、どの画面幅でも継ぎ目が出ないようにする。
    クラスの付け外しは app.js の render() が画面遷移のたびに行う。 */
 body.ops-page{background:var(--ops-bg-page)}
 body.ops-page main{max-width:1280px}
-:root{--ops-bg-page:#0e1420}
 .ops-root code,.ops-root .ops-mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
 .ops-root a{color:inherit;text-decoration:none}
 .ops-boot{display:flex;align-items:center;gap:10px;justify-content:center;padding:60px 0;color:var(--ops-dim);font-size:13px}
@@ -1162,7 +1177,7 @@ body.ops-page main{max-width:1280px}
 .ops-tab{display:flex;align-items:center;gap:6px;background:var(--ops-panel);border:1px solid var(--ops-line);color:var(--ops-dim);
   border-radius:8px;padding:8px 13px;font-size:12.5px;font-weight:700;cursor:pointer;white-space:nowrap;flex:none;font-family:inherit;
   transition:background .15s,color .15s,border-color .15s}
-.ops-tab.on{background:var(--ops-accent);border-color:var(--ops-accent);color:#fff}
+.ops-tab.on{background:#2563a8;border-color:#2563a8;color:#fff}
 @media(hover:hover){.ops-tab:not(.on):hover{color:var(--ops-txt);border-color:var(--ops-accent)}}
 
 .ops-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:10px;margin-bottom:12px}
@@ -1226,7 +1241,7 @@ body.ops-page main{max-width:1280px}
 .ops-count{font-size:11px;color:var(--ops-dim);font-variant-numeric:tabular-nums;white-space:nowrap}
 .ops-seg{display:inline-flex;background:var(--ops-panel2);border:1px solid var(--ops-line);border-radius:8px;overflow:hidden;flex:none}
 .ops-seg button{background:none;border:none;color:var(--ops-dim);font-size:11.5px;font-weight:700;padding:6px 11px;cursor:pointer;font-family:inherit;white-space:nowrap}
-.ops-seg button.on{background:var(--ops-accent);color:#fff}
+.ops-seg button.on{background:#2563a8;color:#fff}
 
 /* 画面一覧 */
 .ops-pgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:10px}
@@ -1399,3 +1414,87 @@ a.ops-hash.link{display:inline-flex;align-items:center;gap:4px;cursor:pointer}
   .sys-card-ic{width:34px;height:34px}
   .sys-sec-h em{width:100%}
 }
+
+/* ===== 管理者専用画面の再配色 =====
+   アカウント管理・システム設定・権限の一括設定・個人権限編集・予定表ソース管理・台帳保管・
+   過去データ取込確認・貼り付け用コピーは、ダッシュボード等と同じ計器盤テーマ(暗色)に統一する。
+   これらのページはマークアップを作り直さず、既存の.card/.adm-sec/table.list等をそのまま使っている
+   ため、body.ops-page配下でこれらのコンポーネントの見た目だけを上書きする(構造・挙動は変更しない)。
+   #modal-layer はbody直下の別要素(index.html参照)でmain配下に無いため、ここでは触れない
+   (モーダル内の入力欄まで暗色にすると、白いモーダルの中に浮いて見えてしまうため意図的に対象外)。
+   新しく計器盤テーマの画面を追加する場合、既存の共通コンポーネントを使う限りは追加対応不要。
+   独自クラスを新設した場合だけ、ここに一行足すこと。 */
+/* 基準の文字色。bodyの既定(#222、明るい背景前提)がそのまま継承されると、無地の<span>/<b>/<label>等が
+   暗い背景にほぼ溶けて読めなくなる(実際に手配者専用PINの現在値表示等で発生した)。#app配下の
+   全要素にまず明るい文字色を敷き、個別の色付けはこの後の各ルールで上書きする。 */
+body.ops-page #app{color-scheme:dark;color:var(--ops-txt)}
+body.ops-page #app h2,body.ops-page #app h3{color:var(--ops-txt);border-left-color:var(--ops-gold)}
+body.ops-page #app .muted{color:var(--ops-dim)}
+body.ops-page #app a{color:var(--ops-accent)}
+
+body.ops-page #app .card{background:var(--ops-panel);border-color:var(--ops-line);box-shadow:none}
+body.ops-page #app .adm-chip{background:var(--ops-panel);border-color:var(--ops-line);color:var(--ops-txt)}
+body.ops-page #app .adm-chip:hover{background:#2563a8;border-color:#2563a8;color:#fff}
+body.ops-page #app .adm-sec{background:var(--ops-panel);border-color:var(--ops-line)}
+body.ops-page #app .adm-sec>summary{color:var(--ops-txt)}
+body.ops-page #app .adm-sec>summary:hover{background:var(--ops-panel2)}
+body.ops-page #app .adm-sec>summary:active{background:var(--ops-panel2)}
+body.ops-page #app .adm-sec[open]>summary{border-bottom-color:var(--ops-line)}
+body.ops-page #app .adm-sec>summary::after{color:var(--ops-dim)}
+body.ops-page #app .sticky-filters{background:var(--ops-bg-page)}
+
+body.ops-page #app input,body.ops-page #app select,body.ops-page #app textarea{
+  background:var(--ops-panel2);border-color:var(--ops-line);color:var(--ops-txt)}
+body.ops-page #app input::placeholder{color:#5f6b83}
+body.ops-page #app input[type=checkbox],body.ops-page #app input[type=radio]{accent-color:var(--ops-accent)}
+body.ops-page #app .search-input,body.ops-page #app .filter-select{background:var(--ops-panel2);border-color:var(--ops-line);color:var(--ops-txt)}
+body.ops-page #app .search-input:focus,body.ops-page #app .filter-select:focus{border-color:var(--ops-accent);box-shadow:0 0 0 3px rgba(79,157,247,.18)}
+
+body.ops-page #app table.list{background:var(--ops-panel);color:var(--ops-txt)}
+body.ops-page #app table.list th{background:var(--ops-panel2);color:var(--ops-txt);border-color:var(--ops-line)}
+body.ops-page #app table.list td{border-color:var(--ops-line);color:var(--ops-txt)}
+body.ops-page #app table.list tr.click:hover{background:var(--ops-panel2)}
+body.ops-page #app .sched-wrap{background:var(--ops-panel);border-color:var(--ops-line)}
+body.ops-page #app .list-scroll{background:transparent}
+
+body.ops-page #app .form-grid label{color:var(--ops-txt)}
+
+/* --ops-accentそのまま(#4f9df7)だと白文字とのコントラストが2.8:1でWCAG AA(4.5:1)未達のため、
+   ボタン背景だけ一段暗い青にする(リンク・アイコン等の--ops-accentは暗い背景に対して使うので
+   そちらは変更不要)。 */
+body.ops-page #app .btn{background:#2563a8;color:#fff;box-shadow:none}
+body.ops-page #app .btn.gold{background:var(--ops-gold);color:#1b2333}
+body.ops-page #app .btn.ghost{background:var(--ops-panel2);color:var(--ops-txt);border-color:var(--ops-line)}
+body.ops-page #app .btn.danger{background:var(--ops-danger)}
+
+body.ops-page #app .msg.ok{background:rgba(63,185,80,.14);color:var(--ops-ok)}
+body.ops-page #app .msg.err{background:rgba(248,81,73,.14);color:var(--ops-danger)}
+
+body.ops-page #app .tag.handler{background:var(--ops-gold);color:#1b2333}
+body.ops-page #app .tag.pending{background:rgba(210,153,34,.18);color:var(--ops-warn)}
+body.ops-page #app .tag.checked{background:rgba(63,185,80,.16);color:var(--ops-ok)}
+body.ops-page #app .tag.acquired{background:rgba(63,185,80,.16);color:var(--ops-ok)}
+body.ops-page #app .tag.matched{background:rgba(248,81,73,.16);color:var(--ops-danger)}
+body.ops-page #app .tag.suspended{background:#4b5670;color:#fff}
+
+body.ops-page #app .dcard{background:var(--ops-panel);border-color:var(--ops-line);box-shadow:none}
+body.ops-page #app .dcard.is-suspended{background:var(--ops-panel2)}
+body.ops-page #app .dcard-head{border-bottom-color:var(--ops-line)}
+body.ops-page #app .dcard-title{color:var(--ops-txt)}
+body.ops-page #app .dcard-sub{color:var(--ops-dim)}
+body.ops-page #app .dk{color:var(--ops-dim)}
+body.ops-page #app .dv{color:var(--ops-txt)}
+
+body.ops-page #app .wage-tbl th{background:var(--ops-panel2);color:var(--ops-txt)}
+body.ops-page #app .wage-tbl th,body.ops-page #app .wage-tbl td{border-color:var(--ops-line)}
+body.ops-page #app .wage-in{background:var(--ops-panel2);border-color:var(--ops-line);color:var(--ops-txt)}
+
+body.ops-page #app .rto-type-badge{background:#2563a8}
+
+body.ops-page #app .li-month-row{background:var(--ops-panel);border-color:var(--ops-line)}
+body.ops-page #app .li-pending .li-state-badge{background:rgba(210,153,34,.18);color:var(--ops-warn)}
+body.ops-page #app .li-done .li-state-badge{background:rgba(63,185,80,.16);color:var(--ops-ok)}
+body.ops-page #app .li-partial .li-state-badge{background:rgba(79,157,247,.18);color:var(--ops-accent)}
+
+body.ops-page #app .ios-toggle-track{background:var(--ops-panel2)}
+body.ops-page #app .ios-toggle input:checked + .ios-toggle-track{background:var(--ops-gold)}

@@ -1199,7 +1199,15 @@ async function render(){
   // 計器盤テーマの2画面は、ページ全体の背景も暗色にする(左右に明るい帯が残らないようにするため)
   // 計器盤テーマを使う画面。新しくこのテーマの画面を足したらここにも追加すること
   //(入れ忘れると、暗色のカードが明るい背景の上に乗って左右に帯が出る)
-  const OPS_PAGES = ['#/dashboard', '#/app-structure', '#/system'];
+  // 管理者だけが見られる画面(既定でaccount_manage/wage_settings/daicho_manage/dashboard_view=baseLv3、
+  // またはME.role==='admin'の直接チェック)は、他の画面と区別が付くよう計器盤の暗色テーマにしている。
+  // これらは既存の.card/.adm-sec/table.list等をそのまま使うため、見た目の切り替えはCSS側
+  // (body.ops-page配下の上書き、style.css「管理者専用画面の再配色」セクション)で行う。
+  const OPS_PAGES = [
+    '#/dashboard', '#/app-structure', '#/system',
+    '#/admin', '#/admin-settings', '#/role-permissions', '#/permissions',
+    '#/sched-sources', '#/daicho', '#/legacy-import', '#/report-export',
+  ];
   document.body.classList.toggle('ops-page', OPS_PAGES.some(p => hash === p || hash.startsWith(p + '/')));
   renderShell(hash);
   const app = $('#app');
@@ -6368,16 +6376,18 @@ function summarizeHistory(b, a){
 
 async function pageHandlerStatus(app){
   if(!has('handler_tools')){ notFound(app); return; }
+  const canSessions = ME.role === 'admin'; // 全セッションの閲覧は管理者のみ(元は全データ閲覧側にあった)
   const stHs = PAGE_STATE.handlerStatus || (PAGE_STATE.handlerStatus = { open:{ online:true } });
   const openSet = stHs.open;
   const sec = (id,title,body)=>`<details class="adm-sec" id="hssec-${id}" data-sec="${id}" ${openSet[id]?'open':''}><summary><span class="adm-sec-title">${title}</span></summary><div class="adm-body">${body}</div></details>`;
   app.innerHTML = `
   <h2 style="margin-bottom:8px">ログイン中メンバー・編集履歴</h2>
   <div class="adm-nav sticky-filters">
-    ${[['online',`${icon('circleFilled')} ログイン中`],['hist',`${icon('fileText')} 編集履歴`]].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
+    ${[['online',`${icon('circleFilled')} ログイン中`],['hist',`${icon('fileText')} 編集履歴`],...(canSessions?[['sessions',`${icon('key')} 全セッション`]]:[])].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
   </div>
   ${sec('online',`<span style="white-space:nowrap">${icon('circleFilled')} 現在ログイン中のメンバー</span> <span class="muted" style="font-weight:400">(10秒ごとに自動更新)</span>`, `<div id="hd-online" class="muted"><span class="spinner" style="width:13px;height:13px;border-width:2px;margin-right:5px"></span>読み込み中…</div>`)}
-  ${sec('hist',`<span style="white-space:nowrap">${icon('fileText')} スケジュール編集履歴</span> <span class="muted" style="font-weight:400">(直近500件)</span>`, `<div id="hd-history" class="muted"><span class="spinner" style="width:13px;height:13px;border-width:2px;margin-right:5px"></span>読み込み中…</div>`)}`;
+  ${sec('hist',`<span style="white-space:nowrap">${icon('fileText')} スケジュール編集履歴</span> <span class="muted" style="font-weight:400">(直近500件)</span>`, `<div id="hd-history" class="muted"><span class="spinner" style="width:13px;height:13px;border-width:2px;margin-right:5px"></span>読み込み中…</div>`)}
+  ${canSessions ? sec('sessions',`<span style="white-space:nowrap">${icon('key')} 全ログインセッション</span> <span class="muted" style="font-weight:400">(稼働中かどうかに関わらず全件・管理者のみ)</span>`, `<div id="dv-out" class="muted"><span class="spinner" style="width:13px;height:13px;border-width:2px;margin-right:5px"></span>読み込み中…</div>`) : ''}`;
 
   app.querySelectorAll('.adm-sec').forEach(d => d.addEventListener('toggle', () => { stHs.open[d.dataset.sec] = d.open; }));
   app.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => {
@@ -6470,6 +6480,24 @@ async function pageHandlerStatus(app){
     };
   };
   loadHistory();
+
+  // 全ログインセッション(管理者のみ)。元は全データ閲覧側にあった機能を、
+  // 「今ログイン中のメンバー」と同じ画面から続けて確認できるようこちらへ移設した。
+  // 表の描画・ソート・絞り込み・CSV出力は全データ閲覧と共通のDV_STATE/renderDvTable()を再利用する
+  // (このページで開いている間、他画面の全データ閲覧とは同時に使わないため状態の使い回しで問題ない)。
+  if(canSessions){
+    (async () => {
+      try{
+        const rows = await api('/admin/data?table=sessions');
+        if(!rows.length){ $('#dv-out').innerHTML = '<div class="muted">データはありません</div>'; return; }
+        DV_STATE.rows = rows;
+        DV_STATE.cols = Object.keys(rows[0]);
+        DV_STATE.sortCol = null; DV_STATE.sortDir = 1; DV_STATE.filters = {};
+        DV_STATE.tableName = 'sessions';
+        renderDvTable();
+      }catch(e){ const el = $('#dv-out'); if(el) el.innerHTML = `<div class="msg err">${h(e.message)}</div>`; }
+    })();
+  }
 }
 
 /* ===== ロール一括権限の編集(管理者のみ・専用ページ) ===== */
@@ -6899,7 +6927,7 @@ async function pageSchedSources(app, hash){
     </label>
     <div class="muted" style="margin-top:4px">
       ${s.lastRun ? `最終実行: ${h(s.lastRun)}` : 'まだ実行されていません'}
-      ${s.lastResult ? `<br>結果: 反映 ${s.lastResult.applied}件 / スキップ ${s.lastResult.skipped}件${s.lastResult.changedPeople!=null?` / 変更あり ${s.lastResult.changedPeople}人・変更なし ${s.lastResult.unchangedPeople}人`:''}${s.lastResult.error?` <span style="color:#b85042">エラー: ${h(s.lastResult.error)}</span>`:''}${s.lastResult.changes&&s.lastResult.changes.length?` <button class="btn ghost xs ss-show-changes" data-id="${s.id}" style="margin-left:6px">変更内容を見る</button>`:''}` : ''}
+      ${s.lastResult ? `<br>結果: 反映 ${s.lastResult.applied}件 / スキップ ${s.lastResult.skipped}件${s.lastResult.changedPeople!=null?` / 変更あり ${s.lastResult.changedPeople}人・変更なし ${s.lastResult.unchangedPeople}人`:''}${s.lastResult.error?` <span style="color:var(--adm-err)">エラー: ${h(s.lastResult.error)}</span>`:''}${s.lastResult.changes&&s.lastResult.changes.length?` <button class="btn ghost xs ss-show-changes" data-id="${s.id}" style="margin-left:6px">変更内容を見る</button>`:''}` : ''}
     </div>
     <span class="ss-msg muted" data-id="${s.id}" style="display:block;margin-top:6px"></span>
 
@@ -7105,7 +7133,7 @@ async function pageLegacyImport(app, hash){
     const bar = $('#li-bulk-bar');
     if(!bar) return;
     const pendingYms = months.filter(mo => mo.pendingCnt > 0).map(mo => mo.ym);
-    bar.style.cssText = pendingYms.length ? 'margin-bottom:0;gap:8px;align-items:center;flex-wrap:wrap;background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:8px 10px' : 'margin-bottom:0';
+    bar.style.cssText = pendingYms.length ? 'margin-bottom:0;gap:8px;align-items:center;flex-wrap:wrap;background:var(--adm-highlight);border:1px solid var(--line);border-radius:8px;padding:8px 10px' : 'margin-bottom:0';
     bar.innerHTML = pendingYms.length ? `
       <button type="button" class="btn ghost sm" id="li-select-all">未確認の月をすべて選択(${pendingYms.length}件)</button>
       ${selected.size ? `<span class="muted" style="font-weight:600">${selected.size}件選択中</span>
@@ -7138,13 +7166,13 @@ async function pageLegacyImport(app, hash){
         ${mo.pendingCnt>0 ? `<input type="checkbox" class="li-select" data-ym="${mo.ym}" ${selected.has(mo.ym)?'checked':''}>` : ''}
         <div style="flex:1;min-width:160px">
           <div style="font-weight:700;font-size:15px">${ymLabel(mo.ym)}</div>
-          <div class="muted" style="font-size:12.5px;margin-top:2px">${mo.total}件(一致${mo.matched}件${mo.unmatched?` / <span style="color:#b03030;font-weight:700">要確認${mo.unmatched}件</span>`:''}) / 合計${yen(mo.totalPay)}</div>
+          <div class="muted" style="font-size:12.5px;margin-top:2px">${mo.total}件(一致${mo.matched}件${mo.unmatched?` / <span style="color:var(--adm-err);font-weight:700">要確認${mo.unmatched}件</span>`:''}) / 合計${yen(mo.totalPay)}</div>
           <div class="li-state-badge">${st.label}</div>
         </div>
         <div class="row" style="gap:6px;flex-wrap:wrap;justify-content:flex-end">
           <button type="button" class="btn ghost sm li-detail" data-ym="${mo.ym}">詳細を見る</button>
           ${mo.pendingCnt>0?`<button type="button" class="btn gold sm li-approve" data-ym="${mo.ym}">公開する</button>
-          <button type="button" class="btn ghost sm li-reject" data-ym="${mo.ym}" style="color:#b03030;border-color:#e0b0b0">削除する</button>`:''}
+          <button type="button" class="btn ghost sm li-reject" data-ym="${mo.ym}" style="color:var(--adm-err);border-color:var(--adm-err-border)">削除する</button>`:''}
         </div>
       </div>`;
     }).join('');
@@ -7204,7 +7232,7 @@ async function pageLegacyImportDetail(app, ym){
         </label>
         <div style="flex:1"></div>
         ${pending>0?`<button type="button" class="btn gold sm" id="li-detail-approve">この月を公開する</button>
-        <button type="button" class="btn ghost sm" id="li-detail-reject" style="color:#b03030;border-color:#e0b0b0">この月を削除する</button>`:''}
+        <button type="button" class="btn ghost sm" id="li-detail-reject" style="color:var(--adm-err);border-color:var(--adm-err-border)">この月を削除する</button>`:''}
       </div>
     </div>
     <div style="overflow-x:auto">
@@ -7680,7 +7708,7 @@ async function pageDaicho(app){
     for(const id of [...selected]) if(!visibleIds.has(id)) selected.delete(id);
     const area = $('#dc-list-area'); if(!area) return;
     const cb = $('#dc-clear'); if(cb) cb.style.display = hasFilterOn() ? '' : 'none';
-    const bulkBar = selected.size ? `<div class="row" style="margin-bottom:8px;gap:8px;align-items:center;background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:8px 10px;flex-wrap:wrap">
+    const bulkBar = selected.size ? `<div class="row" style="margin-bottom:8px;gap:8px;align-items:center;background:var(--adm-highlight);border:1px solid var(--line);border-radius:8px;padding:8px 10px;flex-wrap:wrap">
       <span class="muted" style="font-weight:600">${selected.size}件選択中</span>
       <button class="btn gold sm" id="dc-bulk-reimport">${icon('play',{size:'12px'})} 選択した${selected.size}件を取り込む</button>
       <button class="btn ghost sm" id="dc-bulk-dl">${icon('download')} まとめてダウンロード</button>
@@ -7753,14 +7781,14 @@ async function pageDaicho(app){
       modal(`<h3>${icon('play',{size:'14px'})} 選択した${targets.length}件を取り込む</h3>
         <div class="muted" style="font-size:12px;margin-bottom:10px">台帳保管に保存済みのファイルを、もう一度パースして反映します。ファイルごとに対象日を指定してください(ファイル名から推測できた場合は自動入力されています)。</div>
         <div style="max-height:50vh;overflow-y:auto;display:flex;flex-direction:column;gap:6px;margin-bottom:10px">
-          ${targets.map(it=>`<div class="row" style="gap:8px;align-items:center;padding:7px 9px;background:#faf9f6;border:1px solid var(--line);border-radius:8px;flex-wrap:wrap">
+          ${targets.map(it=>`<div class="row" style="gap:8px;align-items:center;padding:7px 9px;background:var(--adm-highlight2);border:1px solid var(--line);border-radius:8px;flex-wrap:wrap">
             <span style="flex:1;min-width:0;font-size:12.5px;word-break:break-all">${h(it.file_name||'(名称不明)')}</span>
             <label style="display:flex;align-items:center;gap:5px;font-size:12px;white-space:nowrap">対象日
               <input type="date" class="dcr-date-input" data-id="${it.id}" value="${h(guessDateFromName(it.file_name||''))}" style="padding:4px 6px;border:1px solid var(--line);border-radius:6px">
             </label>
           </div>`).join('')}
         </div>
-        <label style="display:flex;align-items:flex-start;gap:7px;font-size:12.5px;margin-bottom:10px;padding:8px 10px;background:#faf9f6;border-radius:8px;border:1px solid var(--line)">
+        <label style="display:flex;align-items:flex-start;gap:7px;font-size:12.5px;margin-bottom:10px;padding:8px 10px;background:var(--adm-highlight2);border-radius:8px;border:1px solid var(--line)">
           <input type="checkbox" id="dcr-check-absent" style="margin-top:2px">
           <span>選択した全ファイルのどれにも登場しない人を、休暇に変更する<br><span class="muted" style="font-size:11px">複数の日付をまたぐため、既定ではオフです。</span></span>
         </label>
@@ -8051,7 +8079,6 @@ async function pageAdmin(app){
         <option value="reports">新人報告 全項目</option>
         <option value="blacklist">ブラックリスト</option>
         <option value="notifications">通知(全員分)</option>
-        <option value="sessions">ログインセッション</option>
       </select>
       <button class="btn" id="dv-load">表示する</button>
     </div>
@@ -8233,7 +8260,7 @@ async function pageAdminSettings(app){
   ${sec('wage',`<span style="white-space:nowrap">${icon('yen')} 時給設定</span> <span class="muted" style="font-weight:400">(ランク×時期)</span>`, wageData ? `
     <div class="muted" style="margin-bottom:8px">現場日に有効な時給が給与計算に使われます。<b>${h(wageData.lockBefore)}</b> 以前の現場は給与確定済み（時給を変えても再計算されません）。</div>
     ${lockData ? `
-    <div style="background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:12px">
+    <div style="background:var(--adm-highlight);border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:12px">
       <div style="font-weight:700;margin-bottom:6px">${icon('lock')} 給与確定ロック期間</div>
       <div class="muted" style="margin-bottom:8px">現場日からこの日数を過ぎると、チーフ・手配者は編集できなくなります（管理者は常に編集可）。</div>
       <div class="row" style="align-items:center;gap:8px;flex-wrap:wrap">
@@ -8246,7 +8273,7 @@ async function pageAdminSettings(app){
       <div class="muted" style="margin-top:6px;font-size:12px">現在の設定では <b>${h(lockData.lockBefore)}</b> 以前が確定済みです。0にすると当日以降すべて編集可、長くすると過去まで編集可になります。</div>
     </div>` : ''}
     <div id="wage-periods"></div>
-    <div class="row" style="margin:10px 0;gap:8px;align-items:center;flex-wrap:wrap;background:#f7f5ef;border:1px solid var(--line);border-radius:8px;padding:8px 10px">
+    <div class="row" style="margin:10px 0;gap:8px;align-items:center;flex-wrap:wrap;background:var(--adm-highlight);border:1px solid var(--line);border-radius:8px;padding:8px 10px">
       <span class="muted" style="font-size:12.5px">新しい改定の適用開始日</span>
       <input type="date" id="wage-new-ef" style="width:150px">
       <button class="btn ghost sm" id="wage-new-add">${icon('plus',{size:'12px'})} 改定を追加</button>
@@ -8299,7 +8326,7 @@ async function pageAdminSettings(app){
         const tagCls = st==='ready' ? 'checked' : st==='maintenance' ? 'pending' : 'suspended';
         const tagText = st==='ready' ? `${icon('circleFilled',{size:'10px'})} 公開中` : st==='maintenance' ? `${icon('construction',{size:'10px'})} メンテナンス中` : `${icon('clock',{size:'10px'})} 準備中`;
         return `
-      <div class="row" style="gap:10px;align-items:center;justify-content:space-between;padding:8px 10px;background:#f7f5ef;border-radius:8px;flex-wrap:wrap">
+      <div class="row" style="gap:10px;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--adm-highlight);border-radius:8px;flex-wrap:wrap">
         <span>${icon(feature.icon)} ${h(feature.label)}</span>
         <div class="row" style="gap:8px;align-items:center">
           <span class="tag ${tagCls}" id="feat-status-${key}">${tagText}</span>

@@ -114,10 +114,10 @@ const APP_STRUCTURE_PAGES = [
   { hash: '#/draft', name: 'ドラフト', role: '2次チェック権限者', desc: '2次チェックで「あげる」判定された新人の一覧。' },
   { hash: '#/blacklist', name: 'ブラックリスト', role: 'ブラックリスト管理権限者', desc: '要注意人物の登録・評価一覧。登録済みバッジを表示。' },
   { hash: '#/report-export', name: 'スプレッドシート貼付用コピー', role: 'admin', desc: '新人報告・ブラックリストを期間指定してタブ区切りテキストでコピーする。' },
-  { hash: '#/admin', name: 'アカウント管理', role: 'account_manage権限者', desc: 'アカウントの新規作成・編集・停止・削除。複数選択して一括停止/復活が可能。全データ閲覧の「ログインセッション」には最後に見ていたページを表示する(activity_view権限)。' },
+  { hash: '#/admin', name: 'アカウント管理', role: 'account_manage権限者', desc: 'アカウントの新規作成・編集・停止・削除。複数選択して一括停止/復活が可能。全データ閲覧(users/schedule/history/reports/blacklist/notifications)は件数上限なしの全件を表示・CSV出力する。ログインセッションの一覧は#/handler-statusへ移設した。' },
   { hash: '#/admin-settings', name: 'システム設定', role: 'system_settings権限者', desc: 'PIN、GAS連携トークン、通知設定、時給設定、メンテナンスモード等の各種設定。' },
   { hash: '#/role-permissions', name: '権限の一括設定', role: 'admin', desc: '役割ごとの個別権限をまとめて付与・削除する。役割が標準で持つ権限を個別に剥奪する設定にも対応。' },
-  { hash: '#/handler-status', name: 'ログイン中・編集履歴', role: 'handler_tools権限者', desc: '現在ログイン中のメンバー一覧と、スケジュール編集履歴(取り消し操作含む)を確認する。activity_view権限があれば各メンバーが今どの画面を見ているかも確認できる。' },
+  { hash: '#/handler-status', name: 'ログイン中・編集履歴', role: 'handler_tools権限者', desc: '現在ログイン中のメンバー一覧と、スケジュール編集履歴(取り消し操作含む)を確認する。activity_view権限があれば各メンバーが今どの画面を見ているかも確認できる。管理者(role===admin)だけ「全ログインセッション」セクションが追加表示され、稼働中かどうかに関わらず全セッションと最後に見ていたページを、全データ閲覧と同じソート・絞り込み・CSV出力つきの表で確認できる(元は全データ閲覧側にあった機能をこちらへ統合)。' },
   { hash: '#/import', name: 'スプレッドシート取込', role: 'import_data権限者', desc: '台帳・予定表のURLを登録して取込を実行する。台帳ExcelファイルをPCから直接アップロードして取り込むカードもある(常に手動実行、複数ファイル一括・ファイルごとの対象日指定に対応)。' },
   { hash: '#/sched-sources', name: '予定表ソース管理', role: '設定権限者', desc: 'チーフ予定表専用フォーマットの自動取込設定。「担当手配者未設定(チーフ手配)の人はこのソースから取り込まない」オプションを持つ。' },
   { hash: '#/daicho', name: '台帳保管', role: '台帳管理権限者', desc: '取込済みExcelファイルの保管・ダウンロード・削除(複数選択対応)。保存済みファイルを選択して再取込(再アップロード不要)する機能もある。' },
@@ -233,7 +233,7 @@ const APP_STRUCTURE_API_GROUPS = [
     ['POST', '/history/:id/undo', '編集履歴1件の取り消し'],
     ['POST', '/history/undo-batch', '編集履歴の複数一括取り消し(新しい順に処理)'],
     ['POST', '/history/undo-by-ts', '同じ取込実行(タイムスタンプ)で反映された変更をまとめて取り消し'],
-    ['GET', '/admin/data', '全テーブルの生データ閲覧(管理者)。sessionsテーブルにはlast_pageを含む'],
+    ['GET', '/admin/data', '全テーブルの生データ閲覧(管理者)。件数上限なし(全件返す)。sessionsは「ログイン中・編集履歴」画面(#/handler-status)から呼ばれる(閲覧は管理者のみ)'],
     ['GET', '/legacy-import/months', '過去データ取込確認の月別集計(管理者)'],
     ['GET', '/legacy-import/months/:ym', '過去データ取込確認の月別明細(管理者)'],
     ['POST', '/legacy-import/months/:ym/approve', '過去データを公開(管理者)。名簿と一致した行のみ対象、既存データがある人はスキップ'],
@@ -5132,11 +5132,14 @@ async function api(req, env, url) {
     if (me.role !== 'admin') return ERR('ページが見つかりません', 404);
     const Q = {
       users: "SELECT regno AS 登録番号, name AS 氏名, role AS 役割, rank AS ランク, han AS 班, station AS 最寄駅, skills AS できること, CASE WHEN pass_hash IS NULL THEN '初期PW(登録番号のまま)' ELSE '本人が変更済み' END AS パスワード状態, created AS 作成日 FROM users ORDER BY regno",
-      schedule: "SELECT u.name AS 氏名, s.date AS 日付, s.slot AS 枠, s.type AS 種別, s.site AS 現場名, s.venue AS 会場, s.tin AS 'IN', s.tout AS 'OUT', s.hours AS 時間, s.overtime AS 時間外, s.pay AS 給与, s.note AS 備考, COALESCE(d.plan,'') AS 育成計画 FROM schedule s JOIN users u ON u.id=s.user_id LEFT JOIN dev_plan d ON d.user_id=s.user_id AND d.date=s.date ORDER BY s.date DESC, s.slot LIMIT 1000",
-      history: "SELECT h.ts AS 日時, COALESCE(e.name, CASE WHEN h.editor_id=0 THEN 'スプレッドシート' ELSE '不明' END) AS 編集者, t.name AS 対象, h.date AS 対象日, h.before_json AS 変更前, h.after_json AS 変更後 FROM schedule_history h LEFT JOIN users e ON e.id=h.editor_id LEFT JOIN users t ON t.id=h.target_id ORDER BY h.id DESC LIMIT 500",
+      // 「全データ閲覧」は名前のとおり全件を返す(以前はschedule/history/notificationsだけ件数上限が
+      // あり、ダウンロードしても一部しか出てこなかった。本番で計15万行程度あるが、D1のクエリ自体は
+      // 500ms前後で終わるため上限を設けない。sessionsは「ログイン中・編集履歴」画面へ移設した)。
+      schedule: "SELECT u.name AS 氏名, s.date AS 日付, s.slot AS 枠, s.type AS 種別, s.site AS 現場名, s.venue AS 会場, s.tin AS 'IN', s.tout AS 'OUT', s.hours AS 時間, s.overtime AS 時間外, s.pay AS 給与, s.note AS 備考, COALESCE(d.plan,'') AS 育成計画 FROM schedule s JOIN users u ON u.id=s.user_id LEFT JOIN dev_plan d ON d.user_id=s.user_id AND d.date=s.date ORDER BY s.date DESC, s.slot",
+      history: "SELECT h.ts AS 日時, COALESCE(e.name, CASE WHEN h.editor_id=0 THEN 'スプレッドシート' ELSE '不明' END) AS 編集者, t.name AS 対象, h.date AS 対象日, h.before_json AS 変更前, h.after_json AS 変更後 FROM schedule_history h LEFT JOIN users e ON e.id=h.editor_id LEFT JOIN users t ON t.id=h.target_id ORDER BY h.id DESC",
       reports: "SELECT ts AS 日時, reporter_name AS 報告者, candidate_name AS 候補者, candidate_grade AS 学年, first_chief AS '1次_連絡チーフ', first_note AS '1次_所感', s_motivation AS やる気, s_response AS 受け答え, s_total AS 総合点, draft AS ドラフト, plan AS 育成計画, checker AS チェック者, next_site AS 次回現場, next_date AS 次回日付, status AS 状態 FROM reports ORDER BY id DESC",
       blacklist: "SELECT ts AS 登録日時, date AS 日付, reporter AS 報告者, name AS 名前, s_talk AS 会話, s_dress AS 服装, s_groom AS 身なり, s_late AS 遅刻, s_work AS 業務, reason AS 理由, added_by AS 登録者 FROM blacklist ORDER BY id DESC",
-      notifications: "SELECT n.ts AS 日時, u.name AS 宛先, n.message AS 内容, CASE n.read WHEN 1 THEN '既読' ELSE '未読' END AS 状態 FROM notifications n JOIN users u ON u.id=n.user_id ORDER BY n.id DESC LIMIT 500",
+      notifications: "SELECT n.ts AS 日時, u.name AS 宛先, n.message AS 内容, CASE n.read WHEN 1 THEN '既読' ELSE '未読' END AS 状態 FROM notifications n JOIN users u ON u.id=n.user_id ORDER BY n.id DESC",
       sessions: "SELECT u.name AS 氏名, u.regno AS 登録番号, CASE s.handler WHEN 1 THEN '手配モード中' ELSE '' END AS 手配, s.last_page AS 最後に見ていたページ, datetime(s.last_seen/1000,'unixepoch','+9 hours') AS 最終アクセス, datetime(s.created/1000,'unixepoch','+9 hours') AS ログイン日時 FROM sessions s JOIN users u ON u.id=s.user_id ORDER BY s.last_seen DESC"
     };
     const sql = Q[url.searchParams.get('table')];
