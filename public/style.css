@@ -865,13 +865,17 @@ td.sm-edit-cell{text-align:center;color:var(--gold);font-size:15px}
 .dash-status-sub{font-size:12px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dash-jobs{margin-top:13px;border-top:1px solid var(--line);padding-top:11px;display:flex;flex-direction:column;gap:8px}
 .dash-job-detail{margin:-4px 0 2px 18px;font-size:11px;color:var(--danger);word-break:break-word;line-height:1.5}
-.dash-job{display:grid;grid-template-columns:9px minmax(0,1fr) auto auto;align-items:center;gap:9px;font-size:12.5px}
+.dash-job{display:grid;grid-template-columns:9px minmax(0,1fr) auto auto auto;align-items:center;gap:9px;font-size:12.5px}
 .dash-job .dash-dot{width:9px;height:9px;border-radius:50%;background:var(--ok)}
 .dash-job.bad .dash-dot{background:var(--danger)}
 .dash-job .dash-nm{font-weight:700}
 .dash-job .dash-tm{color:var(--muted);font-variant-numeric:tabular-nums;font-size:11.5px;white-space:nowrap}
 .dash-job .dash-rs{color:var(--muted);font-size:11.5px;white-space:nowrap}
 .dash-job.bad .dash-rs{color:var(--danger);font-weight:700}
+/* 異常が起きているジョブは、手動実行・確認できる画面へのリンクにする(権限がある場合のみ) */
+a.dash-job.linked{text-decoration:none;color:inherit;border-radius:6px;margin:0 -6px;padding:2px 6px;transition:background .15s}
+a.dash-job.linked svg{color:#bbb;flex:none}
+@media(hover:hover){ a.dash-job.linked:hover{background:#fff0ef} }
 
 .dash-todo{display:flex;flex-direction:column;gap:8px}
 .dash-todo-row{display:grid;grid-template-columns:32px minmax(0,1fr) auto 14px;align-items:center;gap:11px;padding:10px 12px;border-radius:8px;background:#faf9f6;border:1px solid var(--line);cursor:pointer;text-decoration:none;color:inherit}
@@ -932,7 +936,7 @@ td.sm-edit-cell{text-align:center;color:var(--gold);font-size:15px}
   .dash-kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
   .dash-kpi-n{font-size:19px}
   .dash-chips{grid-template-columns:minmax(0,1fr);gap:6px}
-  .dash-job{grid-template-columns:9px minmax(0,1fr) auto;gap:8px;font-size:12px}
+  .dash-job{grid-template-columns:9px minmax(0,1fr) auto auto;gap:8px;font-size:12px}
   .dash-job .dash-tm{display:none}
   .dash-job .dash-rs{font-size:11px}
   .dash-card{padding:13px 13px}
@@ -1065,6 +1069,9 @@ td.sm-edit-cell{text-align:center;color:var(--gold);font-size:15px}
 .as-page-hh{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:5px}
 .as-page-name{font-weight:800;font-size:14px;color:var(--ink)}
 .as-hash{font-family:ui-monospace,Consolas,monospace;font-size:11.5px;color:#8a6d12;background:#fff8e6;border:1px solid #eeddaa;border-radius:5px;padding:1px 6px}
+a.as-hash-link{text-decoration:none;display:inline-flex;align-items:center;gap:3px;cursor:pointer}
+a.as-hash-link svg{opacity:.7}
+@media(hover:hover){ a.as-hash-link:hover{background:#fdefc4} }
 .as-role-pill{font-size:11px;color:#fff;background:var(--ink2,#2a3550);border-radius:999px;padding:2px 9px}
 .as-desc{font-size:12.8px;color:#444;line-height:1.55}
 
@@ -1098,8 +1105,12 @@ tr.as-constraint-row td{background:#f7f5ef;font-style:italic;color:var(--muted)}
 
 .as-chip{display:inline-block;background:#fff;border:1px solid var(--line);border-radius:999px;padding:4px 12px;margin:3px;font-size:12px}
 
-.as-table-scroll{overflow-x:auto;max-width:100%}
-.as-svg-wrap{overflow-x:auto}
+/* 横スクロールできる表・図に、スクロールできることを示すフェードを右端に出す(.sched-wrapと同じ手法) */
+.as-table-scroll{overflow-x:auto;max-width:100%;position:relative}
+.as-table-scroll::after{content:"";position:absolute;top:0;right:0;width:18px;height:100%;background:linear-gradient(to right,rgba(255,255,255,0),rgba(255,255,255,.9));pointer-events:none;opacity:0;transition:opacity .2s}
+.as-svg-wrap{overflow-x:auto;position:relative}
+.as-svg-wrap::after{content:"";position:absolute;top:0;right:0;width:18px;height:100%;background:linear-gradient(to right,rgba(255,255,255,0),rgba(255,255,255,.9));pointer-events:none;opacity:0;transition:opacity .2s}
+@media (max-width:900px){ .as-table-scroll::after,.as-svg-wrap::after{opacity:1} }
 .as-arch-svg{width:100%;min-width:640px;height:auto;display:block}
 .as-arch-box{fill:#fff;stroke:var(--line);stroke-width:1.5}
 .as-arch-box.as-arch-client{fill:#eaf2fb;stroke:#2e6fb7}
@@ -1111,6 +1122,8 @@ tr.as-constraint-row td{background:#f7f5ef;font-style:italic;color:var(--muted)}
 .as-arch-line{stroke:var(--muted);stroke-width:1.5}
 .as-arch-line-label{font-size:10px;fill:var(--muted)}
 .as-arch-arrowhead{fill:var(--muted)}
+.as-svg-hint{display:none;text-align:center;font-size:11px;padding:6px 0 0}
+@media (max-width:900px){ .as-svg-hint{display:block} }
 
 .as-flow{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
 .as-flow-box{background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:12.5px;font-weight:700;color:var(--ink)}
@@ -1120,4 +1133,17 @@ table.as-file-table td{vertical-align:top}
 @media (max-width:640px){
   .as-flow{flex-direction:column;align-items:flex-start}
   .as-flow-arrow{transform:rotate(90deg);margin-left:14px}
+}
+/* 権限モデル・API仕様・DB設計・ファイル構成の表(列数が多い上に説明文が長い)は、スマホでは
+   横スクロール+nowrapのままだと肝心の説明列が画面外に隠れてしまうため、1行=1カードの縦積み表示に
+   切り替える(データは.as-table-scrollの中でtable.list as-responsiveとして出力、data-label属性を
+   ラベルとして::beforeで表示する)。 */
+@media (max-width:640px){
+  table.as-responsive{border:none;background:none;min-width:0}
+  table.as-responsive,table.as-responsive tbody,table.as-responsive tr,table.as-responsive td{display:block;width:100%}
+  table.as-responsive tr:first-child{display:none}
+  table.as-responsive tr{background:#fff;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:8px;box-shadow:var(--shadow-sm)}
+  table.as-responsive tr.as-constraint-row{background:#f7f5ef;box-shadow:none}
+  table.as-responsive td{border:none;padding:3px 0;white-space:normal !important}
+  table.as-responsive td[data-label]::before{content:attr(data-label);display:block;font-size:10.5px;font-weight:700;color:var(--muted);margin-bottom:1px}
 }

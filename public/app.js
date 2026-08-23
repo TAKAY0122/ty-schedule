@@ -2024,6 +2024,13 @@ async function pageDashboard(app){
 
   const jobLabel = (key, pcLabel, spLabel) => `<span class="dash-pc-only">${pcLabel}</span><span class="dash-sp-only">${spLabel}</span>`;
   const jobShort = { daicho:'台帳取込', schedSources:'予定表取込', rankPromotion:'ランク昇格', notify:'リマインド' };
+  // 異常時、そのジョブを手動実行・確認できる画面へ直接飛べるようにする(権限がない場合はリンクにしない)。
+  // ランク昇格は手動実行UIが存在しないため対象外。
+  const jobLink = {
+    daicho: has('import_data') ? '#/import' : null,
+    schedSources: has('wage_settings') ? '#/sched-sources' : null,
+    notify: has('wage_settings') ? '#/admin-settings' : null,
+  };
   const diffStr = (n) => n == null ? '' : (n > 0 ? `+${n}` : (n < 0 ? `${n}` : '±0'));
   const diffCls = (n) => n > 0 ? 'dash-up' : (n < 0 ? 'dash-down' : '');
 
@@ -2036,12 +2043,17 @@ async function pageDashboard(app){
       <div class="dash-status-badge">${icon(data.systemStatus.hasIssue?'alertTriangle':'checkCircle',{size:'18px'})} ${data.systemStatus.hasIssue?'1件以上の異常':'すべて正常'}</div>
       <div class="dash-status-sub">${data.systemStatus.hasIssue?'自動処理のうち一部が24時間以上動いていません':'自動処理はすべて正常に動作しています'}</div>
       <div class="dash-jobs">
-        ${data.systemStatus.jobs.map(j=>`<div class="dash-job ${j.bad?'bad':''}">
+        ${data.systemStatus.jobs.map(j=>{
+          const link = j.bad ? jobLink[j.key] : null;
+          const tag = link ? 'a' : 'div';
+          return `<${tag} ${link?`href="${link}"`:''} class="dash-job ${j.bad?'bad':''} ${link?'linked':''}">
           <span class="dash-dot"></span>
           <span class="dash-nm">${jobLabel(j.key, j.label, jobShort[j.key]||j.label)}</span>
           <span class="dash-tm">${h(j.lastRun||'未実行')}</span>
           <span class="dash-rs">${j.bad?(j.lastRun?'実行が滞っています':'未実行です'):'正常'}</span>
-        </div>${j.bad && j.detail ? `<div class="dash-job-detail">${h(j.detail)}</div>` : ''}`).join('')}
+          ${link?icon('arrowRight',{size:'12px'}):''}
+        </${tag}>${j.bad && j.detail ? `<div class="dash-job-detail">${h(j.detail)}</div>` : ''}`;
+        }).join('')}
       </div>
     </div>
 
@@ -6875,7 +6887,8 @@ function appStructureArchSvg(){
     ${box(20,180,220,60,['Googleスプレッドシート','(予定表ソース・台帳URL取込)'],'as-arch-ext')}
     ${box(20,290,220,60,['Googleカレンダー等','(.ics購読フィード)'],'as-arch-ext')}
   </svg>
-  </div>`;
+  </div>
+  <div class="muted as-svg-hint">◀ 画面が狭い場合は図を横にスクロールできます ▶</div>`;
 }
 function appStructureFileFlowHtml(){
   return `<div class="as-flow">
@@ -6930,11 +6943,15 @@ async function pageAppStructure(app){
       const ql = st.pageQ.toLowerCase();
       const items = data.pages.filter(p => !ql || (p.name+p.hash+p.role+p.desc).toLowerCase().includes(ql));
       $('#as-page-count').textContent = `${items.length} / ${data.pages.length} 件`;
-      $('#as-page-list').innerHTML = items.map(p => `
+      $('#as-page-list').innerHTML = items.map(p => {
+        // :uidのような動的パラメータを含むパスは実在するURLではないためリンクにしない
+        const hashEl = p.hash.includes(':') ? `<span class="as-hash">${h(p.hash)}</span>` : `<a href="${h(p.hash)}" class="as-hash as-hash-link">${h(p.hash)} ${icon('arrowRight',{size:'10px'})}</a>`;
+        return `
         <div class="as-page-card">
-          <div class="as-page-hh"><span class="as-page-name">${h(p.name)}</span><span class="as-hash">${h(p.hash)}</span><span class="as-role-pill">${h(p.role)}</span></div>
+          <div class="as-page-hh"><span class="as-page-name">${h(p.name)}</span>${hashEl}<span class="as-role-pill">${h(p.role)}</span></div>
           <div class="as-desc">${h(p.desc)}</div>
-        </div>`).join('') || '<p class="muted">該当する画面がありません。</p>';
+        </div>`;
+      }).join('') || '<p class="muted">該当する画面がありません。</p>';
     };
     panel.innerHTML = `
       <div class="as-searchbar"><input type="text" id="as-page-search" placeholder="画面名・パス・説明文で検索…" value="${h(st.pageQ)}"><span class="muted" id="as-page-count"></span></div>
@@ -6953,8 +6970,8 @@ async function pageAppStructure(app){
       </div>
       <div class="card">
         <h3>個別追加権限 一覧(${data.permissions.length}件)</h3>
-        <div class="as-table-scroll"><table class="list as-perm-table"><tr><th>キー</th><th>説明</th><th>基準ロール</th></tr>
-        ${data.permissions.map(p=>`<tr><td class="as-lvl${p.baseLv}"><code>${h(p.key)}</code></td><td>${h(p.label)}</td><td><span class="as-lvl-badge as-l${p.baseLv}">${h(roleByLv[p.baseLv]||p.baseLv)}</span></td></tr>`).join('')}
+        <div class="as-table-scroll"><table class="list as-perm-table as-responsive"><tr><th>キー</th><th>説明</th><th>基準ロール</th></tr>
+        ${data.permissions.map(p=>`<tr><td class="as-lvl${p.baseLv}"><code>${h(p.key)}</code></td><td data-label="説明">${h(p.label)}</td><td data-label="基準ロール"><span class="as-lvl-badge as-l${p.baseLv}">${h(roleByLv[p.baseLv]||p.baseLv)}</span></td></tr>`).join('')}
         </table></div>
       </div>`;
   }
@@ -6969,7 +6986,7 @@ async function pageAppStructure(app){
         if(!rows.length) continue;
         shown += rows.length;
         html += `<div class="as-group-title">${h(g.title)}(${rows.length}件)</div>`;
-        html += `<div class="as-table-scroll"><table class="list as-api-table"><tr><th>Method</th><th>パス</th><th>概要</th></tr>${rows.map(r=>`<tr><td>${methodBadges(r[0])}</td><td><code>${h(r[1])}</code></td><td>${h(r[2])}</td></tr>`).join('')}</table></div>`;
+        html += `<div class="as-table-scroll"><table class="list as-api-table as-responsive"><tr><th>Method</th><th>パス</th><th>概要</th></tr>${rows.map(r=>`<tr><td>${methodBadges(r[0])}</td><td data-label="パス"><code>${h(r[1])}</code></td><td data-label="概要">${h(r[2])}</td></tr>`).join('')}</table></div>`;
       }
       $('#as-api-count').textContent = `${shown} / ${data.apiEndpointCount} 件`;
       $('#as-api-groups').innerHTML = html || '<p class="muted">該当するAPIがありません。</p>';
@@ -6993,7 +7010,7 @@ async function pageAppStructure(app){
       $('#as-db-list').innerHTML = tables.map(t => {
         const rows = t.columns.map(c => c.type==='CONSTRAINT'
           ? `<tr class="as-constraint-row"><td colspan="3">${h(c.note)}</td></tr>`
-          : `<tr><td class="as-col-name">${h(c.name)}</td><td class="as-col-type">${h(c.type)}</td><td class="as-col-note">${h(c.note)}</td></tr>`
+          : `<tr><td class="as-col-name">${h(c.name)}</td><td class="as-col-type" data-label="型">${h(c.type)}</td><td class="as-col-note" data-label="備考">${h(c.note)}</td></tr>`
         ).join('');
         const open = st.openTables.has(t.name);
         return `<div class="as-tbl-card ${open?'open':''}" data-table="${h(t.name)}">
@@ -7003,7 +7020,7 @@ async function pageAppStructure(app){
             <span class="as-tcomment">${h(t.comment)}</span>
             <span class="as-arrow">▸</span>
           </div>
-          <div class="as-tbl-body"><div class="as-table-scroll"><table class="list"><tr><th>列名</th><th>型</th><th>備考</th></tr>${rows}</table></div></div>
+          <div class="as-tbl-body"><div class="as-table-scroll"><table class="list as-responsive"><tr><th>列名</th><th>型</th><th>備考</th></tr>${rows}</table></div></div>
         </div>`;
       }).join('') || '<p class="muted">該当するテーブルがありません。</p>';
       $('#as-db-list').querySelectorAll('.as-tbl-th').forEach(th => {
@@ -7040,9 +7057,9 @@ async function pageAppStructure(app){
       <div class="card">
         <h3>ファイル構成・依存関係</h3>
         ${appStructureFileFlowHtml()}
-        <div class="as-table-scroll"><table class="list as-file-table" style="margin-top:14px">
+        <div class="as-table-scroll"><table class="list as-file-table as-responsive" style="margin-top:14px">
           <tr><th>ファイル</th><th>役割</th><th>説明</th></tr>
-          ${data.files.map(f=>`<tr><td><code>${h(f.name)}</code></td><td>${h(f.role)}</td><td>${h(f.desc)}${f.dependsOn && f.dependsOn.length ? `<div class="muted" style="font-size:11.5px;margin-top:3px">依存先: ${f.dependsOn.map(d=>`<code>${h(d)}</code>`).join(', ')}</div>` : ''}</td></tr>`).join('')}
+          ${data.files.map(f=>`<tr><td><code>${h(f.name)}</code></td><td data-label="役割">${h(f.role)}</td><td data-label="説明">${h(f.desc)}${f.dependsOn && f.dependsOn.length ? `<div class="muted" style="font-size:11.5px;margin-top:3px">依存先: ${f.dependsOn.map(d=>`<code>${h(d)}</code>`).join(', ')}</div>` : ''}</td></tr>`).join('')}
         </table></div>
       </div>`;
   }
