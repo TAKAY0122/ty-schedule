@@ -71,6 +71,11 @@ header{background:rgba(20,26,42,.96);color:#f3f1ea;display:flex;align-items:cent
 @keyframes slidein{from{transform:translateX(-100%)}to{transform:translateX(0)}}
 @keyframes slideout{from{transform:translateX(0)}to{transform:translateX(-100%)}}
 .drawer-head{background:var(--ink);color:var(--gold);font-weight:700;letter-spacing:.1em;padding:16px 18px;font-size:13px}
+/* メニューを「自分の業務 / チーム・現場 / 管理・運用」の帯に区切る小見出し。
+   項目を増やすたびに縦に積み上がって探しにくくなっていたため、視覚的な区切りを入れている。 */
+.drawer-section{padding:14px 18px 5px;font-size:10.5px;font-weight:800;letter-spacing:.12em;
+  color:var(--muted);background:#faf9f6;border-bottom:1px solid #f0eee7}
+.drawer-section:first-of-type{padding-top:10px}
 .drawer-link{display:flex;align-items:center;justify-content:space-between;width:100%;text-align:left;padding:13px 18px;border:none;background:none;font-size:14.5px;color:#222;text-decoration:none;cursor:pointer;border-bottom:1px solid #f0eee7;transition:background .15s ease,padding-left .22s var(--spring),transform .22s var(--spring);-webkit-tap-highlight-color:transparent}
 .drawer-link:hover{background:#f5f3ec}
 .drawer-link:active{background:#efece1;padding-left:22px;transform:scale(.985);transition-duration:.06s}
@@ -1359,4 +1364,38 @@ a.ops-hash.link{display:inline-flex;align-items:center;gap:4px;cursor:pointer}
   /* 権限キー列を詰めて、狭い画面でもロール列が2つ以上見えるようにする */
   .ops-matrix{min-width:430px;grid-template-columns:minmax(136px,1fr) repeat(var(--cols),minmax(58px,1fr))}
   .ops-mx-key em{white-space:normal}
+}
+
+
+/* ===== システム管理ハブ(#/system) ===== */
+/* 管理系の入口を用途ごとにまとめたカード一覧。配色はダッシュボード等と同じ計器盤テーマ。 */
+.sys-sec{margin-bottom:18px;animation:opsRise .45s var(--ease-out) backwards}
+.sys-sec-h{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;margin-bottom:9px;
+  padding-bottom:7px;border-bottom:1px solid var(--ops-line)}
+.sys-sec-ic{color:var(--ops-gold);align-self:center;display:inline-flex}
+.sys-sec-h b{font-size:14px;font-weight:800}
+.sys-sec-h em{font-style:normal;font-size:11px;color:var(--ops-dim)}
+.sys-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:10px}
+.sys-card{display:grid;grid-template-columns:38px minmax(0,1fr) 16px;align-items:center;gap:12px;
+  background:var(--ops-panel);border:1px solid var(--ops-line);border-radius:11px;padding:13px 14px;
+  animation:opsRise .4s var(--ease-out) backwards;transition:border-color .15s,transform .15s,background .15s}
+.sys-card-ic{width:38px;height:38px;border-radius:9px;background:var(--ops-panel2);color:var(--ops-accent);
+  display:flex;align-items:center;justify-content:center}
+.sys-card-body{min-width:0}
+.sys-card-t{display:flex;align-items:center;gap:7px;flex-wrap:wrap;font-size:13.5px;font-weight:700;color:var(--ops-txt)}
+.sys-card-d{display:block;font-size:11.5px;color:var(--ops-dim);line-height:1.6;margin-top:3px}
+.sys-card-go{color:#4b5670;display:inline-flex}
+.sys-badge{font-size:9.5px;font-weight:700;border-radius:999px;padding:1px 7px}
+.sys-badge.hidden{background:rgba(210,153,34,.16);color:var(--ops-warn)}
+.sys-badge.maintenance{background:rgba(248,81,73,.16);color:var(--ops-danger)}
+@media(hover:hover){
+  .sys-card:hover{border-color:var(--ops-accent);background:var(--ops-panel2);transform:translateY(-1px)}
+  .sys-card:hover .sys-card-go{color:var(--ops-accent)}
+}
+.sys-card:active{transform:scale(.99)}
+@media (max-width:640px){
+  .sys-grid{grid-template-columns:minmax(0,1fr)}
+  .sys-card{grid-template-columns:34px minmax(0,1fr) 14px;gap:10px;padding:12px}
+  .sys-card-ic{width:34px;height:34px}
+  .sys-sec-h em{width:100%}
 }

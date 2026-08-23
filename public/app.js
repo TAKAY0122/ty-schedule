@@ -143,7 +143,7 @@ const PAGE_LABELS = {
   'role-permissions':'権限の一括設定','handler-status':'ログイン中・編集履歴','import':'スプレッドシート取り込み','sched-sources':'予定表ソース管理',
   'daicho':'台帳保管','permissions':'権限の個人設定','calendar-guide':'カレンダー連携のやり方','version-history':'アップデート履歴',
   'password':'パスワード変更','login':'ログイン画面','venues':'会場一覧','legacy-import':'過去データ取込確認','artists':'公演一覧',
-  'app-structure':'アプリ構造ビューア',
+  'app-structure':'アプリ構造ビューア','system':'システム管理',
 };
 function pageLabelFromHash(hash){
   if(!hash) return '';
@@ -214,6 +214,7 @@ const UPDATE_ITEMS = [
 // 機能公開設定の対象画面。バックエンドのFEATURE_KEYSと必ず一致させる。
 // 新しい画面を追加したら、ここと src/index.js の FEATURE_KEYS の両方に追記する。
 const FEATURE_LABELS = {
+  'system': { icon:'settings', label:'システム管理(管理系の入口)' },
   'dashboard': { icon:'gauge', label:'ダッシュボード' },
   'edit': { icon:'edit', label:'スケジュール入力' },
   'self-reports': { icon:'mail', label:'現場変更報告の承認' },
@@ -1196,7 +1197,10 @@ async function render(){
   if(LV[ME.role] >= 2){ try{ const ls = await api('/lock-settings'); if(ls && typeof ls.days==='number') LOCK_DAYS = ls.days; }catch(_){} }
   const hash = location.hash || '#/home';
   // 計器盤テーマの2画面は、ページ全体の背景も暗色にする(左右に明るい帯が残らないようにするため)
-  document.body.classList.toggle('ops-page', hash === '#/dashboard' || hash.startsWith('#/app-structure'));
+  // 計器盤テーマを使う画面。新しくこのテーマの画面を足したらここにも追加すること
+  //(入れ忘れると、暗色のカードが明るい背景の上に乗って左右に帯が出る)
+  const OPS_PAGES = ['#/dashboard', '#/app-structure', '#/system'];
+  document.body.classList.toggle('ops-page', OPS_PAGES.some(p => hash === p || hash.startsWith(p + '/')));
   renderShell(hash);
   const app = $('#app');
 
@@ -1215,6 +1219,7 @@ async function render(){
   try{
     if(hash === '#/home') await pageHome(app);
     else if(hash === '#/dashboard') await pageDashboard(app);
+    else if(hash === '#/system') await pageSystemHub(app);
     else if(hash === '#/availability') await pageAvailability(app);
     else if(hash === '#/availability-team') await pageAvailabilityTeam(app);
     else if(hash === '#/nominate') await pageNominate(app);
@@ -1343,13 +1348,10 @@ function renderShell(hash){
   const canBlacklist = has('blacklist_manage');
   const canAccountAdmin = has('account_manage');
   const canSystemSettings = has('wage_settings');
-  const canRolePerm = has('account_manage');
   const canHandlerStatus = has('handler_tools');
   const canImport = has('import_data');
   const canSchedSrc = has('wage_settings');
   const canDaicho = has('daicho_manage');
-  const showSystemGroup = canAccountAdmin || canSystemSettings || canRolePerm || canHandlerStatus || ME.role==='admin';
-  const showSpreadGroup = canImport || canSchedSrc || canDaicho;
   const canSummaryView = has('summary_view');
   const canDayScheduleView = has('day_schedule_view');
   const canMemberStatsView = has('member_stats_view');
@@ -1366,7 +1368,12 @@ function renderShell(hash){
   // 「手配者・管理者向けの取込/管理項目」の順に並べる(新機能を追加するたびに末尾へ積み上げて
   // 使いにくくなっていたのを解消。2026年8月整理)。関連する項目は必ずグループ化すること
   // (現場一覧・会場一覧・公演一覧が個別のトップレベル項目のまま並んでいたのが典型例だった)。
+  // 管理系(システム管理ハブ)を出すかどうか。ハブ内の項目を1つでも見られるなら出す
+  const showSystemHub = canAccountAdmin || canSystemSettings || canHandlerStatus || canDashboardView
+    || canImport || canSchedSrc || canDaicho || ME.role === 'admin';
+
   const nav = [
+    { section:'自分の業務' },
     { path:'#/home', icon:'home', label:'ホーム', show:true },
     { icon:'calendar', label:'スケジュール', show:true, children:[
       { path:'#/schedule', icon:'calendar', label:'マイスケジュール' },
@@ -1386,6 +1393,7 @@ function renderShell(hash){
       ...(canBlacklist ? [{ path:'#/blacklist', icon:'ban', label:'ブラックリスト', role:'handler' }] : []),
       ...(ME.role==='admin' ? [{ path:'#/report-export', icon:'paperclip', label:'貼り付け用コピー', role:'admin' }] : []),
     ]},
+    { section:'チーム・現場', show: canSitesView || showMemberGroup },
     { icon:'stadium', label:'現場・会場', show:canSitesView, children:[
       { path:'#/sites', icon:'stadium', label:'現場一覧', role:'chief' },
       { path:'#/venues', icon:'mapPin', label:'会場一覧', role:'chief' },
@@ -1399,25 +1407,21 @@ function renderShell(hash){
       ...(canDayScheduleView ? [{ path:'#/day-schedule', icon:'layoutGrid', label:'スケジュール一覧', role:'chief' }] : []),
       ...(canMemberSummaryNav ? [{ path:'#/member-summary/search', icon:'barChart', label:'個人の年間サマリー', role:'handler' }] : []),
     ]},
+    // --- 管理・運用 ---
+    // 以前はここに「ダッシュボード」「スプレッド読み込み(3項目)」「システム管理(6項目)」が
+    // 並んでいたが、項目が多いうえに何をする画面か分からず選びにくかった。
+    // よく使う2つだけを直接出し、残りはシステム管理ハブ(#/system)に集約している。
+    // 管理系の画面を新しく追加する場合は、ここではなく systemHubSections() に足すこと。
+    { section:'管理・運用', show: showSystemHub },
     { path:'#/dashboard', icon:'gauge', label:'ダッシュボード', show:canDashboardView, role:'admin' },
-    { icon:'upload', label:'スプレッド読み込み', show: showSpreadGroup, children:[
-      ...(canImport ? [{ path:'#/import', icon:'download', label:'手動取り込み', role:'handler' }] : []),
-      ...(canSchedSrc ? [{ path:'#/sched-sources', icon:'rss', label:'予定表ソース管理', role:'admin' }] : []),
-      ...(canDaicho ? [{ path:'#/daicho', icon:'package', label:'台帳保管', role:'admin' }] : []),
-    ]},
-    { icon:'settings', label:'システム管理', show: showSystemGroup, children:[
-      ...(canAccountAdmin ? [{ path:'#/admin', icon:'shieldCheck', label:'アカウント管理', role:'admin' }] : []),
-      ...(canSystemSettings ? [{ path:'#/admin-settings', icon:'wrench', label:'システム設定', role:'admin' }] : []),
-      ...(canRolePerm ? [{ path:'#/role-permissions', icon:'shield', label:'権限の一括設定', role:'admin' }] : []),
-      ...(canHandlerStatus ? [{ path:'#/handler-status', icon:'circleFilled', label:'ログイン中・編集履歴', role:'handler' }] : []),
-      ...(ME.role==='admin' ? [{ path:'#/legacy-import', icon:'inbox', label:'過去データ取込確認', role:'admin' }] : []),
-      ...(ME.role==='admin' ? [{ path:'#/app-structure', icon:'sitemap', label:'アプリ構造ビューア', role:'admin' }] : []),
-    ]},
-  ].filter(n => n.show);
+    ...(canImport ? [{ path:'#/import', icon:'download', label:'スプレッド取り込み', show:true, role:'handler' }] : []),
+    { path:'#/system', icon:'settings', label:'システム管理', show: showSystemHub, role:'admin' },
+  ].filter(n => n.show !== false && (n.section ? true : n.show));
 
   // 現在ページ名(ヘッダー中央に表示)。グループ内の子ページも探索する。
   let curName = '';
   outer: for(const item of nav){
+    if(item.section) continue;
     if(item.path && hashIs(hash, item.path)){ curName = item.label; break; }
     if(item.children){
       for(const c of item.children){ if(hashIs(hash, c.path)){ curName = c.label; break outer; } }
@@ -1487,6 +1491,7 @@ function renderShell(hash){
       <nav class="drawer">
         <div class="drawer-head">メニュー</div>
         ${nav.map((item,i) => {
+          if(item.section) return `<div class="drawer-section">${h(item.section)}</div>`;
           if(!item.children){
             return `<button type="button" class="drawer-link ${item.role?'role-'+item.role:''} ${hashIs(hash, item.path)?'active':''}" data-go="${item.path}"><span class="drawer-label">${icon(item.icon)} ${h(item.label)}</span><span class="role-dots">${roleDots(item.role)}</span></button>`;
           }
@@ -2178,6 +2183,92 @@ function opsGauge(pct, opt = {}){
         stroke-dasharray="${dash.toFixed(2)} ${C.toFixed(2)}" style="--dash:${dash.toFixed(2)};stroke:${opt.color || 'var(--ops-ok)'}"/>
     </svg>
     <div class="ops-gauge-txt"><span data-count="${v.toFixed(0)}" data-suffix="%">0</span></div>
+  </div>`;
+}
+
+// ===== システム管理ハブ(#/system、管理・運用系の入口をまとめた画面) =====
+// 以前はドロワーの「システム管理」に6項目が並ぶだけで、それぞれが何をする画面なのか、
+// どれが関連しているのかが分からなかった。用途ごとにまとめ、1行説明を添えた一覧にすることで
+// 「やりたいこと」から画面を選べるようにする。配色はダッシュボード・アプリ構造ビューアと
+// 同じ計器盤テーマ(.ops-root)に揃えている(管理者しか見ない画面のため)。
+//
+// 新しい管理系の画面を追加したら、ドロワーではなくこの SYSTEM_SECTIONS に1行足すこと。
+// (ドロワーに直接足すと、また項目が積み上がって使いにくくなる)
+function systemHubSections(){
+  return [
+    { title:'アカウント・権限', icon:'shieldCheck', desc:'誰がアプリを使えるか、何ができるかを決める', items:[
+      { path:'#/admin', icon:'users', label:'アカウント管理', role:'admin', show:has('account_manage'),
+        desc:'アカウントの作成・編集・停止・削除。全データの閲覧とCSV出力もここから。' },
+      { path:'#/role-permissions', icon:'shield', label:'権限の一括設定', role:'admin', show:has('account_manage'),
+        desc:'役割ごとの権限をまとめて付与・剥奪する。1人だけ変えたい場合はアカウント管理から。' },
+    ]},
+    { title:'運用状況の確認', icon:'gauge', desc:'今システムがどう動いているかを見る', items:[
+      { path:'#/dashboard', icon:'gauge', label:'ダッシュボード', role:'admin', show:has('dashboard_view'),
+        desc:'自動処理の稼働状況、当月の実績と推移、対応が必要な承認をまとめて確認する。' },
+      { path:'#/handler-status', icon:'activity', label:'ログイン中・編集履歴', role:'handler', show:has('handler_tools'),
+        desc:'今ログインしている人と閲覧中の画面、スケジュール編集の履歴と取り消し。' },
+      { path:'#/app-structure', icon:'sitemap', label:'アプリ構造ビューア', role:'admin', show:ME.role==='admin',
+        desc:'画面・API・DB・権限の全体構造を確認する開発者向けの診断画面。' },
+    ]},
+    { title:'データの取り込み・保管', icon:'download', desc:'台帳・予定表をアプリに取り込む', items:[
+      { path:'#/import', icon:'download', label:'手動取り込み', role:'handler', show:has('import_data'),
+        desc:'台帳・予定表のURLやExcelファイルを指定して、その場で取り込む。' },
+      { path:'#/sched-sources', icon:'rss', label:'予定表ソース管理', role:'admin', show:has('wage_settings'),
+        desc:'チーフ予定表を自動で定期取り込みする設定。取り込みエラーもここで確認できる。' },
+      { path:'#/daicho', icon:'package', label:'台帳保管', role:'admin', show:has('daicho_manage'),
+        desc:'取り込み済みExcelの保管庫。ダウンロード・削除・再取り込みができる。' },
+      { path:'#/legacy-import', icon:'inbox', label:'過去データ取込確認', role:'admin', show:ME.role==='admin',
+        desc:'外部で再構築した過去の給与実績を、月ごとに確認してから반映する。' },
+    ]},
+    { title:'システム設定', icon:'wrench', desc:'アプリ全体の動作を決める', items:[
+      { path:'#/admin-settings', icon:'wrench', label:'システム設定', role:'admin', show:has('wage_settings'),
+        desc:'手配モードのPIN、時給、給与確定ロック、通知、メンテナンス、機能の公開状態。' },
+      { path:'#/report-export', icon:'paperclip', label:'貼り付け用コピー', role:'admin', show:ME.role==='admin',
+        desc:'新人報告・ブラックリストを、スプレッドシートに貼れる形でコピーする。' },
+    ]},
+  ].map(sec => ({ ...sec, items: sec.items.filter(i => i.show) })).filter(sec => sec.items.length);
+}
+
+async function pageSystemHub(app){
+  const sections = systemHubSections();
+  if(!sections.length){ notFound(app); return; }
+
+  // 各画面の公開状態(準備中/メンテナンス中)を出しておくと、押す前に状況が分かる
+  let status = {};
+  try{ status = await getFeatureStatus(); }catch(e){}
+  const statusLabel = { hidden:'準備中', maintenance:'メンテナンス中' };
+
+  app.innerHTML = `
+  <div class="ops-root">
+    <div class="ops-head">
+      <div class="ops-head-l">
+        <div class="ops-title">${icon('settings')} <span>システム管理</span></div>
+        <div class="ops-sub">運用・管理まわりの入口をまとめています</div>
+      </div>
+    </div>
+    ${sections.map((sec, si) => `
+      <div class="sys-sec" style="animation-delay:${si * 70}ms">
+        <div class="sys-sec-h">
+          <span class="sys-sec-ic">${icon(sec.icon, { size:'15px' })}</span>
+          <b>${h(sec.title)}</b>
+          <em>${h(sec.desc)}</em>
+        </div>
+        <div class="sys-grid">
+          ${sec.items.map((it, ii) => {
+            const key = it.path.replace(/^#\//, '').split('/')[0];
+            const stt = status[key];
+            const badge = statusLabel[stt] ? `<span class="sys-badge ${stt}">${statusLabel[stt]}</span>` : '';
+            return `<a href="${it.path}" class="sys-card" style="animation-delay:${si * 70 + ii * 45}ms">
+              <span class="sys-card-ic">${icon(it.icon, { size:'18px' })}</span>
+              <span class="sys-card-body">
+                <span class="sys-card-t">${h(it.label)}${badge}</span>
+                <span class="sys-card-d">${h(it.desc)}</span>
+              </span>
+              <span class="sys-card-go">${icon('arrowRight', { size:'14px' })}</span>
+            </a>`;
+          }).join('')}
+        </div>
+      </div>`).join('')}
   </div>`;
 }
 

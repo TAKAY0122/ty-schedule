@@ -123,6 +123,7 @@ const APP_STRUCTURE_PAGES = [
   { hash: '#/daicho', name: '台帳保管', role: '台帳管理権限者', desc: '取込済みExcelファイルの保管・ダウンロード・削除(複数選択対応)。保存済みファイルを選択して再取込(再アップロード不要)する機能もある。' },
   { hash: '#/calendar-guide', name: 'カレンダー連携のやり方', role: '全員', desc: 'Google/Outlook/Appleカレンダーへの連携手順を案内する専用ページ。' },
   { hash: '#/legacy-import', name: '過去データ取込確認', role: 'admin', desc: '手配帳から外部で再構築した過去の給与実績(2021年6月〜2025年12月分、計55ヶ月)を、管理者だけが閲覧できるデモデータとして月単位で確認する画面。「公開する」でスケジュール本体へ反映、「削除する」で取り消せる。複数月をまとめて公開する機能もある。' },
+  { hash: '#/system', name: 'システム管理(ハブ)', role: '管理系のいずれかの権限を持つ人', desc: '管理・運用まわりの入口をまとめた一覧画面。アカウント/権限・運用状況・データ取込/保管・システム設定の4グループに分け、各画面が何をするものかを1行説明つきで並べる。ドロワーの「システム管理」からここに入る(以前は6項目がドロワーに直接並んでいた)。権限が無い項目は表示されない。' },
   { hash: '#/app-structure', name: 'アプリ構造ビューア', role: 'admin', desc: 'このアプリの画面・API・DB・権限モデルの全体構造を確認する開発者向け診断画面。DBテーブル構造は実際のD1から都度取得するため、schema.sqlと本番の食い違い(過去に実際に発生した事故)にも気づける。' },
 ];
 const APP_STRUCTURE_API_GROUPS = [
@@ -2467,7 +2468,7 @@ async function api(req, env, url) {
     'report', 'reports', 'draft', 'blacklist', 'report-export',
     'admin', 'admin-settings', 'role-permissions', 'handler-status',
     'import', 'sched-sources', 'daicho', 'member-summary',
-    'venues', 'venue-manual', 'legacy-import', 'artists', 'app-structure',
+    'venues', 'venue-manual', 'legacy-import', 'artists', 'app-structure', 'system',
   ];
   if (method === 'GET' && path === '/settings/feature-status') {
     const status = {};
