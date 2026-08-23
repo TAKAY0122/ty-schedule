@@ -1195,6 +1195,8 @@ async function render(){
   // 給与ロック日数を取得(手配者以上のみ。表示用の目安。最終判定はサーバー側)
   if(LV[ME.role] >= 2){ try{ const ls = await api('/lock-settings'); if(ls && typeof ls.days==='number') LOCK_DAYS = ls.days; }catch(_){} }
   const hash = location.hash || '#/home';
+  // 計器盤テーマの2画面は、ページ全体の背景も暗色にする(左右に明るい帯が残らないようにするため)
+  document.body.classList.toggle('ops-page', hash === '#/dashboard' || hash.startsWith('#/app-structure'));
   renderShell(hash);
   const app = $('#app');
 
@@ -1267,6 +1269,7 @@ async function render(){
 
 /* ===== ログイン ===== */
 function renderLogin(err){
+  document.body.classList.remove('ops-page'); // ログイン画面は通常の配色に戻す
   clearTimers();
   document.getElementById('root').innerHTML = `
   <div class="login-wrap"><div class="login-card">
@@ -2332,7 +2335,7 @@ async function pageDashboard(app){
       </div>
 
       <div class="ops-card">
-        <div class="ops-card-h"><b>${icon('users', { size: '15px' })} ランク構成</b><span class="ops-card-sub">在籍者</span></div>
+        <div class="ops-card-h"><b>${icon('users', { size: '15px' })} ランク構成</b><span class="ops-card-sub">停止中のアカウントも含む</span></div>
         <div class="ops-rank">
           ${opsDonut(rankSegs, { unit: '人' })}
           <div class="ops-legend">

@@ -1190,15 +1190,19 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
       const duties = [...g._duties];
       return { ...g, duty: duties.length ? duties.join('/') : g.duty };
     });
-    // 台帳・予定表の運用上、1人が1日に複数の異なる現場を掛け持つことは無い(現場入力は1日1件が原則)。
-    // そのため、work(現場)タイプが2件以上検出された時点で、正常な勤務実態とは考えにくく、
-    // シート解析時に複数日・複数タブのデータが誤って混入した可能性が高いと判断する。
-    // 誤ったデータをそのままDBに書き込んでしまう方が実害が大きいため、安全側に倒してこの日は
-    // 一切書き込まずスキップし、エラーとして報告する。
+    // 1日に入れられる現場の数は、取込元によって前提が異なる。
+    //  ・台帳(実績、isDaicho=true): 掛け持ちが実際に起こりうるため複数の現場を許容する。
+    //    ただし「複数日・複数タブのデータが誤って1日に混入した」パース事故を検知する安全網は残し、
+    //    現実的にありえない件数を超えた場合だけスキップする(過去に実際に起きた事故のため)。
+    //  ・予定表ソース取込(isDaicho=false): 予定表は1日1現場で運用されているため、
+    //    2件以上検出された時点でパースミスの兆候とみなし、従来どおり書き込まずスキップする。
+    // 誤ったデータをDBに書き込む方が実害が大きいので、超過時は安全側に倒してこの日は一切触らない。
+    const MAX_WORK_PER_DAY = isDaicho ? 4 : 1;   // 掛け持ちは多くても3〜4件。これを超えたら異常とみなす
+    const MAX_ITEMS_PER_DAY = isDaicho ? 8 : 5;  // 休暇・×等も含めた1日あたりの総件数の上限
     const workItems = mergedItems.filter(m => m.type === 'work');
-    if (workItems.length >= 2 || mergedItems.length >= 5) {
+    if (workItems.length > MAX_WORK_PER_DAY || mergedItems.length >= MAX_ITEMS_PER_DAY) {
       const preview = mergedItems.slice(0, 4).map(m => m.type === 'work' ? (m.site || '(現場名なし)') : m.type).join('/');
-      errors.push(`${name || uid}さん ${date}: 1日に${workItems.length}件の異なる現場データが検出されたため、データ異常の可能性があるとしてスキップしました(例: ${preview}${mergedItems.length > 4 ? '...' : ''})`);
+      errors.push(`${name || uid}さん ${date}: 1日に${workItems.length}件の現場データが検出されました。${isDaicho ? `掛け持ちの上限(${MAX_WORK_PER_DAY}件)を超えており` : '予定表は1日1現場が前提のため'}、データ異常の可能性があるとしてスキップしました(例: ${preview}${mergedItems.length > 4 ? '...' : ''})`);
       skipped += items.length; skippedInvalid += items.length;
       continue;
     }
@@ -4595,7 +4599,6 @@ async function api(req, env, url) {
     const upcoming = users
       .filter(u => {
         if (!u.promotion_pending_date || !u.promotion_pending_rank) return false;
-        if (u.suspended) return false;
         if (u.promotion_pending_date > nextMonthEnd) return false;
         const from = RANK_ORDER[rankLetter(u.rank)];
         const to = RANK_ORDER[String(u.promotion_pending_rank).toUpperCase()];
@@ -4610,8 +4613,9 @@ async function api(req, env, url) {
     const promotions = { upcoming, waitingTeam2Only, waitingSuOnly };
 
     // ⑥ データの不備
-    const noRank = users.filter(u => !u.suspended && !String(u.rank || '').trim()).length;
-    const noManager = users.filter(u => !u.suspended && !u.manager_id).length; // チーフ手配として意図的に空の場合も含む参考値
+    // 停止中のアカウントも対象に含める(停止はログインを止める措置であり、データ整備の対象からは外さない)
+    const noRank = users.filter(u => !String(u.rank || '').trim()).length;
+    const noManager = users.filter(u => !u.manager_id).length; // チーフ手配として意図的に空の場合も含む参考値
     const suspendedIds = users.filter(u => u.suspended).map(u => u.id);
     let suspendedButScheduled = 0;
     if (suspendedIds.length) {
@@ -4654,10 +4658,10 @@ async function api(req, env, url) {
       daily.push({ date: ds, count: dailyCount[ds] || 0 });
     }
 
-    // ⑩ ランク構成(在籍者のみ。ドーナツグラフ用)
-    const activeUsers = users.filter(u => !u.suspended);
-    const rankDist = ['A', 'B', 'C', 'D', 'E'].map(letter => ({ rank: letter, count: activeUsers.filter(u => rankLetter(u.rank) === letter).length }));
-    const rankNone = activeUsers.filter(u => !rankLetter(u.rank)).length;
+    // ⑩ ランク構成(ドーナツグラフ用)。停止中のアカウントも含める
+    //(停止はアプリへのログインを止めるだけの措置で、在籍・集計の対象からは外さない運用のため)
+    const rankDist = ['A', 'B', 'C', 'D', 'E'].map(letter => ({ rank: letter, count: users.filter(u => rankLetter(u.rank) === letter).length }));
+    const rankNone = users.filter(u => !rankLetter(u.rank)).length;
 
     return J({ systemStatus, todo, monthly, attention, promotions, dataIssues, payLock, canPay, trend, daily, rankDist, rankNone, today });
   }
@@ -5572,7 +5576,9 @@ async function cronRankPromotion(env) {
   if (lastRun === today) return { promoted: 0 }; // 1日1回のみ
 
   const targets = (await env.DB.prepare(
-    "SELECT id, rank, promotion_pending_rank FROM users WHERE promotion_pending_date IS NOT NULL AND promotion_pending_date <= ? AND COALESCE(suspended,0)=0"
+    // 停止中のアカウントも対象に含める。停止はアプリへのログインを止めるための措置であり、
+    // ランクの進行のような内部的な処理まで止めるものではない(復帰時に手動で直す手間をなくす)。
+    "SELECT id, rank, promotion_pending_rank FROM users WHERE promotion_pending_date IS NOT NULL AND promotion_pending_date <= ?"
   ).bind(today).all()).results;
   const ts = jstTs();
   let promoted = 0;

@@ -955,10 +955,18 @@ td.sm-edit-cell{text-align:center;color:var(--gold);font-size:15px}
   --ops-bg:#0e1420; --ops-panel:#151d2c; --ops-panel2:#1b2436; --ops-line:#28324a;
   --ops-txt:#dfe6f3; --ops-dim:#8a97b1; --ops-accent:#4f9df7; --ops-gold:#e0b84a;
   --ops-ok:#3fb950; --ops-warn:#d29922; --ops-danger:#f85149;
-  background:var(--ops-bg); color:var(--ops-txt);
-  margin:-18px -14px -60px; padding:16px 14px 60px; min-height:calc(100vh - 54px);
+  color:var(--ops-txt);
+  padding:2px 0 40px;
   font-feature-settings:"palt";
 }
+/* 計器盤の2画面だけ、ページ全体の背景を暗色にする。
+   以前は .ops-root に負のマージンを付けて main の幅いっぱいまで広げていたが、
+   main には max-width があるため、画面が広いと左右に元の明るい背景が帯状に残っていた。
+   背景そのものを body 側で塗ることで、どの画面幅でも継ぎ目が出ないようにする。
+   クラスの付け外しは app.js の render() が画面遷移のたびに行う。 */
+body.ops-page{background:var(--ops-bg-page)}
+body.ops-page main{max-width:1280px}
+:root{--ops-bg-page:#0e1420}
 .ops-root code,.ops-root .ops-mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
 .ops-root a{color:inherit;text-decoration:none}
 .ops-boot{display:flex;align-items:center;gap:10px;justify-content:center;padding:60px 0;color:var(--ops-dim);font-size:13px}
@@ -1328,15 +1336,8 @@ a.ops-hash.link{display:inline-flex;align-items:center;gap:4px;cursor:pointer}
 .ops-fdep{margin-top:6px;font-size:10px;color:var(--ops-dim);display:flex;flex-wrap:wrap;gap:5px;align-items:center}
 .ops-fdep code{background:var(--ops-panel);border-radius:4px;padding:1px 6px;color:var(--ops-dim)}
 
-/* main側のpaddingが狭くなる幅では、全面に敷く暗色の食い込み量も合わせる(合わないと横にはみ出す) */
-@media (max-width:900px){
-  .ops-root{margin:-14px -10px -60px;padding:12px 10px 60px}
-}
-
 /* ---- スマホ ---- */
 @media (max-width:640px){
-  /* この幅ではmain{padding:10px 6px 70px}になるため、食い込み量もそれに合わせる */
-  .ops-root{margin:-10px -6px -70px;padding:12px 6px 70px}
   .ops-title{font-size:16px}
   .ops-clock{font-size:18px}
   .ops-hero{padding:14px}
