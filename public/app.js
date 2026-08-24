@@ -157,6 +157,8 @@ const LV = { member:0, chief:1, handler:2, admin:3 };
 // permBaseLv(サーバー側の実効値)で上書きされる。サーバーのhas()と判定を一致させるための仕組み。
 // 新しい権限を追加する時は、src/index.jsのPERMSとこことの両方に1行ずつ追記すること。
 const PERM_BASE_LV = { report_check:1, blacklist_manage:1, summary_view:1, day_schedule_view:1, member_stats_view:1, sites_view:1, members_view:1, site_pay:2, site_manage:2, import_data:2, handler_tools:2, wage_settings:3, account_manage:3, daicho_manage:3, dashboard_view:3, member_summary_view:2, activity_view:3 };
+// 権限の一括設定画面で、baseLvごとに見出しを出してグループ分けするためのラベル
+const PERM_GROUP_LABELS = { 0:'メンツ以上', 1:'チーフ以上', 2:'手配者以上', 3:'管理者のみ', 4:'個別付与のみ(標準では誰も持たない)' };
 // has(key): MEがその機能を使えるか(基本権限を満たす、または個別に追加権限がある)
 // サーバーが返した実効の基準レベルをPERM_BASE_LVへ反映する(/me の取得直後に呼ぶ)
 function applyPermBaseLv(map){
@@ -210,6 +212,11 @@ const UPDATE_ITEMS = [
   { v:10, icon:'barChart', title:'マイスケジュールの下部に個人の年間サマリーを表示', desc:'個人の年間サマリーを閲覧できる方(手配担当者以上)は、マイスケジュール画面をスクロールした一番下でも、その人の年間の稼働状況・備考欄をそのまま確認できるようになりました。', show: () => LV[ME.role] >= 2 },
   { v:10, icon:'calendar', title:'マイスケジュールで表示する年月を直接選べるように', desc:'月の見出し部分をタップすると、カレンダーから年月を直接選んで一気に移動できるようになりました(◀▶ボタンでの1ヶ月ずつの移動も引き続き使えます)。', show: () => true },
   { v:11, icon:'sitemap', title:'アプリ構造ビューアを追加', desc:'このアプリの画面・API・DB・権限モデルの全体構造を確認できる開発者向け診断画面「アプリ構造ビューア」を追加しました(管理者専用)。DBテーブルの構造は都度実際のデータベースから取得するため、常に本番の実態が反映されます。', show: () => ME.role === 'admin' },
+  { v:12, icon:'moon', title:'ダークモードに対応', desc:'ドロワーメニュー最下部の「ダークモードに切替」から、アプリ全体を暗い配色に切り替えられるようになりました。設定は端末ごとに保存され、次回以降も自動で適用されます。', show: () => true },
+  { v:12, icon:'search', title:'現場名・会場を一覧から選べるように', desc:'現場変更の報告・承認や、手配チームのスケジュール入力で、現場名の隣の虫めがねボタンから公演一覧を、会場の隣から会場一覧を検索して選べるようになりました。選ばずに直接入力する使い方もこれまで通りできます。', show: () => true },
+  { v:12, icon:'key', title:'モーダルをキーボードだけで操作できるように', desc:'入力・確認用のポップアップ画面で、Enterキーで決定・Escapeキーで閉じる・Tabキーで画面内の項目だけを巡回する、といった操作がキーボードだけでできるようになりました(Windows/Mac共通)。', show: () => true },
+  { v:12, icon:'settings', title:'システム管理メニューを1クリックで開けるように', desc:'これまで「システム管理」を開いてから個別の画面を選ぶ2段階の操作が必要でしたが、ドロワーメニューからその場で開く一覧に変わり、1クリックで各画面へ移動できるようになりました。', show: () => LV[ME.role] >= 2 },
+  { v:12, icon:'gauge', title:'ダッシュボードの「気になる人」から直接絞り込めるように', desc:'ダッシュボードの「気になる人」カードをタップすると、稼働サマリーの該当する絞り込み条件が最初から適用された状態で開くようになりました。', show: () => has('dashboard_view') },
 ];
 // 機能公開設定の対象画面。バックエンドのFEATURE_KEYSと必ず一致させる。
 // 新しい画面を追加したら、ここと src/index.js の FEATURE_KEYS の両方に追記する。
@@ -424,6 +431,31 @@ async function api(path, opt = {}) {
 }
 function logoutLocal(){ TOKEN=''; ME=null; localStorage.removeItem('tk'); goTo('#/login'); }
 function clearTimers(){ timers.forEach(clearInterval); timers=[]; }
+
+// ===== ダークモード =====
+// body.theme-dark を付け外しするだけで、style.css側の「管理者専用画面の再配色」ブロックが
+// 全画面(ops-page限定だった暗色テーマ)に共通で効くようになっている(:is(body.ops-page,body.theme-dark)で定義)。
+// index.html側にも、初回描画前にlocalStorageを読んでクラスを付ける小さなインラインscriptがあり、
+// 切替前の一瞬だけ明るい画面がちらつく(FOUC)のを防いでいる。
+// 複数の入口(アカウント管理・システム管理のドロワー等)から来うるページの「戻る」リンク。
+// href固定だと、別の入口から来た人が本来の遷移元と違う場所に戻されてしまうため、
+// 実際のブラウザ履歴(history.back())で戻す。直接URLを開いた等で戻り先が無い場合だけ
+// fallbackHashへ遷移する。
+function wireBackBtn(app, selector, fallbackHash){
+  const btn = app.querySelector(selector);
+  if(!btn) return;
+  btn.onclick = (e) => {
+    e.preventDefault();
+    if(document.referrer || history.length > 1) history.back();
+    else location.hash = fallbackHash;
+  };
+}
+function isDarkTheme(){ return document.body.classList.contains('theme-dark'); }
+function toggleDarkTheme(){
+  const on = !isDarkTheme();
+  document.body.classList.toggle('theme-dark', on);
+  try{ localStorage.setItem('themeDark', on ? '1' : '0'); }catch(_){}
+}
 function shiftMonth(m, d){ const [y,mm]=m.split('-').map(Number); const dt=new Date(y, mm-1+d, 1); return dt.getFullYear()+'-'+pad(dt.getMonth()+1); }
 // 「年月を選択」モーダルの共通処理。月見出しをタップした際に、◀▶での1ヶ月ずつの移動に加えて
 // カレンダーから年月を直接選んで一気に移動できるようにする(元はマイスケジュールのみの機能だったが、
@@ -483,6 +515,53 @@ function unlockBodyScroll(){
 let _lastPointerPos = null;
 document.addEventListener('pointerdown', (e) => { _lastPointerPos = { x: e.clientX, y: e.clientY }; }, true);
 
+// ===== モーダルのキーボード操作(Windows/Mac共通。OS別の分岐は不要) =====
+// PCで使う時、毎回マウスでOK/選択ボタンを押すのが面倒という声を受けて追加(2026年8月)。
+// 個々のmodal()呼び出し側のHTMLを書き換えなくても効くよう、documentに1つだけキーイベントの
+// リスナーを張り、#modal-layerに中身がある間だけ働く汎用の仕組みにしてある。
+// - Escape: モーダルを閉じる(closeModalと同じ)
+// - Enter: テキスト入力欄・チェックボックス等にフォーカスがあっても、既定(主)のボタンを押す
+//   (textarea内の改行、select/button/a自体のEnterは、ブラウザ既定の動作を優先して奪わない)
+// - Tab / Shift+Tab: モーダル内の要素だけを巡回する(背景ページへフォーカスが漏れないように)
+function _modalFocusables(box){
+  return [...box.querySelectorAll('button:not([disabled]),a[href],input:not([disabled]):not([type=hidden]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')]
+    .filter(el => el.offsetParent !== null);
+}
+function _modalPrimaryBtn(box){
+  return box.querySelector('[data-enter-default]') || box.querySelector('.btn.gold:not([disabled])') || box.querySelector('#popup-ok') || box.querySelector('.btn.danger:not([disabled])') || null;
+}
+function _focusModalDefault(box){
+  requestAnimationFrame(() => {
+    if(!document.body.contains(box)) return;
+    const auto = box.querySelector('[autofocus]');
+    if(auto){ auto.focus(); return; }
+    const firstField = box.querySelector('input:not([type=hidden]):not([disabled]),select:not([disabled]),textarea:not([disabled])');
+    if(firstField){ firstField.focus(); return; }
+    const focusables = _modalFocusables(box);
+    if(focusables[0]) focusables[0].focus();
+  });
+}
+document.addEventListener('keydown', (e) => {
+  const layer = document.getElementById('modal-layer');
+  const box = layer && layer.querySelector('.modal');
+  if(!box) return;
+  if(e.key === 'Escape'){ e.preventDefault(); closeModal(); return; }
+  if(e.key === 'Enter'){
+    const tag = e.target.tagName;
+    if(tag === 'TEXTAREA' || tag === 'BUTTON' || tag === 'A' || tag === 'SELECT') return; // それぞれの既定動作を優先
+    const primary = _modalPrimaryBtn(box);
+    if(primary){ e.preventDefault(); primary.click(); }
+    return;
+  }
+  if(e.key === 'Tab'){
+    const focusables = _modalFocusables(box);
+    if(!focusables.length) return;
+    const first = focusables[0], last = focusables[focusables.length-1];
+    if(e.shiftKey && document.activeElement === first){ e.preventDefault(); last.focus(); }
+    else if(!e.shiftKey && document.activeElement === last){ e.preventDefault(); first.focus(); }
+  }
+});
+
 function modal(html){
   $('#modal-layer').innerHTML = `<div class="modal-bg"><div class="modal"><button class="close-x">${icon('x',{size:'12px'})}</button>${html}</div></div>`;
   $('#modal-layer .close-x').onclick = closeModal;
@@ -498,6 +577,7 @@ function modal(html){
       modalEl.style.transformOrigin = `${ox}px ${oy}px`;
     }
     requestAnimationFrame(() => { modalEl.classList.add('modal-animate-in'); });
+    _focusModalDefault(modalEl);
   }
   // キーボードの開閉などで表示領域の高さが変わった時も、その都度モーダルを追従させる
   if(window.visualViewport) window.visualViewport.addEventListener('resize', fitModalToViewport);
@@ -517,7 +597,12 @@ function fitModalToViewport(){
   }
 }
 // モーダルを閉じる際、フェードアウト+スケールダウンのアニメーションを再生してから中身を空にする
+// modal()はPromiseを返さないため、「選ばずに閉じた」場合の後始末(nullでresolve等)が
+// 必要なmodal()呼び出し側は、ここに1回だけ呼ばれるコールバックを積んでおける。
+// Escape・背景クリック・×ボタンなど、閉じ方によらず必ず1回だけ呼ばれる。
+let _onModalClose = null;
 function closeModal(){
+  if(_onModalClose){ const fn = _onModalClose; _onModalClose = null; fn(); }
   if(window.visualViewport) window.visualViewport.removeEventListener('resize', fitModalToViewport);
   const layer = $('#modal-layer');
   if(!layer) return;
@@ -532,6 +617,75 @@ function closeModal(){
     if(layer.querySelector('.closing')){ layer.innerHTML=''; unlockBodyScroll(); }
   }, 160);
 }
+// 公演一覧(/artists)・会場一覧(/venues)から選んで、現場名・会場の入力欄に反映する軽量ピッカー。
+// 「一覧から選ぶ」を押さなくても入力欄への手入力はそのまま使えるし、現場名・会場のどちらか
+// だけ選んで、もう片方は手入力のまま、という使い方もできる(2026年8月追加)。
+// ↑↓キーで候補を移動、Enterで選択、Escapeで選ばずに閉じられる(選ばず閉じた場合はnullを返す)。
+function openPickList(opt){
+  return new Promise(async (resolve) => {
+    let rows;
+    try{ rows = await api(opt.fetchUrl); }
+    catch(e){ popup(e.message,'error'); resolve(null); return; }
+    const items = rows.map(r => ({ label: opt.mapLabel(r), sub: opt.mapSub ? opt.mapSub(r) : '' })).filter(it=>it.label);
+    let filtered = items, activeIdx = items.length ? 0 : -1, settled = false;
+    const finish = (val) => { if(settled) return; settled = true; resolve(val); };
+    const renderList = () => {
+      const listEl = $('#pl-list'), emptyEl = $('#pl-empty');
+      if(!listEl) return;
+      if(!filtered.length){ listEl.innerHTML=''; if(emptyEl) emptyEl.style.display=''; return; }
+      if(emptyEl) emptyEl.style.display = 'none';
+      listEl.innerHTML = filtered.map((it,i) => `<div class="pl-row ${i===activeIdx?'pl-active':''}" role="option" data-i="${i}" ${i===activeIdx?'data-enter-default':''}>
+        <span class="pl-label">${h(it.label)}</span>${it.sub?`<span class="pl-sub muted">${h(it.sub)}</span>`:''}
+      </div>`).join('');
+      listEl.querySelectorAll('.pl-row').forEach(row => row.onclick = () => { finish(filtered[Number(row.dataset.i)].label); closeModal(); });
+      const activeEl = listEl.querySelector('.pl-active');
+      if(activeEl) activeEl.scrollIntoView({block:'nearest'});
+    };
+    modal(`<h3>${opt.title}</h3>
+      <input id="pl-q" placeholder="絞り込み(${items.length}件)" autocomplete="off" style="width:100%;margin-bottom:8px">
+      <div id="pl-list" style="max-height:340px;overflow-y:auto;border:1px solid var(--line);border-radius:8px"></div>
+      <div class="muted" id="pl-empty" style="display:none;padding:12px;text-align:center">一致する項目がありません</div>`);
+    _onModalClose = () => finish(null);
+    renderList();
+    const qInput = $('#pl-q');
+    qInput.oninput = () => {
+      const q = qInput.value.trim().toLowerCase();
+      filtered = q ? items.filter(it=>it.label.toLowerCase().includes(q)) : items;
+      activeIdx = filtered.length ? 0 : -1;
+      renderList();
+    };
+    // ↑↓Enterはモーダル共通のキー操作(document keydown)より先に、この入力欄側で処理する
+    // (Enterはグローバル側だと[data-enter-default]の行をクリックする実装になっており、
+    // それ自体は活かしつつ、↑↓はここでリスト内の移動として扱う)
+    qInput.onkeydown = (e) => {
+      if(e.key === 'ArrowDown'){ e.preventDefault(); if(filtered.length){ activeIdx = Math.min(activeIdx+1, filtered.length-1); renderList(); } }
+      else if(e.key === 'ArrowUp'){ e.preventDefault(); if(filtered.length){ activeIdx = Math.max(activeIdx-1, 0); renderList(); } }
+    };
+  });
+}
+
+// 現場名/会場の入力欄の隣に置く「一覧から選ぶ」ボタン。呼び出し側は現場名入力欄に
+// pickBtnHtml('入力欄のid','artist')、会場入力欄に pickBtnHtml('入力欄のid','venue') を並べて置き、
+// レンダリング後に wirePickButtons(app) を1回呼ぶだけでよい。
+function pickBtnHtml(targetId, kind){
+  return `<button type="button" class="pick-btn" data-pick-target="${targetId}" data-pick-kind="${kind}" title="一覧から選ぶ">${icon('search',{size:'13px'})}</button>`;
+}
+function wirePickButtons(root){
+  (root||document).querySelectorAll('[data-pick-target]').forEach(btn => {
+    if(btn.dataset.pickWired) return;
+    btn.dataset.pickWired = '1';
+    btn.onclick = async () => {
+      const input = document.getElementById(btn.dataset.pickTarget);
+      if(!input) return;
+      const kind = btn.dataset.pickKind;
+      const v = kind === 'venue'
+        ? await openPickList({ title:`${icon('mapPin')} 会場一覧から選ぶ`, fetchUrl:'/venues', mapLabel:r=>r.venue, mapSub:r=>`${r.cnt}件` })
+        : await openPickList({ title:`${icon('megaphone')} 公演一覧から選ぶ`, fetchUrl:'/artists', mapLabel:r=>r.artist, mapSub:r=>`${r.cnt}件` });
+      if(v != null){ input.value = v; input.focus(); }
+    };
+  });
+}
+
 // ボタンクリックで始まる非同期処理の間、ボタンをスピナー付きの無効状態にする共通ヘルパー。
 // 保存・送信系のボタンにひとまとめに適用することで、処理中であることを視覚的に伝える。
 async function withLoading(btn, fn){
@@ -761,7 +915,6 @@ function openHandlerPin(onSuccess){
     <input id="hp-pin" type="tel" inputmode="numeric" autocomplete="off" placeholder="PIN" style="width:100%;font-size:18px;letter-spacing:4px;text-align:center;padding:12px">
     <div id="hp-err"></div>
     <div class="row" style="margin-top:14px"><button class="btn gold" id="hp-go" style="flex:1">切り替える</button></div>`);
-  const pin = $('#hp-pin'); if(pin) setTimeout(() => pin.focus(), 80);
   const go = async () => {
     const v = $('#hp-pin').value.trim();
     if(!v){ $('#hp-err').innerHTML='<div class="msg err">PINを入力してください</div>'; return; }
@@ -773,7 +926,7 @@ function openHandlerPin(onSuccess){
     }catch(e){ $('#hp-err').innerHTML=`<div class="msg err">${h(e.message)}</div>`; }
   };
   $('#hp-go').onclick = go;
-  $('#hp-pin').onkeydown = e => { if(e.key==='Enter') go(); };
+  // フォーカス・Enterでの送信は、modal()共通のキーボード操作(_focusModalDefault / document keydown)に任せる
 }
 
 // 現場情報モーダル(チーフ以上が閲覧、手配担当以上はメンバー追加・一括編集可)
@@ -1034,8 +1187,8 @@ async function openSiteBulkEdit(date, site, venue, list){
     <div class="muted" style="margin-bottom:8px"><b>${h(site)}</b>${venue?` / ${h(venue)}`:''} / ${h(date)}</div>
     <div class="be-note muted" style="margin-bottom:10px">チェックを入れた人だけに、現場名・会場・IN/OUTの変更を適用します(空欄の項目は変更しません)。チェックを外した人は変更しません。「休暇」にチェックを入れた人はこの現場を休暇に変更します(現場の変更内容より優先されます)。</div>
     <div class="form-grid" style="grid-template-columns:70px 1fr;max-width:420px">
-      <label>現場名</label><input id="be-site" value="${h(site)}" placeholder="変更する場合のみ">
-      <label>会場</label><input id="be-venue" value="${h(venue)}" placeholder="変更する場合のみ">
+      <label>現場名</label><span class="pick-wrap"><input id="be-site" value="${h(site)}" placeholder="変更する場合のみ">${pickBtnHtml('be-site','artist')}</span>
+      <label>会場</label><span class="pick-wrap"><input id="be-venue" value="${h(venue)}" placeholder="変更する場合のみ">${pickBtnHtml('be-venue','venue')}</span>
       <label>IN</label><input id="be-in" value="${h(def.tin)}" placeholder="例:9:00(全員に適用)">
       <label>OUT</label><input id="be-out" value="${h(def.tout)}" placeholder="例:18:00(全員に適用)">
     </div>
@@ -1051,6 +1204,7 @@ async function openSiteBulkEdit(date, site, venue, list){
       </div>`).join('')}
     </div>
     <div class="row" style="margin-top:14px"><button class="btn gold" id="be-save" style="flex:1">変更を保存</button></div>`);
+  wirePickButtons($('#modal-layer'));
   $('#be-save').onclick = async () => {
     const siteNew=$('#be-site').value.trim();
     const venueNew=$('#be-venue').value.trim(), tin=$('#be-in').value.trim(), tout=$('#be-out').value.trim();
@@ -1239,7 +1393,7 @@ async function render(){
     else if(hash === '#/artists') await pageArtists(app);
     else if(hash.startsWith('#/venue-manual')) await pageVenueManual(app, hash);
     else if(hash === '#/day-schedule') await pageDaySchedule(app);
-    else if(hash === '#/summary') await pageSummary(app);
+    else if(hash === '#/summary' || hash.startsWith('#/summary/')) await pageSummary(app, hash);
     else if(hash === '#/member-stats') await pageMemberStats(app);
     else if(hash === '#/edit') await pageEdit(app);
     else if(hash.startsWith('#/edit/')) await pageEdit(app, hash.slice('#/edit/'.length));
@@ -1416,14 +1570,27 @@ function renderShell(hash){
       ...(canMemberSummaryNav ? [{ path:'#/member-summary/search', icon:'barChart', label:'個人の年間サマリー', role:'handler' }] : []),
     ]},
     // --- 管理・運用 ---
-    // 以前はここに「ダッシュボード」「スプレッド読み込み(3項目)」「システム管理(6項目)」が
-    // 並んでいたが、項目が多いうえに何をする画面か分からず選びにくかった。
-    // よく使う2つだけを直接出し、残りはシステム管理ハブ(#/system)に集約している。
-    // 管理系の画面を新しく追加する場合は、ここではなく systemHubSections() に足すこと。
+    // 以前は「ダッシュボード」「スプレッド取り込み」以外を「システム管理」1つのハブ画面に
+    // 集約していたが、ハブ→個別画面という2段階の遷移が煩わしいという声を受けて廃止した
+    // (2026年8月)。#/system のハブページ自体は home画面のショートカットから来た人のために
+    // 残しているが、ドロワーからは他のグループ(スケジュール・希望等)と同じ「その場で開く
+    // 子メニュー」方式で1段階で個別画面に飛べるようにする。よく使うダッシュボード・
+    // 手動取り込みだけは従来どおり直接のリンクのまま残す。管理系の画面を新しく追加する場合は、
+    // ここと systemHubSections() の両方に足すこと(ハブページ自体は残すため)。
     { section:'管理・運用', show: showSystemHub },
     { path:'#/dashboard', icon:'gauge', label:'ダッシュボード', show:canDashboardView, role:'admin' },
     ...(canImport ? [{ path:'#/import', icon:'download', label:'スプレッド取り込み', show:true, role:'handler' }] : []),
-    { path:'#/system', icon:'settings', label:'システム管理', show: showSystemHub, role:'admin' },
+    { icon:'settings', label:'システム管理', show: showSystemHub, children:[
+      ...(has('account_manage') ? [{ path:'#/admin', icon:'users', label:'アカウント管理', role:'admin' }] : []),
+      ...(has('account_manage') ? [{ path:'#/role-permissions', icon:'shield', label:'権限の一括設定', role:'admin' }] : []),
+      ...(has('handler_tools') ? [{ path:'#/handler-status', icon:'activity', label:'ログイン中・編集履歴', role:'handler' }] : []),
+      ...(ME.role==='admin' ? [{ path:'#/app-structure', icon:'sitemap', label:'アプリ構造ビューア', role:'admin' }] : []),
+      ...(has('wage_settings') ? [{ path:'#/sched-sources', icon:'rss', label:'予定表ソース管理', role:'admin' }] : []),
+      ...(has('daicho_manage') ? [{ path:'#/daicho', icon:'package', label:'台帳保管', role:'admin' }] : []),
+      ...(ME.role==='admin' ? [{ path:'#/legacy-import', icon:'inbox', label:'過去データ取込確認', role:'admin' }] : []),
+      ...(has('wage_settings') ? [{ path:'#/admin-settings', icon:'wrench', label:'システム設定', role:'admin' }] : []),
+      ...(ME.role==='admin' ? [{ path:'#/report-export', icon:'paperclip', label:'貼り付け用コピー', role:'admin' }] : []),
+    ]},
   ].filter(n => n.show !== false && (n.section ? true : n.show));
 
   // 現在ページ名(ヘッダー中央に表示)。グループ内の子ページも探索する。
@@ -1469,6 +1636,7 @@ function renderShell(hash){
 
   const footerLinks = `
     <div class="drawer-sep"></div>
+    <button type="button" class="theme-switch" id="dd-theme"><span class="drawer-label">${icon(isDarkTheme()?'sun':'moon')} <span id="dd-theme-label">${isDarkTheme()?'ライトモードに切替':'ダークモードに切替'}</span></span></button>
     <button type="button" class="drawer-link" data-go="#/password"><span class="drawer-label">${icon('key')} パスワード変更</span></button>
     <button type="button" class="drawer-link" data-go="#/version-history"><span class="drawer-label">${icon('scroll')} バージョン履歴</span></button>
     <button type="button" class="drawer-link" id="dd-refresh"><span class="drawer-label">${icon('refresh')} 最新版に更新</span></button>
@@ -1484,6 +1652,8 @@ function renderShell(hash){
     if(dr2) dr2.onclick = () => forceRefresh(dr2);
     const dl = dr.querySelector('#dd-logout');
     if(dl) dl.onclick = async () => { try{ await api('/logout',{method:'POST'}); }catch(_){} logoutLocal(); };
+    const dt = dr.querySelector('#dd-theme');
+    if(dt) dt.onclick = () => { toggleDarkTheme(); renderDrawer(); };
   };
 
   const stMenu = PAGE_STATE.menu || (PAGE_STATE.menu = { open:{} });
@@ -2323,12 +2493,15 @@ async function pageDashboard(app){
   const rankSegs = (data.rankDist || []).filter(r => r.count).map(r => ({ label: r.rank + 'ランク', value: r.count, color: rankColors[r.rank] }));
   if(data.rankNone) rankSegs.push({ label: '未設定', value: data.rankNone, color: '#4b5563' });
 
+  // href末尾のキーは稼働サマリー側のdata-stat(絞り込みフィルタ)と対応させている。
+  // これにより、カードをタップすると絞り込み済みの一覧に直接飛べる(以前は未絞り込みの
+  // 稼働サマリーに飛ぶだけで、同じカードをもう一度自分で押す必要があった)。
   const attentionItems = [
-    { label: '月100h超', value: data.attention.overTotal, color: 'var(--ops-danger)', href: '#/summary' },
-    { label: '6連勤以上', value: data.attention.streak, color: 'var(--ops-danger)', href: '#/summary' },
-    { label: '稼働少なめ', value: data.attention.few, color: 'var(--ops-warn)', href: '#/summary' },
-    { label: '同じ現場ばかり', value: data.attention.samesite, color: 'var(--ops-accent)', href: '#/summary' },
-    { label: '残業50h+', value: data.attention.overtime, color: 'var(--ops-warn)', href: '#/summary' },
+    { label: '月100h超', value: data.attention.overTotal, color: 'var(--ops-danger)', href: '#/summary/overtotal' },
+    { label: '6連勤以上', value: data.attention.streak, color: 'var(--ops-danger)', href: '#/summary/streak' },
+    { label: '稼働少なめ', value: data.attention.few, color: 'var(--ops-warn)', href: '#/summary/few' },
+    { label: '同じ現場ばかり', value: data.attention.samesite, color: 'var(--ops-accent)', href: '#/summary/samesite' },
+    { label: '残業50h+', value: data.attention.overtime, color: 'var(--ops-warn)', href: '#/summary/over' },
   ];
 
   const todoRows = [];
@@ -3111,8 +3284,8 @@ async function openScheduleSelfReport(date){
       </select>
     </div>
     <div id="sr-site-fields" class="form-grid" style="max-width:480px;margin-top:8px">
-      <label>現場名</label><input id="sr-site" placeholder="現場名(会場名とどちらか必須)">
-      <label>会場名</label><input id="sr-venue" placeholder="会場名(現場名とどちらか必須)">
+      <label>現場名</label><span class="pick-wrap"><input id="sr-site" placeholder="現場名(会場名とどちらか必須)">${pickBtnHtml('sr-site','artist')}</span>
+      <label>会場名</label><span class="pick-wrap"><input id="sr-venue" placeholder="会場名(現場名とどちらか必須)">${pickBtnHtml('sr-venue','venue')}</span>
     </div>
     <div class="row" style="margin-top:14px">
       <button class="btn gold" id="sr-save" style="flex:1">保存する</button>
@@ -3149,6 +3322,7 @@ async function openScheduleSelfReport(date){
     const typeSel = $('#sr-type');
     const siteFields = $('#sr-site-fields');
     if(!typeSel) return;
+    wirePickButtons(siteFields);
     typeSel.onchange = () => { siteFields.style.display = typeSel.value === 'work' ? '' : 'none'; };
     $('#sr-save').onclick = async () => {
       const date2 = $('#sr-date').value;
@@ -4262,9 +4436,18 @@ async function openArtistModal(artist){
 
 /* ===== 稼働サマリー(チーフ以上)。月間の出勤日数・シフト数・連勤・手配偏りを一覧できる。
    統計カード・手配担当バーをタップすると、その条件で一覧を絞り込める。 ===== */
-async function pageSummary(app){
+async function pageSummary(app, hash){
   if(!has('summary_view')){ notFound(app); return; }
   const st = PAGE_STATE.summary || (PAGE_STATE.summary = { month: MONTH, stat: null, mgr: null, sort: 'regno', mgrOpen: true });
+  // ダッシュボードの「気になる人」カードから来た場合、#/summary/few のようにキーが付いている。
+  // 該当する統計フィルタを開いた状態にしてから、URLは通常の#/summaryに戻す
+  // (戻さないと、この後ユーザーが別のカードやフィルタ解除を押しても、再描画のたびに
+  // このURL由来のフィルタへ勝手に戻ってしまう)。
+  const urlStat = hash && hash.startsWith('#/summary/') ? hash.slice('#/summary/'.length) : '';
+  if(['overtotal','streak','few','samesite','over'].includes(urlStat)){
+    st.stat = urlStat;
+    history.replaceState(null, '', '#/summary');
+  }
   app.innerHTML = `<div class="loading-box"><span class="spinner"></span>読み込み中…</div>`;
   let data;
   try{ data = await api(`/summary?month=${st.month}`); }
@@ -5079,8 +5262,8 @@ async function pageEdit(app, initialUid){
     </div>
     <div id="bulk-body" style="display:none;margin-top:12px">
       <div class="form-grid" style="grid-template-columns:90px 1fr;max-width:560px">
-        <label>現場名 *</label><input id="bk-site" placeholder="例:NiziU 大阪公演">
-        <label>会場</label><input id="bk-venue" placeholder="例:京セラドーム大阪">
+        <label>現場名 *</label><span class="pick-wrap"><input id="bk-site" placeholder="例:NiziU 大阪公演">${pickBtnHtml('bk-site','artist')}</span>
+        <label>会場</label><span class="pick-wrap"><input id="bk-venue" placeholder="例:京セラドーム大阪">${pickBtnHtml('bk-venue','venue')}</span>
         <label>IN</label><input id="bk-in" placeholder="例:9:00">
         <label>OUT</label><input id="bk-out" placeholder="例:18:00">
         <label>給与(手動)</label><input id="bk-pay" placeholder="空欄=自動計算">
@@ -5132,6 +5315,7 @@ async function pageEdit(app, initialUid){
   </div>`;
 
   // ---- 一括登録(メンバーごとに日付・備考)----
+  wirePickButtons(app);
   $('#bulk-toggle').onclick = () => {
     const body = $('#bulk-body'), open = body.style.display==='none';
     body.style.display = open ? 'block' : 'none';
@@ -6297,8 +6481,8 @@ async function openSelfReportApprove(r){
         <option value="">— 新規入力 —</option>
         ${daySites.map((s,i)=>`<option value="${i}">${h(s.site)}${s.venue?`(${h(s.venue)})`:''} ・${s.cnt}名</option>`).join('')}
       </select>` : ''}
-      <label>現場名</label><input id="sra-site" value="${h(r.site||'')}" placeholder="例:NiziU">
-      <label>会場</label><input id="sra-venue" value="${h(r.venue||'')}" placeholder="例:京セラドーム大阪">
+      <label>現場名</label><span class="pick-wrap"><input id="sra-site" value="${h(r.site||'')}" placeholder="例:NiziU">${pickBtnHtml('sra-site','artist')}</span>
+      <label>会場</label><span class="pick-wrap"><input id="sra-venue" value="${h(r.venue||'')}" placeholder="例:京セラドーム大阪">${pickBtnHtml('sra-venue','venue')}</span>
       <label>業務名</label><select id="sra-duty">${DUTIES.map(d=>`<option ${d==='案内'?'selected':''}>${d}</option>`).join('')}</select>
       <label>IN</label><input id="sra-in" placeholder="9:00">
       <label>OUT</label><input id="sra-out" placeholder="18:00">
@@ -6312,6 +6496,7 @@ async function openSelfReportApprove(r){
     </div>
 `);
 
+  wirePickButtons($('#modal-layer'));
   const existingSel = $('#sra-existing');
   if(existingSel) existingSel.onchange = () => {
     const idx = existingSel.value;
@@ -6377,7 +6562,7 @@ function summarizeHistory(b, a){
 async function pageHandlerStatus(app){
   if(!has('handler_tools')){ notFound(app); return; }
   const canSessions = ME.role === 'admin'; // 全セッションの閲覧は管理者のみ(元は全データ閲覧側にあった)
-  const stHs = PAGE_STATE.handlerStatus || (PAGE_STATE.handlerStatus = { open:{ online:true } });
+  const stHs = PAGE_STATE.handlerStatus || (PAGE_STATE.handlerStatus = { open:{ online:true }, hist:{ q:'', from:'', to:'' } });
   const openSet = stHs.open;
   const sec = (id,title,body)=>`<details class="adm-sec" id="hssec-${id}" data-sec="${id}" ${openSet[id]?'open':''}><summary><span class="adm-sec-title">${title}</span></summary><div class="adm-body">${body}</div></details>`;
   app.innerHTML = `
@@ -6386,7 +6571,14 @@ async function pageHandlerStatus(app){
     ${[['online',`${icon('circleFilled')} ログイン中`],['hist',`${icon('fileText')} 編集履歴`],...(canSessions?[['sessions',`${icon('key')} 全セッション`]]:[])].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
   </div>
   ${sec('online',`<span style="white-space:nowrap">${icon('circleFilled')} 現在ログイン中のメンバー</span> <span class="muted" style="font-weight:400">(10秒ごとに自動更新)</span>`, `<div id="hd-online" class="muted"><span class="spinner" style="width:13px;height:13px;border-width:2px;margin-right:5px"></span>読み込み中…</div>`)}
-  ${sec('hist',`<span style="white-space:nowrap">${icon('fileText')} スケジュール編集履歴</span> <span class="muted" style="font-weight:400">(直近500件)</span>`, `<div id="hd-history" class="muted"><span class="spinner" style="width:13px;height:13px;border-width:2px;margin-right:5px"></span>読み込み中…</div>`)}
+  ${sec('hist',`<span style="white-space:nowrap">${icon('fileText')} スケジュール編集履歴</span> <span class="muted" style="font-weight:400">(直近500件)</span>`, `
+    <div class="filter-bar" style="flex-wrap:wrap;gap:8px;margin-bottom:10px">
+      <input id="hd-hist-q" class="search-input" placeholder="対象メンバー・編集者名で検索" value="${h(stHs.hist.q)}" style="min-width:180px;flex:1 1 180px">
+      <label class="muted" style="display:flex;align-items:center;gap:4px;font-size:13px;white-space:nowrap">開始<input type="date" id="hd-hist-from" value="${h(stHs.hist.from)}" style="max-width:150px"></label>
+      <label class="muted" style="display:flex;align-items:center;gap:4px;font-size:13px;white-space:nowrap">終了<input type="date" id="hd-hist-to" value="${h(stHs.hist.to)}" style="max-width:150px"></label>
+      <button class="btn ghost sm" id="hd-hist-clear" style="${(stHs.hist.q||stHs.hist.from||stHs.hist.to)?'':'display:none'}">クリア</button>
+    </div>
+    <div id="hd-history" class="muted"><span class="spinner" style="width:13px;height:13px;border-width:2px;margin-right:5px"></span>読み込み中…</div>`)}
   ${canSessions ? sec('sessions',`<span style="white-space:nowrap">${icon('key')} 全ログインセッション</span> <span class="muted" style="font-weight:400">(稼働中かどうかに関わらず全件・管理者のみ)</span>`, `<div id="dv-out" class="muted"><span class="spinner" style="width:13px;height:13px;border-width:2px;margin-right:5px"></span>読み込み中…</div>`) : ''}`;
 
   app.querySelectorAll('.adm-sec').forEach(d => d.addEventListener('toggle', () => { stHs.open[d.dataset.sec] = d.open; }));
@@ -6417,9 +6609,27 @@ async function pageHandlerStatus(app){
   loadOnline();
   timers.push(setInterval(loadOnline, 10000));
 
-  const loadHistory = async () => {
-    const hist = await api('/history');
-    $('#hd-history').innerHTML = hist.length ? `
+  let histAll = null; // 直近500件を1度だけ取得し、絞り込みはクライアント側で行う
+  const renderHistList = () => {
+    const q = stHs.hist.q.trim().toLowerCase();
+    const hist = (histAll || []).filter(x => {
+      if(q && !((x.target_name||'').toLowerCase().includes(q) || (x.editor_name||'').toLowerCase().includes(q))) return false;
+      if(stHs.hist.from && x.date < stHs.hist.from) return false;
+      if(stHs.hist.to && x.date > stHs.hist.to) return false;
+      return true;
+    });
+    const filterOn = !!(stHs.hist.q || stHs.hist.from || stHs.hist.to);
+    const clearBtn = $('#hd-hist-clear'); if(clearBtn) clearBtn.style.display = filterOn ? '' : 'none';
+    if(!histAll || !histAll.length){
+      $('#hd-history').innerHTML = '<div class="muted">編集履歴はありません</div>';
+      return;
+    }
+    if(!hist.length){
+      $('#hd-history').innerHTML = `<div class="muted">${filterOn?'条件に一致する履歴はありません':'編集履歴はありません'}</div>`;
+      return;
+    }
+    $('#hd-history').innerHTML = `
+    ${filterOn ? `<div class="muted" style="margin-bottom:8px">${hist.length}件 / 全${histAll.length}件(絞り込み中)</div>` : ''}
     <div class="row" id="hd-bulk-bar" style="margin-bottom:10px;gap:8px;align-items:center">
       <button class="btn danger sm" id="hd-bulk-undo" disabled>選択した項目を取り消す(<span id="hd-sel-count">0</span>)</button>
     </div>
@@ -6438,7 +6648,7 @@ async function pageHandlerStatus(app){
       <div class="drow"><span class="dk">変更</span><span class="dv">${h(summarize(x.before_json, x.after_json))}</span></div>
       <div class="drow"><span class="dk">日時</span><span class="dv dcard-sub">${h(x.ts)}</span></div>
       <div class="row" style="margin-top:6px"><button class="btn ghost xs hd-undo" data-id="${x.id}" data-date="${h(x.date)}">${icon('undo',{size:'12px'})} この変更を取り消す</button></div>
-    </div>`).join('')}</div>` : '<div class="muted">編集履歴はありません</div>';
+    </div>`).join('')}</div>`;
     wireNameLinks($('#hd-history'));
 
     const updateBulkBar = () => {
@@ -6455,7 +6665,7 @@ async function pageHandlerStatus(app){
         const r = await api('/history/undo-batch', { method:'POST', body:{ ids } });
         if(r.failed && r.failed.length) popup(`${r.okCount}件を取り消しました(${r.failed.length}件は失敗)`, 'error');
         else popup(`${r.okCount}件を取り消しました`);
-        loadHistory();
+        await loadHistory();
       }catch(e){ popup(e.message,'error'); }
     };
 
@@ -6478,6 +6688,15 @@ async function pageHandlerStatus(app){
       if(ME.handler !== 1 && ME.role !== 'admin'){ openHandlerPin(doUndo); return; }
       doUndo();
     };
+  };
+  const loadHistory = async () => { histAll = await api('/history'); renderHistList(); };
+  $('#hd-hist-q').oninput = debounce(() => { stHs.hist.q = $('#hd-hist-q').value; renderHistList(); }, 250);
+  $('#hd-hist-from').onchange = () => { stHs.hist.from = $('#hd-hist-from').value; renderHistList(); };
+  $('#hd-hist-to').onchange = () => { stHs.hist.to = $('#hd-hist-to').value; renderHistList(); };
+  $('#hd-hist-clear').onclick = () => {
+    stHs.hist = { q:'', from:'', to:'' };
+    $('#hd-hist-q').value=''; $('#hd-hist-from').value=''; $('#hd-hist-to').value='';
+    renderHistList();
   };
   loadHistory();
 
@@ -6514,7 +6733,7 @@ async function pageRolePermissions(app){
     { key:'handler', label:'チーフ(手配者)全員' },
   ];
   app.innerHTML = `
-  <div style="margin-bottom:14px"><a href="#/admin" class="btn ghost sm">← アカウント管理に戻る</a></div>
+  <div style="margin-bottom:14px"><button type="button" id="rp-back" class="btn ghost sm">← 戻る</button></div>
   <h2 style="margin-bottom:4px">権限の一括設定</h2>
   <div class="adm-nav sticky-filters">
     ${roles.map(r=>`<button class="adm-chip" data-jump="role-${r.key}">${r.label}</button>`).join('')}
@@ -6531,6 +6750,7 @@ async function pageRolePermissions(app){
     </div>
   </details>`).join('')}`;
 
+  wireBackBtn(app, '#rp-back', '#/admin');
   app.querySelectorAll('.adm-sec').forEach(d => { /* no persisted open-state needed here */ });
   app.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => {
     const d = document.getElementById('rsec-'+b.dataset.jump);
@@ -6544,11 +6764,17 @@ async function pageRolePermissions(app){
     $('#rcount-'+r.key).textContent = `${cur.count}人`;
     const listEl = $('#rlist-'+r.key);
     const revokedSet = new Set(cur.revokedPerms || []);
-    listEl.innerHTML = defs.perms.map(p=>{
+    // 17項目が見出しも無く縦一列に並ぶと目的の項目を探しにくいため、基準レベル(baseLv)ごとに
+    // 見出しを入れてグループ分けする。PERM_GROUP_LABELSはbaseLvの意味の説明として他の用途にも
+    // 使えるよう共通定義にしてある。
+    const grouped = [...defs.perms].sort((a,b)=>a.baseLv-b.baseLv);
+    let lastLv = null;
+    listEl.innerHTML = grouped.map(p=>{
       const already = p.baseLv <= LV[r.key]; // この役割の基本権限で既に使える機能
       const isRevoked = revokedSet.has(p.key);
       const checked = already ? !isRevoked : cur.perms.includes(p.key);
-      return `<label class="perm-row" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)">
+      const groupHead = p.baseLv !== lastLv ? (lastLv = p.baseLv, `<div class="perm-group-h">${h(PERM_GROUP_LABELS[p.baseLv] || `baseLv${p.baseLv}`)}</div>`) : '';
+      return `${groupHead}<label class="perm-row" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)">
         <input type="checkbox" class="rperm-cb-${r.key}" value="${p.key}" data-base="${already?'1':'0'}" ${checked?'checked':''} style="width:18px;height:18px">
         <span style="flex:1">${h(p.label)}</span>
         <span class="perm-tag muted" style="font-size:11px;white-space:nowrap"></span>
@@ -7687,6 +7913,46 @@ async function pageDaicho(app){
     ['sheets',-1,'シート数(多い順)'], ['sheets',1,'シート数(少ない順)'],
   ];
 
+  // 再取込モーダル。以前は複数選択(チェックボックス)経由でしか開けず、1件だけ再取込したい時も
+  // わざわざチェックを入れる必要があった上に、その導線自体が行の見た目からは分からなかった。
+  // 各行に常時表示の「再取込」ボタンを置き、1件でもここから同じモーダルを開けるようにする。
+  const openReimportModal = (targets) => {
+    modal(`<h3>${icon('play',{size:'14px'})} 選択した${targets.length}件を取り込む</h3>
+      <div class="muted" style="font-size:12px;margin-bottom:10px">台帳保管に保存済みのファイルを、もう一度パースして反映します。ファイルごとに対象日を指定してください(ファイル名から推測できた場合は自動入力されています)。</div>
+      <div style="max-height:50vh;overflow-y:auto;display:flex;flex-direction:column;gap:6px;margin-bottom:10px">
+        ${targets.map(it=>`<div class="row" style="gap:8px;align-items:center;padding:7px 9px;background:var(--adm-highlight2);border:1px solid var(--line);border-radius:8px;flex-wrap:wrap">
+          <span style="flex:1;min-width:0;font-size:12.5px;word-break:break-all">${h(it.file_name||'(名称不明)')}</span>
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;white-space:nowrap">対象日
+            <input type="date" class="dcr-date-input" data-id="${it.id}" value="${h(guessDateFromName(it.file_name||''))}" style="padding:4px 6px;border:1px solid var(--line);border-radius:6px">
+          </label>
+        </div>`).join('')}
+      </div>
+      <label style="display:flex;align-items:flex-start;gap:7px;font-size:12.5px;margin-bottom:10px;padding:8px 10px;background:var(--adm-highlight2);border-radius:8px;border:1px solid var(--line)">
+        <input type="checkbox" id="dcr-check-absent" style="margin-top:2px">
+        <span>選択した全ファイルのどれにも登場しない人を、休暇に変更する<br><span class="muted" style="font-size:11px">複数の日付をまたぐため、既定ではオフです。</span></span>
+      </label>
+      <button class="btn gold sm" id="dcr-run">${icon('play',{size:'13px'})} 取り込みを実行する</button>
+      <div id="dcr-msg" class="muted" style="margin-top:10px"></div>`);
+    const runBtn = $('#dcr-run');
+    runBtn.onclick = async () => {
+      const items = [...document.querySelectorAll('.dcr-date-input')].map(inp => ({
+        archiveId: Number(inp.dataset.id), targetDate: inp.value || '',
+      }));
+      const checkAbsent = $('#dcr-check-absent').checked;
+      if(!confirm(`${items.length}件を取り込みます。よろしいですか？`)) return;
+      const msgEl = $('#dcr-msg');
+      msgEl.textContent = '取り込み中…';
+      await withLoading(runBtn, async () => {
+        try{
+          const r = await api('/daicho/reimport-from-archive', { method:'POST', body:{ items, checkAbsent } });
+          msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${checkAbsent&&r.clearedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''}${checkAbsent&&r.clearedRegistrations?` / 台帳に見当たらない登録現場を削除 ${r.clearedRegistrations}件`:''}<br>`
+            + r.results.map(x=>`${x.ok?icon('checkCircle',{size:'12px'}):icon('xCircle',{size:'12px'})} ${h(x.fileName)}${x.targetDate?` (${h(x.targetDate)})`:''} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>');
+          popup(`取り込みが完了しました(${r.okCount}件成功)`);
+        }catch(e){ msgEl.innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
+      });
+    };
+  };
+
   // リスト部分だけを再構築する。フィルタ入力欄・並び替えプルダウンはここでは一切触らない
   // (input/select要素をDOMから作り直すと、スマホでソフトウェアキーボードが閉じてしまうため)
   const renderList = () => {
@@ -7731,7 +7997,7 @@ async function pageDaicho(app){
             <th class="dc-th" data-col="applied" style="cursor:pointer;white-space:nowrap">反映件数 ${sortMark('applied')}</th>
             <th class="dc-th" data-col="sheets" style="cursor:pointer;white-space:nowrap">シート数 ${sortMark('sheets')}</th>
             <th class="dc-th" data-col="size" style="cursor:pointer;white-space:nowrap">サイズ ${sortMark('size')}</th>
-            <th></th><th></th>
+            <th></th><th></th><th></th>
           </tr>
           ${filtered.map(it=>`<tr>
             <td><input type="checkbox" class="dc-check" data-id="${it.id}" ${selected.has(it.id)?'checked':''}></td>
@@ -7741,6 +8007,7 @@ async function pageDaicho(app){
             <td>${it.applied!=null?it.applied+'件':'—'}</td>
             <td>${it.sheets!=null?it.sheets:'—'}</td>
             <td style="white-space:nowrap">${fmtSize(it.size)}</td>
+            <td style="white-space:nowrap"><button class="btn ghost xs dc-reimport" data-id="${it.id}">${icon('play',{size:'12px'})} 再取込</button></td>
             <td style="white-space:nowrap"><button class="btn ghost xs dc-dl" data-id="${it.id}" data-name="${h(it.file_name||'daicho.xlsx')}">${icon('download')} ダウンロード</button></td>
             <td style="white-space:nowrap"><button class="btn danger xs dc-del" data-id="${it.id}" data-ts="${h(it.ts)}">削除</button></td>
           </tr>`).join('')}
@@ -7758,6 +8025,7 @@ async function pageDaicho(app){
           <div class="drow"><span class="dk">取り込んだ人</span><span class="dv">${h(it.importer_name||'—')}</span></div>
           <div class="drow"><span class="dk">反映件数</span><span class="dv">${it.applied!=null?it.applied+'件':'—'} / シート${it.sheets!=null?it.sheets:'—'} / ${fmtSize(it.size)}</span></div>
           <div class="dcard-actions">
+            <button class="btn ghost sm dc-reimport" data-id="${it.id}">${icon('play',{size:'12px'})} 再取込</button>
             <button class="btn ghost sm dc-dl" data-id="${it.id}" data-name="${h(it.file_name||'daicho.xlsx')}">${icon('download')} ダウンロード</button>
             <button class="btn danger sm dc-del" data-id="${it.id}" data-ts="${h(it.ts)}">削除</button>
           </div>
@@ -7778,43 +8046,11 @@ async function pageDaicho(app){
     const bulkClear = $('#dc-bulk-clear');
     if(bulkClear) bulkClear.onclick = () => { selected.clear(); renderList(); };
     const bulkReimport = $('#dc-bulk-reimport');
-    if(bulkReimport) bulkReimport.onclick = () => {
-      const targets = filtered.filter(it=>selected.has(it.id));
-      modal(`<h3>${icon('play',{size:'14px'})} 選択した${targets.length}件を取り込む</h3>
-        <div class="muted" style="font-size:12px;margin-bottom:10px">台帳保管に保存済みのファイルを、もう一度パースして反映します。ファイルごとに対象日を指定してください(ファイル名から推測できた場合は自動入力されています)。</div>
-        <div style="max-height:50vh;overflow-y:auto;display:flex;flex-direction:column;gap:6px;margin-bottom:10px">
-          ${targets.map(it=>`<div class="row" style="gap:8px;align-items:center;padding:7px 9px;background:var(--adm-highlight2);border:1px solid var(--line);border-radius:8px;flex-wrap:wrap">
-            <span style="flex:1;min-width:0;font-size:12.5px;word-break:break-all">${h(it.file_name||'(名称不明)')}</span>
-            <label style="display:flex;align-items:center;gap:5px;font-size:12px;white-space:nowrap">対象日
-              <input type="date" class="dcr-date-input" data-id="${it.id}" value="${h(guessDateFromName(it.file_name||''))}" style="padding:4px 6px;border:1px solid var(--line);border-radius:6px">
-            </label>
-          </div>`).join('')}
-        </div>
-        <label style="display:flex;align-items:flex-start;gap:7px;font-size:12.5px;margin-bottom:10px;padding:8px 10px;background:var(--adm-highlight2);border-radius:8px;border:1px solid var(--line)">
-          <input type="checkbox" id="dcr-check-absent" style="margin-top:2px">
-          <span>選択した全ファイルのどれにも登場しない人を、休暇に変更する<br><span class="muted" style="font-size:11px">複数の日付をまたぐため、既定ではオフです。</span></span>
-        </label>
-        <button class="btn gold sm" id="dcr-run">${icon('play',{size:'13px'})} 取り込みを実行する</button>
-        <div id="dcr-msg" class="muted" style="margin-top:10px"></div>`);
-      const runBtn = $('#dcr-run');
-      runBtn.onclick = async () => {
-        const items = [...document.querySelectorAll('.dcr-date-input')].map(inp => ({
-          archiveId: Number(inp.dataset.id), targetDate: inp.value || '',
-        }));
-        const checkAbsent = $('#dcr-check-absent').checked;
-        if(!confirm(`${items.length}件を取り込みます。よろしいですか？`)) return;
-        const msgEl = $('#dcr-msg');
-        msgEl.textContent = '取り込み中…';
-        await withLoading(runBtn, async () => {
-          try{
-            const r = await api('/daicho/reimport-from-archive', { method:'POST', body:{ items, checkAbsent } });
-            msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${checkAbsent&&r.clearedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''}${checkAbsent&&r.clearedRegistrations?` / 台帳に見当たらない登録現場を削除 ${r.clearedRegistrations}件`:''}<br>`
-              + r.results.map(x=>`${x.ok?icon('checkCircle',{size:'12px'}):icon('xCircle',{size:'12px'})} ${h(x.fileName)}${x.targetDate?` (${h(x.targetDate)})`:''} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>');
-            popup(`取り込みが完了しました(${r.okCount}件成功)`);
-          }catch(e){ msgEl.innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
-        });
-      };
-    };
+    if(bulkReimport) bulkReimport.onclick = () => openReimportModal(filtered.filter(it=>selected.has(it.id)));
+    area.querySelectorAll('.dc-reimport').forEach(b => b.onclick = () => {
+      const it = filtered.find(x=>x.id===Number(b.dataset.id));
+      if(it) openReimportModal([it]);
+    });
     const bulkDl = $('#dc-bulk-dl');
     if(bulkDl) bulkDl.onclick = async () => {
       const targets = filtered.filter(it=>selected.has(it.id));
@@ -8321,14 +8557,15 @@ async function pageAdminSettings(app){
 
   ${sec('features',`${icon('flask')} 機能公開設定`, `
     <div class="muted" style="margin-bottom:10px">各画面を「公開中」「準備中(まだ誰にも見せない)」「メンテナンス中(一時的に使えなくする)」から選べます。メニュー自体は誰でも見えますが、開くとそれぞれの状態に応じたメッセージが表示されます。管理者本人には、この設定に関わらず常に通常通り表示されます。</div>
-    <div style="display:flex;flex-direction:column;gap:8px">
+    <input id="feat-q" class="search-input" placeholder="画面名で絞り込み(${FEATURE_KEYS.length}件)" style="width:100%;margin-bottom:10px">
+    <div style="display:flex;flex-direction:column;gap:8px" id="feat-list">
       ${FEATURE_KEYS.map(key=>{
         const st = featureStatus[key] || 'ready';
         const feature = FEATURE_LABELS[key];
         const tagCls = st==='ready' ? 'checked' : st==='maintenance' ? 'pending' : 'suspended';
         const tagText = st==='ready' ? `${icon('circleFilled',{size:'10px'})} 公開中` : st==='maintenance' ? `${icon('construction',{size:'10px'})} メンテナンス中` : `${icon('clock',{size:'10px'})} 準備中`;
         return `
-      <div class="row" style="gap:10px;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--adm-highlight);border-radius:8px;flex-wrap:wrap">
+      <div class="row" data-label="${h(feature.label.toLowerCase())}" style="gap:10px;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--adm-highlight);border-radius:8px;flex-wrap:wrap">
         <span>${icon(feature.icon)} ${h(feature.label)}</span>
         <div class="row" style="gap:8px;align-items:center">
           <span class="tag ${tagCls}" id="feat-status-${key}">${tagText}</span>
@@ -8340,7 +8577,8 @@ async function pageAdminSettings(app){
         </div>
       </div>`;
       }).join('')}
-    </div>`)}
+    </div>
+    <div class="muted" id="feat-empty" style="display:none;padding:12px 0;text-align:center">一致する画面がありません</div>`)}
 
   ${sec('maintenance',`${icon('construction')} メンテナンスモード`, `
     <div class="muted" style="margin-bottom:10px">有効にすると、<b>管理者以外の全員が即座に強制ログアウト</b>され、メンテナンスを終了するまで管理者以外はログインできなくなります(ログイン画面に「現在メンテナンス中です」と表示されます)。管理者は引き続きログイン・操作できます。</div>
@@ -8356,6 +8594,14 @@ async function pageAdminSettings(app){
     const d = document.getElementById('asec-'+b.dataset.jump);
     if(d){ d.open = true; stAs.open[b.dataset.jump] = true; d.scrollIntoView({behavior:'smooth', block:'start'}); }
   });
+  const featQ = $('#feat-q');
+  if(featQ) featQ.oninput = () => {
+    const q = featQ.value.trim().toLowerCase();
+    const rows = [...$('#feat-list').children];
+    let shown = 0;
+    rows.forEach(r => { const hit = !q || r.dataset.label.includes(q); r.style.display = hit ? '' : 'none'; if(hit) shown++; });
+    $('#feat-empty').style.display = shown ? 'none' : '';
+  };
 
   const renderRto = (list) => {
     const el = $('#rto-list'); if(!el) return;

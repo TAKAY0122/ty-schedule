@@ -250,6 +250,19 @@ table.list tr.click:hover{background:#fdf6e0;cursor:pointer}
 .form-grid{display:grid;grid-template-columns:170px 1fr;gap:10px 14px;align-items:center;max-width:640px}
 .form-grid label{font-size:13px;font-weight:600;color:var(--ink)}
 .form-grid textarea{min-height:80px}
+/* 現場名・会場の入力欄の隣に置く「一覧から選ぶ」ボタン(公演一覧/会場一覧picker) */
+.pick-wrap{display:flex;gap:6px;align-items:center;min-width:0}
+.pick-wrap input{flex:1;min-width:0}
+.pick-btn{flex:none;display:flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink2);transition:background .15s ease,transform .1s ease}
+.pick-btn:hover{background:#f5f3ec}
+.pick-btn:active{transform:scale(.92)}
+/* pickerモーダル内の候補リスト */
+.pl-row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 12px;cursor:pointer;border-bottom:1px solid var(--line)}
+.pl-row:last-child{border-bottom:none}
+.pl-row:hover{background:#f5f3ec}
+.pl-row.pl-active{background:#fdf6e0}
+.pl-label{font-size:13.5px;word-break:break-word}
+.pl-sub{font-size:12px;white-space:nowrap}
 .section-label{grid-column:1/-1;background:#efede6;padding:6px 10px;border-left:4px solid var(--gold);font-weight:700;font-size:13px;margin-top:8px}
 
 /* ===== モーダル ===== */
@@ -816,6 +829,9 @@ td.sm-edit-cell{text-align:center;color:var(--gold);font-size:15px}
 .home-menu{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:10px}
 /* メニューのカテゴリ見出し(現状踏襲+整理型)。グリッドの1行を占有させて区切りにする */
 .home-menu-section-label{grid-column:1/-1;display:flex;align-items:center;gap:10px;font-size:12px;font-weight:800;color:var(--muted);letter-spacing:.04em;margin:4px 2px 0}
+/* 権限の一括設定・機能公開設定など、項目数の多いチェックリストの区切り見出し */
+.perm-group-h{font-size:11.5px;font-weight:800;color:var(--muted);letter-spacing:.04em;margin:14px 0 4px;padding-bottom:4px;border-bottom:1px solid var(--line)}
+.perm-group-h:first-child{margin-top:0}
 .home-menu-section-label:first-child{margin-top:0}
 .home-menu-section-label:not(:first-child){margin-top:16px}
 .home-menu-section-label::after{content:'';flex:1;height:1px;background:#f0eee7}
@@ -968,7 +984,7 @@ td.sm-edit-cell{text-align:center;color:var(--gold);font-size:15px}
    (ダッシュボード等)だけでなく、既存の.card/.adm-sec等をそのまま使う管理者専用画面
    (アカウント管理等)からも同じ変数を参照できる(.ops-root配下限定だと、それらの画面では
    var()が未定義値になり色が当たらない)。 */
-body.ops-page{
+body.ops-page,body.theme-dark{
   --ops-bg:#0e1420; --ops-bg-page:#0e1420; --ops-panel:#151d2c; --ops-panel2:#1b2436; --ops-line:#28324a;
   --ops-txt:#dfe6f3; --ops-dim:#8a97b1; --ops-accent:#4f9df7; --ops-gold:#e0b84a;
   --ops-ok:#3fb950; --ops-warn:#d29922; --ops-danger:#f85149;
@@ -985,7 +1001,7 @@ body.ops-page{
    main には max-width があるため、画面が広いと左右に元の明るい背景が帯状に残っていた。
    背景そのものを body 側で塗ることで、どの画面幅でも継ぎ目が出ないようにする。
    クラスの付け外しは app.js の render() が画面遷移のたびに行う。 */
-body.ops-page{background:var(--ops-bg-page)}
+body.ops-page,body.theme-dark{background:var(--ops-bg-page)}
 body.ops-page main{max-width:1280px}
 .ops-root code,.ops-root .ops-mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
 .ops-root a{color:inherit;text-decoration:none}
@@ -1427,80 +1443,207 @@ a.ops-hash.link{display:inline-flex;align-items:center;gap:4px;cursor:pointer}
 /* 基準の文字色。bodyの既定(#222、明るい背景前提)がそのまま継承されると、無地の<span>/<b>/<label>等が
    暗い背景にほぼ溶けて読めなくなる(実際に手配者専用PINの現在値表示等で発生した)。#app配下の
    全要素にまず明るい文字色を敷き、個別の色付けはこの後の各ルールで上書きする。 */
-body.ops-page #app{color-scheme:dark;color:var(--ops-txt)}
-body.ops-page #app h2,body.ops-page #app h3{color:var(--ops-txt);border-left-color:var(--ops-gold)}
-body.ops-page #app .muted{color:var(--ops-dim)}
-body.ops-page #app a{color:var(--ops-accent)}
+:is(body.ops-page,body.theme-dark) #app{color-scheme:dark;color:var(--ops-txt)}
+:is(body.ops-page,body.theme-dark) #app h2,:is(body.ops-page,body.theme-dark) #app h3{color:var(--ops-txt);border-left-color:var(--ops-gold)}
+:is(body.ops-page,body.theme-dark) #app .muted{color:var(--ops-dim)}
+:is(body.ops-page,body.theme-dark) #app a{color:var(--ops-accent)}
 
-body.ops-page #app .card{background:var(--ops-panel);border-color:var(--ops-line);box-shadow:none}
-body.ops-page #app .adm-chip{background:var(--ops-panel);border-color:var(--ops-line);color:var(--ops-txt)}
-body.ops-page #app .adm-chip:hover{background:#2563a8;border-color:#2563a8;color:#fff}
-body.ops-page #app .adm-sec{background:var(--ops-panel);border-color:var(--ops-line)}
-body.ops-page #app .adm-sec>summary{color:var(--ops-txt)}
-body.ops-page #app .adm-sec>summary:hover{background:var(--ops-panel2)}
-body.ops-page #app .adm-sec>summary:active{background:var(--ops-panel2)}
-body.ops-page #app .adm-sec[open]>summary{border-bottom-color:var(--ops-line)}
-body.ops-page #app .adm-sec>summary::after{color:var(--ops-dim)}
-body.ops-page #app .sticky-filters{background:var(--ops-bg-page)}
+:is(body.ops-page,body.theme-dark) #app .card{background:var(--ops-panel);border-color:var(--ops-line);box-shadow:none}
+:is(body.ops-page,body.theme-dark) #app .adm-chip{background:var(--ops-panel);border-color:var(--ops-line);color:var(--ops-txt)}
+:is(body.ops-page,body.theme-dark) #app .adm-chip:hover{background:#2563a8;border-color:#2563a8;color:#fff}
+:is(body.ops-page,body.theme-dark) #app .adm-sec{background:var(--ops-panel);border-color:var(--ops-line)}
+:is(body.ops-page,body.theme-dark) #app .adm-sec>summary{color:var(--ops-txt)}
+:is(body.ops-page,body.theme-dark) #app .adm-sec>summary:hover{background:var(--ops-panel2)}
+:is(body.ops-page,body.theme-dark) #app .adm-sec>summary:active{background:var(--ops-panel2)}
+:is(body.ops-page,body.theme-dark) #app .adm-sec[open]>summary{border-bottom-color:var(--ops-line)}
+:is(body.ops-page,body.theme-dark) #app .adm-sec>summary::after{color:var(--ops-dim)}
+:is(body.ops-page,body.theme-dark) #app .sticky-filters{background:var(--ops-bg-page)}
 
-body.ops-page #app input,body.ops-page #app select,body.ops-page #app textarea{
+:is(body.ops-page,body.theme-dark) #app input,:is(body.ops-page,body.theme-dark) #app select,:is(body.ops-page,body.theme-dark) #app textarea{
   background:var(--ops-panel2);border-color:var(--ops-line);color:var(--ops-txt)}
-body.ops-page #app input::placeholder{color:#5f6b83}
-body.ops-page #app input[type=checkbox],body.ops-page #app input[type=radio]{accent-color:var(--ops-accent)}
-body.ops-page #app .search-input,body.ops-page #app .filter-select{background:var(--ops-panel2);border-color:var(--ops-line);color:var(--ops-txt)}
-body.ops-page #app .search-input:focus,body.ops-page #app .filter-select:focus{border-color:var(--ops-accent);box-shadow:0 0 0 3px rgba(79,157,247,.18)}
+:is(body.ops-page,body.theme-dark) #app input::placeholder{color:#5f6b83}
+:is(body.ops-page,body.theme-dark) #app input[type=checkbox],:is(body.ops-page,body.theme-dark) #app input[type=radio]{accent-color:var(--ops-accent)}
+:is(body.ops-page,body.theme-dark) #app .search-input,:is(body.ops-page,body.theme-dark) #app .filter-select{background:var(--ops-panel2);border-color:var(--ops-line);color:var(--ops-txt)}
+:is(body.ops-page,body.theme-dark) #app .search-input:focus,:is(body.ops-page,body.theme-dark) #app .filter-select:focus{border-color:var(--ops-accent);box-shadow:0 0 0 3px rgba(79,157,247,.18)}
 
-body.ops-page #app table.list{background:var(--ops-panel);color:var(--ops-txt)}
-body.ops-page #app table.list th{background:var(--ops-panel2);color:var(--ops-txt);border-color:var(--ops-line)}
-body.ops-page #app table.list td{border-color:var(--ops-line);color:var(--ops-txt)}
-body.ops-page #app table.list tr.click:hover{background:var(--ops-panel2)}
+:is(body.ops-page,body.theme-dark) #app table.list{background:var(--ops-panel);color:var(--ops-txt)}
+:is(body.ops-page,body.theme-dark) #app table.list th{background:var(--ops-panel2);color:var(--ops-txt);border-color:var(--ops-line)}
+:is(body.ops-page,body.theme-dark) #app table.list td{border-color:var(--ops-line);color:var(--ops-txt)}
+:is(body.ops-page,body.theme-dark) #app table.list tr.click:hover{background:var(--ops-panel2)}
 /* 停止中アカウントの行(元は#fafafa/#999という明るい背景+薄文字。ダークテーブルの中に
    ほぼ白い行が浮いて見える不具合が実際に報告されたため、暗色テーブルに合わせて上書きする) */
-body.ops-page #app tr.is-suspended{background:var(--ops-panel2);color:var(--ops-dim)}
-body.ops-page #app tr.is-suspended td{color:var(--ops-dim)}
-body.ops-page #app .sched-wrap{background:var(--ops-panel);border-color:var(--ops-line)}
-body.ops-page #app .list-scroll{background:transparent}
+:is(body.ops-page,body.theme-dark) #app tr.is-suspended{background:var(--ops-panel2);color:var(--ops-dim)}
+:is(body.ops-page,body.theme-dark) #app tr.is-suspended td{color:var(--ops-dim)}
+:is(body.ops-page,body.theme-dark) #app .sched-wrap{background:var(--ops-panel);border-color:var(--ops-line)}
+:is(body.ops-page,body.theme-dark) #app .list-scroll{background:transparent}
 
-body.ops-page #app .form-grid label{color:var(--ops-txt)}
+:is(body.ops-page,body.theme-dark) #app .form-grid label{color:var(--ops-txt)}
 
 /* --ops-accentそのまま(#4f9df7)だと白文字とのコントラストが2.8:1でWCAG AA(4.5:1)未達のため、
    ボタン背景だけ一段暗い青にする(リンク・アイコン等の--ops-accentは暗い背景に対して使うので
    そちらは変更不要)。 */
-body.ops-page #app .btn{background:#2563a8;color:#fff;box-shadow:none}
-body.ops-page #app .btn.gold{background:var(--ops-gold);color:#1b2333}
-body.ops-page #app .btn.ghost{background:var(--ops-panel2);color:var(--ops-txt);border-color:var(--ops-line)}
-@media(hover:hover){ body.ops-page #app .btn.ghost:not(:disabled):hover{background:#233049;border-color:var(--ops-accent)} }
-body.ops-page #app .loading-box{color:var(--ops-dim)}
-body.ops-page #app .btn.danger{background:var(--ops-danger)}
+:is(body.ops-page,body.theme-dark) #app .btn{background:#2563a8;color:#fff;box-shadow:none}
+:is(body.ops-page,body.theme-dark) #app .btn.gold{background:var(--ops-gold);color:#1b2333}
+:is(body.ops-page,body.theme-dark) #app .btn.ghost{background:var(--ops-panel2);color:var(--ops-txt);border-color:var(--ops-line)}
+@media(hover:hover){ :is(body.ops-page,body.theme-dark) #app .btn.ghost:not(:disabled):hover{background:#233049;border-color:var(--ops-accent)} }
+:is(body.ops-page,body.theme-dark) #app .loading-box{color:var(--ops-dim)}
+:is(body.ops-page,body.theme-dark) #app .btn.danger{background:var(--ops-danger)}
 
-body.ops-page #app .msg.ok{background:rgba(63,185,80,.14);color:var(--ops-ok)}
-body.ops-page #app .msg.err{background:rgba(248,81,73,.14);color:var(--ops-danger)}
+:is(body.ops-page,body.theme-dark) #app .msg.ok{background:rgba(63,185,80,.14);color:var(--ops-ok)}
+:is(body.ops-page,body.theme-dark) #app .msg.err{background:rgba(248,81,73,.14);color:var(--ops-danger)}
 
-body.ops-page #app .tag.handler{background:var(--ops-gold);color:#1b2333}
-body.ops-page #app .tag.pending{background:rgba(210,153,34,.18);color:var(--ops-warn)}
-body.ops-page #app .tag.checked{background:rgba(63,185,80,.16);color:var(--ops-ok)}
-body.ops-page #app .tag.acquired{background:rgba(63,185,80,.16);color:var(--ops-ok)}
-body.ops-page #app .tag.matched{background:rgba(248,81,73,.16);color:var(--ops-danger)}
-body.ops-page #app .tag.suspended{background:#4b5670;color:#fff}
+:is(body.ops-page,body.theme-dark) #app .tag.handler{background:var(--ops-gold);color:#1b2333}
+:is(body.ops-page,body.theme-dark) #app .tag.pending{background:rgba(210,153,34,.18);color:var(--ops-warn)}
+:is(body.ops-page,body.theme-dark) #app .tag.checked{background:rgba(63,185,80,.16);color:var(--ops-ok)}
+:is(body.ops-page,body.theme-dark) #app .tag.acquired{background:rgba(63,185,80,.16);color:var(--ops-ok)}
+:is(body.ops-page,body.theme-dark) #app .tag.matched{background:rgba(248,81,73,.16);color:var(--ops-danger)}
+:is(body.ops-page,body.theme-dark) #app .tag.suspended{background:#4b5670;color:#fff}
 
-body.ops-page #app .dcard{background:var(--ops-panel);border-color:var(--ops-line);box-shadow:none}
-body.ops-page #app .dcard.is-suspended{background:var(--ops-panel2)}
-body.ops-page #app .dcard-head{border-bottom-color:var(--ops-line)}
-body.ops-page #app .dcard-title{color:var(--ops-txt)}
-body.ops-page #app .dcard-sub{color:var(--ops-dim)}
-body.ops-page #app .dk{color:var(--ops-dim)}
-body.ops-page #app .dv{color:var(--ops-txt)}
+:is(body.ops-page,body.theme-dark) #app .dcard{background:var(--ops-panel);border-color:var(--ops-line);box-shadow:none}
+:is(body.ops-page,body.theme-dark) #app .dcard.is-suspended{background:var(--ops-panel2)}
+:is(body.ops-page,body.theme-dark) #app .dcard-head{border-bottom-color:var(--ops-line)}
+:is(body.ops-page,body.theme-dark) #app .dcard-title{color:var(--ops-txt)}
+:is(body.ops-page,body.theme-dark) #app .dcard-sub{color:var(--ops-dim)}
+:is(body.ops-page,body.theme-dark) #app .dk{color:var(--ops-dim)}
+:is(body.ops-page,body.theme-dark) #app .dv{color:var(--ops-txt)}
 
-body.ops-page #app .wage-tbl th{background:var(--ops-panel2);color:var(--ops-txt)}
-body.ops-page #app .wage-tbl th,body.ops-page #app .wage-tbl td{border-color:var(--ops-line)}
-body.ops-page #app .wage-in{background:var(--ops-panel2);border-color:var(--ops-line);color:var(--ops-txt)}
+:is(body.ops-page,body.theme-dark) #app .wage-tbl th{background:var(--ops-panel2);color:var(--ops-txt)}
+:is(body.ops-page,body.theme-dark) #app .wage-tbl th,:is(body.ops-page,body.theme-dark) #app .wage-tbl td{border-color:var(--ops-line)}
+:is(body.ops-page,body.theme-dark) #app .wage-in{background:var(--ops-panel2);border-color:var(--ops-line);color:var(--ops-txt)}
 
-body.ops-page #app .rto-type-badge{background:#2563a8}
+:is(body.ops-page,body.theme-dark) #app .rto-type-badge{background:#2563a8}
 
-body.ops-page #app .li-month-row{background:var(--ops-panel);border-color:var(--ops-line)}
-body.ops-page #app .li-pending .li-state-badge{background:rgba(210,153,34,.18);color:var(--ops-warn)}
-body.ops-page #app .li-done .li-state-badge{background:rgba(63,185,80,.16);color:var(--ops-ok)}
-body.ops-page #app .li-partial .li-state-badge{background:rgba(79,157,247,.18);color:var(--ops-accent)}
+:is(body.ops-page,body.theme-dark) #app .li-month-row{background:var(--ops-panel);border-color:var(--ops-line)}
+:is(body.ops-page,body.theme-dark) #app .li-pending .li-state-badge{background:rgba(210,153,34,.18);color:var(--ops-warn)}
+:is(body.ops-page,body.theme-dark) #app .li-done .li-state-badge{background:rgba(63,185,80,.16);color:var(--ops-ok)}
+:is(body.ops-page,body.theme-dark) #app .li-partial .li-state-badge{background:rgba(79,157,247,.18);color:var(--ops-accent)}
 
-body.ops-page #app .ios-toggle-track{background:var(--ops-panel2)}
-body.ops-page #app .ios-toggle input:checked + .ios-toggle-track{background:var(--ops-gold)}
+:is(body.ops-page,body.theme-dark) #app .ios-toggle-track{background:var(--ops-panel2)}
+:is(body.ops-page,body.theme-dark) #app .ios-toggle input:checked + .ios-toggle-track{background:var(--ops-gold)}
+
+/* ===== ダークモード(全画面共通トグル) =====
+   上の「管理者専用画面の再配色」ブロックは body.ops-page/body.theme-dark 両方に効くよう
+   既に共通化してあるので、.card/table.list/.btn/.tag等の主要コンポーネントは追加対応不要。
+   ここでは、ops-page対象画面には元々出てこなかったコンポーネント(通常画面のカレンダー・
+   スマホ用カード・ホーム画面カード等)と、var(--ink)を直書きしている見出し類だけを追加で
+   ダーク化する。 */
+:is(body.ops-page,body.theme-dark) #app h2,
+:is(body.ops-page,body.theme-dark) #app .login-card h1,
+:is(body.ops-page,body.theme-dark) #app .month-nav .mtitle,
+:is(body.ops-page,body.theme-dark) #app .kv dt,
+:is(body.ops-page,body.theme-dark) #app .m-dnum,
+:is(body.ops-page,body.theme-dark) #app .m-sitename,
+:is(body.ops-page,body.theme-dark) #app .bulk-head,
+:is(body.ops-page,body.theme-dark) #app .bk-person-head b,
+:is(body.ops-page,body.theme-dark) #app .st-date,
+:is(body.ops-page,body.theme-dark) #app .st-site-name,
+:is(body.ops-page,body.theme-dark) #app .cf-title,
+:is(body.ops-page,body.theme-dark) #app .sum-stat .sum-num,
+:is(body.ops-page,body.theme-dark) #app .sched tr.is-today td.day,
+:is(body.ops-page,body.theme-dark) #app .sched-mobile .m-day.is-today .m-dnum,
+:is(body.ops-page,body.theme-dark) #app .sum-filter b,
+:is(body.ops-page,body.theme-dark) #app .sum-card .sc-name,
+:is(body.ops-page,body.theme-dark) #app .sum-card .sc-stat b,
+:is(body.ops-page,body.theme-dark) #app .home-day-label,
+:is(body.ops-page,body.theme-dark) #app .rank-track li.current
+{color:var(--ops-txt)}
+:is(body.ops-page,body.theme-dark) #app .btn.ghost{background:var(--ops-panel2)}
+
+/* ホーム画面のショートカットカード */
+:is(body.ops-page,body.theme-dark) #app .home-menu-btn{background:var(--ops-panel);border-color:var(--ops-line);color:var(--ops-txt)}
+:is(body.ops-page,body.theme-dark) #app .home-menu-add{border-color:var(--ops-line);color:var(--ops-dim)}
+:is(body.ops-page,body.theme-dark) #app .home-menu-add:hover{background:var(--ops-panel2);color:var(--ops-txt)}
+:is(body.ops-page,body.theme-dark) #app .home-menu-section-label::after{background:var(--ops-line)}
+:is(body.ops-page,body.theme-dark) #app .home-stat{background:var(--ops-panel2)}
+:is(body.ops-page,body.theme-dark) #app .home-stat:hover{background:var(--ops-panel)}
+:is(body.ops-page,body.theme-dark) #app .home-stat-label{color:var(--ops-txt)}
+
+/* スケジュール表のカレンダー各セル(PC表・スマホカードの両方) */
+:is(body.ops-page,body.theme-dark) #app .cell-work{background:var(--ops-panel)}
+:is(body.ops-page,body.theme-dark) #app .cell-off,
+:is(body.ops-page,body.theme-dark) #app .cell-paid{background:var(--ops-panel2);color:var(--ops-dim)}
+:is(body.ops-page,body.theme-dark) #app .cell-x{background:rgba(248,81,73,.16);color:var(--ops-danger)}
+:is(body.ops-page,body.theme-dark) #app .cell-ok{background:rgba(63,185,80,.16);color:var(--ops-ok)}
+:is(body.ops-page,body.theme-dark) #app .cell-none{background:var(--ops-bg-page);color:var(--ops-line)}
+:is(body.ops-page,body.theme-dark) #app .cell-site-link:hover{background:var(--ops-panel2)}
+
+/* スマホ用 日リスト・汎用カード */
+:is(body.ops-page,body.theme-dark) #app .m-day{background:var(--ops-panel);border-color:var(--ops-line)}
+:is(body.ops-page,body.theme-dark) #app .m-date{background:var(--ops-panel2);border-color:var(--ops-line)}
+:is(body.ops-page,body.theme-dark) #app .m-date.sat{background:rgba(79,157,247,.14)}
+:is(body.ops-page,body.theme-dark) #app .m-date.sun{background:rgba(248,81,73,.14)}
+:is(body.ops-page,body.theme-dark) #app .m-dwd,
+:is(body.ops-page,body.theme-dark) #app .m-none,
+:is(body.ops-page,body.theme-dark) #app .m-k{color:var(--ops-dim)}
+:is(body.ops-page,body.theme-dark) #app .m-site{background:var(--ops-panel2);border-color:var(--ops-line)}
+:is(body.ops-page,body.theme-dark) #app .m-v{color:var(--ops-txt)}
+:is(body.ops-page,body.theme-dark) #app .dscore span,
+:is(body.ops-page,body.theme-dark) #app .chip{background:var(--ops-panel2);border-color:var(--ops-line);color:var(--ops-txt)}
+:is(body.ops-page,body.theme-dark) #app .section-label{background:var(--ops-panel2);color:var(--ops-txt)}
+:is(body.ops-page,body.theme-dark) #app .pick-btn{background:var(--ops-panel2);border-color:var(--ops-line);color:var(--ops-txt)}
+:is(body.ops-page,body.theme-dark) #app .pl-row{border-bottom-color:var(--ops-line)}
+:is(body.ops-page,body.theme-dark) #app .pl-row:hover{background:var(--ops-panel2)}
+:is(body.ops-page,body.theme-dark) #app .pl-row.pl-active{background:rgba(224,184,74,.22)}
+
+/* モーダル・完了ポップアップ・ドロワーは #app の外側(#modal-layer/body直下)にあるため、
+   #appを対象にした上のルールでは触れられない。また、ops-page(常設ダーク画面)では
+   「暗いページの上に浮く明るいモーダル」を意図的な意匠として維持したいので、モーダルの
+   ダーク化はbody.theme-dark(ユーザーが選んだ時)限定にする。#modal-layer内には.card/
+   table.list/.btn/.tag/.dcard等、#app側と同じ共通コンポーネントが出てくることがあるため、
+   ここだけ同じルールをbody.theme-dark #modal-layer向けに個別に用意する
+   (body.ops-pageと合成すると「白いモーダルの中に暗いカードが浮く」事故になるため、
+   :is(#app,#modal-layer)のようにまとめて対象を広げることはしない)。 */
+body.theme-dark #modal-layer{color:var(--ops-txt)}
+body.theme-dark #modal-layer .modal{background:rgba(21,29,44,.97)}
+body.theme-dark #modal-layer h2,
+body.theme-dark #modal-layer h3,
+body.theme-dark #modal-layer .kv dt{color:var(--ops-txt);border-bottom-color:var(--ops-gold)}
+body.theme-dark #modal-layer .muted{color:var(--ops-dim)}
+body.theme-dark #modal-layer a{color:var(--ops-accent)}
+body.theme-dark #modal-layer .close-x{color:var(--ops-dim)}
+body.theme-dark #modal-layer .close-x:hover{color:var(--ops-txt)}
+body.theme-dark #modal-layer .popup-msg{color:var(--ops-txt)}
+body.theme-dark #modal-layer input:not([type=hidden]),
+body.theme-dark #modal-layer select,
+body.theme-dark #modal-layer textarea{background:var(--ops-panel2);border-color:var(--ops-line);color:var(--ops-txt)}
+body.theme-dark #modal-layer .card{background:var(--ops-panel);border-color:var(--ops-line);box-shadow:none}
+body.theme-dark #modal-layer table.list{background:var(--ops-panel);color:var(--ops-txt)}
+body.theme-dark #modal-layer table.list th{background:var(--ops-panel2);color:var(--ops-txt);border-color:var(--ops-line)}
+body.theme-dark #modal-layer table.list td{border-color:var(--ops-line);color:var(--ops-txt)}
+body.theme-dark #modal-layer .btn.ghost{background:var(--ops-panel2);color:var(--ops-txt);border-color:var(--ops-line)}
+body.theme-dark #modal-layer .dcard{background:var(--ops-panel);border-color:var(--ops-line);box-shadow:none}
+body.theme-dark #modal-layer .dcard-title{color:var(--ops-txt)}
+body.theme-dark #modal-layer .dcard-sub,
+body.theme-dark #modal-layer .dk{color:var(--ops-dim)}
+body.theme-dark #modal-layer .dv{color:var(--ops-txt)}
+body.theme-dark #modal-layer .bulk-members{border-color:var(--ops-line)}
+body.theme-dark #modal-layer .tag.handler{background:var(--ops-gold);color:#1b2333}
+body.theme-dark #modal-layer .tag.pending{background:rgba(210,153,34,.18);color:var(--ops-warn)}
+body.theme-dark #modal-layer .tag.checked,
+body.theme-dark #modal-layer .tag.acquired{background:rgba(63,185,80,.16);color:var(--ops-ok)}
+body.theme-dark #modal-layer .tag.matched{background:rgba(248,81,73,.16);color:var(--ops-danger)}
+body.theme-dark #modal-layer .section-label{background:var(--ops-panel2);color:var(--ops-txt)}
+body.theme-dark #modal-layer .pick-btn{background:var(--ops-panel2);border-color:var(--ops-line);color:var(--ops-txt)}
+body.theme-dark #modal-layer .pl-row{border-bottom-color:var(--ops-line)}
+body.theme-dark #modal-layer .pl-row:hover{background:var(--ops-panel2)}
+body.theme-dark #modal-layer .pl-row.pl-active{background:rgba(224,184,74,.22)}
+
+body.theme-dark .drawer{background:rgba(21,29,44,.94)}
+body.theme-dark .drawer-head{background:var(--ops-bg-page)}
+body.theme-dark .drawer-section{background:var(--ops-panel2);color:var(--ops-dim);border-bottom-color:var(--ops-line)}
+body.theme-dark .drawer-link{color:var(--ops-txt);border-bottom-color:var(--ops-line)}
+body.theme-dark .drawer-link:hover{background:var(--ops-panel2)}
+body.theme-dark .drawer-link:active{background:var(--ops-panel)}
+body.theme-dark .drawer-link.active{background:rgba(224,184,74,.14);color:var(--ops-gold);box-shadow:inset 4px 0 0 var(--ops-gold)}
+body.theme-dark .drawer-link.danger{color:var(--ops-danger)}
+body.theme-dark .drawer-sep{background:var(--ops-line)}
+body.theme-dark .drawer-sub,
+body.theme-dark .drawer-sublink{background:var(--ops-panel2)}
+body.theme-dark .drawer-sublink:hover{background:var(--ops-panel)}
+body.theme-dark .drawer-sublink.active{background:rgba(224,184,74,.14)}
+
+/* ダークモード切替スイッチ(ドロワー最下部) */
+.theme-switch{display:flex;align-items:center;justify-content:space-between;width:100%;padding:13px 18px;border:none;background:none;font-size:14.5px;color:#222;cursor:pointer;border-bottom:1px solid #f0eee7;-webkit-tap-highlight-color:transparent}
+.theme-switch:hover{background:#f5f3ec}
+body.theme-dark .theme-switch{color:var(--ops-txt);border-bottom-color:var(--ops-line)}
+body.theme-dark .theme-switch:hover{background:var(--ops-panel2)}
