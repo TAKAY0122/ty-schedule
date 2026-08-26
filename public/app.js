@@ -621,6 +621,11 @@ function closeModal(){
 // 「一覧から選ぶ」を押さなくても入力欄への手入力はそのまま使えるし、現場名・会場のどちらか
 // だけ選んで、もう片方は手入力のまま、という使い方もできる(2026年8月追加)。
 // ↑↓キーで候補を移動、Enterで選択、Escapeで選ばずに閉じられる(選ばず閉じた場合はnullを返す)。
+// 既に別のモーダル(現場一覧のまとめて変更等)を開いた状態からこのピッカーを開くことがあるため、
+// 共通のmodal()/closeModal()(#modal-layerを丸ごと上書き・空にする)は使わず、document.body直下に
+// 専用のオーバーレイを別途スタックして表示する(2026年8月修正: 元々modal()を使っていた際、
+// ピッカーを開いた時点で背後のモーダルのDOMごと消えてしまい、選択後に「元のモーダルへ戻れず
+// 背景のページに戻ったように見える」不具合があった)。
 function openPickList(opt){
   return new Promise(async (resolve) => {
     let rows;
@@ -628,33 +633,83 @@ function openPickList(opt){
     catch(e){ popup(e.message,'error'); resolve(null); return; }
     const items = rows.map(r => ({ label: opt.mapLabel(r), sub: opt.mapSub ? opt.mapSub(r) : '' })).filter(it=>it.label);
     let filtered = items, activeIdx = items.length ? 0 : -1, settled = false;
-    const finish = (val) => { if(settled) return; settled = true; resolve(val); };
+
+    const wasLocked = document.body.classList.contains('modal-open');
+    if(!wasLocked) lockBodyScroll();
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-bg';
+    overlay.style.zIndex = '300'; // 背後に既存モーダルがあってもその上に確実に重なるように
+    overlay.innerHTML = `<div class="modal modal-animate-in"><button class="close-x">${icon('x',{size:'12px'})}</button>
+      <h3>${opt.title}</h3>
+      <input id="pl-q" placeholder="絞り込み(${items.length}件)" autocomplete="off" style="width:100%;margin-bottom:8px">
+      <div id="pl-list" style="max-height:340px;overflow-y:auto;border:1px solid var(--line);border-radius:8px"></div>
+      <div class="muted" id="pl-empty" style="display:none;padding:12px;text-align:center">一致する項目がありません</div></div>`;
+    document.body.appendChild(overlay);
+    const box = overlay.querySelector('.modal');
+
+    const fitToViewport = () => {
+      if(window.visualViewport){ overlay.style.height = window.visualViewport.height + 'px'; overlay.style.top = window.visualViewport.offsetTop + 'px'; }
+      else overlay.style.height = window.innerHeight + 'px';
+    };
+    fitToViewport();
+    if(window.visualViewport) window.visualViewport.addEventListener('resize', fitToViewport);
+
+    const cleanup = () => {
+      document.removeEventListener('keydown', onKeydown, true);
+      if(window.visualViewport) window.visualViewport.removeEventListener('resize', fitToViewport);
+      overlay.remove();
+      if(!wasLocked) unlockBodyScroll();
+    };
+    const finish = (val) => { if(settled) return; settled = true; cleanup(); resolve(val); };
+
+    overlay.querySelector('.close-x').onclick = () => finish(null);
+    overlay.onclick = (e) => { if(e.target === overlay) finish(null); };
+    // Escape/Enter/Tabは、背後に既存モーダルがあってもこのピッカー側だけに効かせたいため、
+    // documentのcapture段階でグローバルのモーダル用キー操作(#modal-layer向け)より先に処理し、
+    // stopImmediatePropagation()でそちらへの伝播を止める。
+    const onKeydown = (e) => {
+      if(e.key === 'Escape'){ e.preventDefault(); e.stopImmediatePropagation(); finish(null); return; }
+      if(e.key === 'Enter'){
+        const tag = e.target.tagName;
+        if(tag === 'TEXTAREA' || tag === 'BUTTON' || tag === 'A' || tag === 'SELECT') return;
+        e.stopImmediatePropagation();
+        const primary = box.querySelector('[data-enter-default]');
+        if(primary){ e.preventDefault(); primary.click(); }
+        return;
+      }
+      if(e.key === 'Tab'){
+        const focusables = _modalFocusables(box);
+        if(!focusables.length) return;
+        e.stopImmediatePropagation();
+        const first = focusables[0], last = focusables[focusables.length-1];
+        if(e.shiftKey && document.activeElement === first){ e.preventDefault(); last.focus(); }
+        else if(!e.shiftKey && document.activeElement === last){ e.preventDefault(); first.focus(); }
+      }
+    };
+    document.addEventListener('keydown', onKeydown, true);
+    requestAnimationFrame(() => { const q = box.querySelector('#pl-q'); if(q) q.focus(); });
+
     const renderList = () => {
-      const listEl = $('#pl-list'), emptyEl = $('#pl-empty');
+      const listEl = box.querySelector('#pl-list'), emptyEl = box.querySelector('#pl-empty');
       if(!listEl) return;
       if(!filtered.length){ listEl.innerHTML=''; if(emptyEl) emptyEl.style.display=''; return; }
       if(emptyEl) emptyEl.style.display = 'none';
       listEl.innerHTML = filtered.map((it,i) => `<div class="pl-row ${i===activeIdx?'pl-active':''}" role="option" data-i="${i}" ${i===activeIdx?'data-enter-default':''}>
         <span class="pl-label">${h(it.label)}</span>${it.sub?`<span class="pl-sub muted">${h(it.sub)}</span>`:''}
       </div>`).join('');
-      listEl.querySelectorAll('.pl-row').forEach(row => row.onclick = () => { finish(filtered[Number(row.dataset.i)].label); closeModal(); });
+      listEl.querySelectorAll('.pl-row').forEach(row => row.onclick = () => finish(filtered[Number(row.dataset.i)].label));
       const activeEl = listEl.querySelector('.pl-active');
       if(activeEl) activeEl.scrollIntoView({block:'nearest'});
     };
-    modal(`<h3>${opt.title}</h3>
-      <input id="pl-q" placeholder="絞り込み(${items.length}件)" autocomplete="off" style="width:100%;margin-bottom:8px">
-      <div id="pl-list" style="max-height:340px;overflow-y:auto;border:1px solid var(--line);border-radius:8px"></div>
-      <div class="muted" id="pl-empty" style="display:none;padding:12px;text-align:center">一致する項目がありません</div>`);
-    _onModalClose = () => finish(null);
     renderList();
-    const qInput = $('#pl-q');
+    const qInput = box.querySelector('#pl-q');
     qInput.oninput = () => {
       const q = qInput.value.trim().toLowerCase();
       filtered = q ? items.filter(it=>it.label.toLowerCase().includes(q)) : items;
       activeIdx = filtered.length ? 0 : -1;
       renderList();
     };
-    // ↑↓Enterはモーダル共通のキー操作(document keydown)より先に、この入力欄側で処理する
+    // ↑↓は、モーダル共通のキー操作(document keydown)より先にこの入力欄側で処理する
     // (Enterはグローバル側だと[data-enter-default]の行をクリックする実装になっており、
     // それ自体は活かしつつ、↑↓はここでリスト内の移動として扱う)
     qInput.onkeydown = (e) => {
