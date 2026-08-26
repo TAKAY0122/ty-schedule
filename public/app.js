@@ -686,6 +686,27 @@ function wirePickButtons(root){
   });
 }
 
+// 一括変更モーダルで、選択した対象に含まれる表記ゆれの候補から「どれに統一するか」を
+// ラジオボタンで選べるようにする軽量ヘルパー。手入力・pickBtnHtmlの「一覧から選ぶ」とも共存し、
+// ラジオを選ぶと対象の入力欄にそのまま反映される(候補が1件以下なら選ぶ意味がないため何も出さない)。
+function radioPickHtml(name, targetId, candidates, selected){
+  if(candidates.length < 2) return '';
+  return `<div class="muted" style="font-size:11.5px;margin:2px 0 6px">候補から統一先を選ぶ:</div>
+    <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px">
+      ${candidates.map(v=>`<label style="display:flex;align-items:center;gap:8px;font-size:12px;padding:5px 8px;background:#faf9f6;border:1px solid var(--line);border-radius:6px;cursor:pointer">
+        <input type="radio" name="${name}" data-radio-target="${targetId}" value="${h(v)}" ${v===selected?'checked':''}>
+        <span>${h(v)}</span>
+      </label>`).join('')}
+    </div>`;
+}
+function wireRadioPicks(root){
+  (root||document).querySelectorAll('input[type=radio][data-radio-target]').forEach(r => {
+    if(r.dataset.radioWired) return;
+    r.dataset.radioWired = '1';
+    r.onchange = () => { const input = document.getElementById(r.dataset.radioTarget); if(input && r.checked) input.value = r.value; };
+  });
+}
+
 // ボタンクリックで始まる非同期処理の間、ボタンをスピナー付きの無効状態にする共通ヘルパー。
 // 保存・送信系のボタンにひとまとめに適用することで、処理中であることを視覚的に伝える。
 async function withLoading(btn, fn){
@@ -3619,20 +3640,28 @@ function openSiteBulkRename(targets, onDone, opt={}){
   const mode = opt.fieldsMode || 'both';
   const showSite = mode !== 'venue', showVenue = mode !== 'site';
   const title = opt.title || `選択した${targets.length}件の現場名・会場をまとめて変更`;
+  const siteCandidates = [...new Set(targets.map(s=>s.site).filter(Boolean))];
+  const venueCandidates = [...new Set(targets.map(s=>s.venue).filter(Boolean))];
   modal(`<h3>${icon('edit',{size:'15px'})} ${h(title)}</h3>
     <div class="muted" style="font-size:12px;margin-bottom:10px">対象(${targets.length}件):</div>
     <div style="max-height:30vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-bottom:12px">
       ${targets.map(s=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:#faf9f6;border:1px solid var(--line);border-radius:6px">${h(s.date)} ${h(s.site)}${s.venue?` (${h(s.venue)})`:''} ・${s.cnt}名</div>`).join('')}
     </div>
-    ${showSite?`<label style="display:block;margin-bottom:10px">新しい現場名<br>
-      <input type="text" id="sbr-site" value="${h(first.site)}" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;margin-top:4px">
-    </label>`:''}
-    ${showVenue?`<label style="display:block;margin-bottom:10px">新しい会場<br>
-      <input type="text" id="sbr-venue" value="${h(first.venue||'')}" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;margin-top:4px">
-    </label>`:''}
+    ${showSite?`<div style="margin-bottom:10px">
+      <div style="margin-bottom:4px">新しい現場名</div>
+      ${radioPickHtml('sbr-site-pick','sbr-site', siteCandidates, first.site)}
+      <span class="pick-wrap"><input type="text" id="sbr-site" value="${h(first.site)}" style="padding:8px;border:1px solid var(--line);border-radius:8px">${pickBtnHtml('sbr-site','artist')}</span>
+    </div>`:''}
+    ${showVenue?`<div style="margin-bottom:10px">
+      <div style="margin-bottom:4px">新しい会場</div>
+      ${radioPickHtml('sbr-venue-pick','sbr-venue', venueCandidates, first.venue||'')}
+      <span class="pick-wrap"><input type="text" id="sbr-venue" value="${h(first.venue||'')}" style="padding:8px;border:1px solid var(--line);border-radius:8px">${pickBtnHtml('sbr-venue','venue')}</span>
+    </div>`:''}
     ${(showSite&&showVenue)?`<div class="muted" style="font-size:11.5px;margin-bottom:12px">どちらかを空欄のままにすると、その項目は変更しません(現場名だけ・会場だけの統一も可能です)。</div>`:''}
     <button class="btn gold" id="sbr-run">変更を適用する</button>
     <div id="sbr-msg" class="muted" style="margin-top:10px"></div>`);
+  wirePickButtons($('#modal-layer'));
+  wireRadioPicks($('#modal-layer'));
   $('#sbr-run').onclick = async () => {
     const newSite = showSite ? $('#sbr-site').value.trim() : '';
     const newVenue = showVenue ? $('#sbr-venue').value.trim() : '';
@@ -3871,11 +3900,15 @@ function openVenueBulkRename(venues, onDone){
     <div style="max-height:30vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-bottom:12px">
       ${venues.map(v=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:#faf9f6;border:1px solid var(--line);border-radius:6px">${h(v)}</div>`).join('')}
     </div>` : ''}
-    <label style="display:block;margin-bottom:10px">新しい会場名<br>
-      <input type="text" id="vbr-venue" value="${h(venues[0])}" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;margin-top:4px">
-    </label>
+    <div style="margin-bottom:10px">
+      <div style="margin-bottom:4px">新しい会場名</div>
+      ${radioPickHtml('vbr-venue-pick','vbr-venue', venues, venues[0])}
+      <span class="pick-wrap"><input type="text" id="vbr-venue" value="${h(venues[0])}" style="padding:8px;border:1px solid var(--line);border-radius:8px">${pickBtnHtml('vbr-venue','venue')}</span>
+    </div>
     <button class="btn gold" id="vbr-run">変更を適用する</button>
     <div id="vbr-msg" class="muted" style="margin-top:10px"></div>`);
+  wirePickButtons($('#modal-layer'));
+  wireRadioPicks($('#modal-layer'));
   $('#vbr-run').onclick = async () => {
     const newVenue = $('#vbr-venue').value.trim();
     if(!newVenue){ $('#vbr-msg').textContent = '新しい会場名を入力してください'; return; }
@@ -4387,12 +4420,16 @@ function openArtistBulkRename(artists, onDone){
     <div style="max-height:30vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-bottom:12px">
       ${artists.map(a=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:#faf9f6;border:1px solid var(--line);border-radius:6px">${h(a)}</div>`).join('')}
     </div>` : ''}
-    <label style="display:block;margin-bottom:10px">新しい公演名<br>
-      <input type="text" id="abr-artist" value="${h(artists[0])}" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;margin-top:4px">
-    </label>
+    <div style="margin-bottom:10px">
+      <div style="margin-bottom:4px">新しい公演名</div>
+      ${radioPickHtml('abr-artist-pick','abr-artist', artists, artists[0])}
+      <span class="pick-wrap"><input type="text" id="abr-artist" value="${h(artists[0])}" style="padding:8px;border:1px solid var(--line);border-radius:8px">${pickBtnHtml('abr-artist','artist')}</span>
+    </div>
     <div class="muted" style="font-size:12px;margin-bottom:10px">各現場の【セクション等】の表記はそのまま維持されます。</div>
     <button class="btn gold" id="abr-run">変更を適用する</button>
     <div id="abr-msg" class="muted" style="margin-top:10px"></div>`);
+  wirePickButtons($('#modal-layer'));
+  wireRadioPicks($('#modal-layer'));
   $('#abr-run').onclick = async () => {
     const newArtist = $('#abr-artist').value.trim();
     if(!newArtist){ $('#abr-msg').textContent = '新しい公演名を入力してください'; return; }
