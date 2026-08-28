@@ -2,6 +2,13 @@
 // xlsxのバイト列パース(zip展開・XML解析)は src/lib/xlsxParser.ts に切り出している
 // (env/DBに依存しない純粋なロジックのみ。2026年8月、バックエンド部分TypeScript化の第一弾)。
 import { parseXlsxBuffer } from './lib/xlsxParser.ts';
+
+interface Env {
+  DB: D1Database;
+  DAICHO: R2Bucket;
+  ASSETS: Fetcher;
+}
+
 const J = (d, s = 200) => new Response(JSON.stringify(d), { status: s, headers: { 'content-type': 'application/json;charset=utf-8' } });
 const ERR = (m, s = 400) => J({ error: m }, s);
 const LV = { member: 0, chief: 1, handler: 2, admin: 3 };
@@ -290,12 +297,13 @@ const APP_STRUCTURE_TABLE_COMMENTS = {
 // ファイル構成・依存関係(#/app-structureの「ファイル構成」タブ用。静的な説明文)
 const APP_STRUCTURE_FILES = [
   { name: 'public/index.html', role: 'エントリーポイント', desc: 'app.js・style.cssを読み込むだけの最小限のHTML。画面自体はapp.jsが全て動的に生成する。', dependsOn: [] },
-  { name: 'public/app.js', role: 'フロントエンド本体', desc: '全画面(page関数)・全モーダル(open関数)・ルーティング(location.hashの監視)を含む単一ファイル。共通api()関数経由でsrc/index.jsの全APIを呼び出す。PERM_BASE_LV/FEATURE_LABELSはsrc/index.jsのPERMS/FEATURE_KEYSと対になっており、両方に追記しないと権限判定がフロント/バックエンドで食い違う。', dependsOn: ['public/index.html', 'public/style.css'] },
+  { name: 'public/app.js', role: 'フロントエンド本体', desc: '全画面(page関数)・全モーダル(open関数)・ルーティング(location.hashの監視)を含む単一ファイル。共通api()関数経由でsrc/index.tsの全APIを呼び出す。PERM_BASE_LV/FEATURE_LABELSはsrc/index.tsのPERMS/FEATURE_KEYSと対になっており、両方に追記しないと権限判定がフロント/バックエンドで食い違う。', dependsOn: ['public/index.html', 'public/style.css'] },
   { name: 'public/style.css', role: '見た目(CSS)', desc: 'app.jsが生成するHTML全体のスタイル。ビルド工程が無いため、app.jsのクラス名と1対1で対応させる必要がある。', dependsOn: [] },
-  { name: 'src/index.js', role: 'バックエンド本体(Cloudflare Worker)', desc: 'fetch()ハンドラでAPIルーティングと静的ファイル配信、scheduled()ハンドラで4種類のcron処理を行う単一ファイル。D1(env.DB)・R2(ファイル保管用バケット)にアクセスする。', dependsOn: [] },
+  { name: 'src/index.ts', role: 'バックエンド本体(Cloudflare Worker)', desc: 'fetch()ハンドラでAPIルーティングと静的ファイル配信、scheduled()ハンドラで4種類のcron処理を行う単一ファイル。D1(env.DB)・R2(ファイル保管用バケット)にアクセスする。2026年8月にJavaScriptからTypeScript化(拡張子.js→.ts)。tsconfig.jsonはstrict:false/noImplicitAny:falseの緩い設定にしており、既存コードの動作を変えない範囲で型付けしている(全面的な厳密型付けは目的にしていない)。', dependsOn: ['src/lib/xlsxParser.ts'] },
+  { name: 'src/lib/xlsxParser.ts', role: 'xlsxバイト列パーサー', desc: 'xlsx(zip化されたOffice Open XML)をバイト列から直接パースする、env/DBに依存しない純粋なロジックだけを切り出したファイル。2026年8月、バックエンド部分TypeScript化の第一弾として、後発のsrc/index.tsのTypeScript化に先行して型付けされた。フォーマットC/AB/D固有の業務ルールはsrc/index.ts側が担う。', dependsOn: [] },
   { name: 'schema.sql', role: '新規DB構築用スキーマ', desc: 'D1データベースを新規構築する際に一度だけ流し込む、33テーブル全ての完全なCREATE TABLE定義。デプロイのたびに自動実行されるものではない(本番は既に構築済み)。', dependsOn: [] },
   { name: 'migrate-*.sql', role: '既存環境向けマイグレーション', desc: '機能追加のたびに作成する差分SQL(ALTER TABLE等)。コードのデプロイより先に本番D1へ手動実行する運用。1機能=1ファイル。', dependsOn: ['schema.sql'] },
-  { name: 'wrangler.toml', role: 'Cloudflare設定', desc: 'D1(schedule-db)・R2バインディング、Cron実行スケジュール(毎時0分)を定義する。src/index.jsのenv.DB/env経由のアクセス先を決めている。', dependsOn: [] },
+  { name: 'wrangler.toml', role: 'Cloudflare設定', desc: 'D1(schedule-db)・R2バインディング、Cron実行スケジュール(毎時0分)を定義する。src/index.tsのenv.DB/env経由のアクセス先を決めている。mainフィールドがsrc/index.tsを指し、wranglerが内蔵のesbuildでTypeScriptを直接バンドルする(別途ビルドコマンドは不要)。', dependsOn: [] },
 ];
 
 async function getSetting(env, key, def) {
@@ -563,7 +571,7 @@ async function getLockDays(env){ const v = parseInt(await getSetting(env, 'lock_
 // スプレッドシート側の内容が変わっていない日はアプリ側に一切触れない(API呼び出し削減にもなる)。
 // 逆に、スプレッドシート側の内容が変わっている日は、アプリ側が手動編集されていても新しい内容で
 // 上書きする(「予定表が更新されたのに反映されない」という事故を避けるため)。
-async function importScheduleSheet(env, source, url, editorId, fromDate, opt = {}) {
+async function importScheduleSheet(env, source, url, editorId, fromDate, opt: any = {}) {
   const meta = parseSheetUrl(url);
   if (!meta) throw new Error('スプレッドシートURLの形式が正しくありません');
   const got = await fetchXlsxSheets(meta.id);
@@ -1101,7 +1109,7 @@ async function clearAbsentSiteRegistry(env, rows) {
   return { clearedRegistrations: toDelete.length };
 }
 
-async function applyImportRows(env, rows, editorId, mode = 'replace-person-day', srcLabel = 'spreadsheet', isDaicho = false, opt = {}) {
+async function applyImportRows(env, rows, editorId, mode = 'replace-person-day', srcLabel = 'spreadsheet', isDaicho = false, opt: any = {}) {
   const ts = jstTs();
   const resolve = await loadWageResolver(env);
   const dutyMap = await loadDutyMap(env);
@@ -2008,7 +2016,7 @@ function isArrangeSheet(grid) {
 //   5行目以降: (日付列)「1日」「月」…… 各人のその日の現場名・会場名
 // 日付列がブロックごとに繰り返されるため、各人の日付は「自分より左側で最も近い日付列」から取る。
 // 「時間」列は見込み時間(実績のIN/OUTではない)なので、給与計算に影響させないため取り込まない。
-function parseFormatD(grid, ym, keywordMap, fromDate) {
+function parseFormatD(grid, ym, keywordMap, fromDate = null) {
   keywordMap = keywordMap || {};
   const cell = (r, c) => String(((grid[r] || [])[c]) == null ? '' : (grid[r] || [])[c]).trim();
   // 日付は「1日」等のテキストと、日付書式のセル(シリアル値)の両方に対応する
@@ -2086,7 +2094,7 @@ async function getFcmAccessToken(env) {
     method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=${toSign}.${sigB64}`,
   });
-  const data = await res.json();
+  const data: any = await res.json();
   if (!data.access_token) throw new Error('FCM認証失敗: ' + JSON.stringify(data));
   fcmAccessTokenCache = { token: data.access_token, expiresAt: Date.now() + (data.expires_in - 60) * 1000 };
   return data.access_token;
@@ -2228,7 +2236,7 @@ async function buildScheduleMatrixRows(env, dates, uidList) {
 // セクションごとに現場名を分けて入力している場合でも、構造的には同じ現場として日程を通しで
 // 拾いたい用途(現場の稼働表)のためのオプション。現場一覧・現場情報の「同アーティストの公演」等、
 // 【】表記ごとに別項目として扱いたい既存の呼び出し元には影響しない(既定はfalseのまま)。
-async function findGigDateRange(env, date, site, opts = {}) {
+async function findGigDateRange(env, date, site, opts: any = {}) {
   const groupByArtist = !!opts.groupByArtist;
   const siteRow = await env.DB.prepare(
     "SELECT venue FROM schedule WHERE date=? AND site=? AND type='work' LIMIT 1"
@@ -2772,7 +2780,7 @@ async function api(req, env, url) {
       fromDate = d.toISOString().slice(0, 10);
     }
     try {
-      const r = await importScheduleSheet(env, 'sched_src_' + id, src.url, me.id, fromDate, { excludeUnmanaged: !!src.exclude_unmanaged });
+      const r: any = await importScheduleSheet(env, 'sched_src_' + id, src.url, me.id, fromDate, { excludeUnmanaged: !!src.exclude_unmanaged });
       await env.DB.prepare('UPDATE sched_sources SET last_run=?, last_result=? WHERE id=?').bind(
         jstTs(), JSON.stringify({ ts: r.ts, applied: r.applied, skipped: r.skipped, unchangedPeople: r.unchangedPeople, changedPeople: r.changedPeople, error: (r.errors && r.errors[0]) || '', fullRange: !!body.fullRange, changes: r.changes || [] }), id
       ).run();
@@ -3317,7 +3325,7 @@ async function api(req, env, url) {
     const nameCache = {};
     const lockDays = await getLockDays(env);
     const ts = jstTs();
-    const notifyTargets = new Set(); // 手配チーム通知の対象(uid)を、変更があった人だけ集めて最後にまとめて送る
+    const notifyTargets = new Set<any>(); // 手配チーム通知の対象(uid)を、変更があった人だけ集めて最後にまとめて送る
     for (const a of assignments) {
       if (!(a.uid in nameCache)) { const u = await env.DB.prepare('SELECT name, rank, manager_id FROM users WHERE id=?').bind(a.uid).first(); nameCache[a.uid] = u ? { name: u.name, rank: u.rank, managerId: u.manager_id } : { name: '', rank: '', managerId: null }; }
       const uname = nameCache[a.uid].name;
@@ -4087,7 +4095,7 @@ async function api(req, env, url) {
     const rows = (await env.DB.prepare(
       "SELECT site, date, COUNT(*) AS cnt FROM schedule WHERE type='work' AND user_id=? AND site<>'' GROUP BY site, date"
     ).bind(uid).all()).results;
-    const byArtist = {};
+    const byArtist: Record<string, any> = {};
     for (const r of rows) {
       const artist = extractArtistName(r.site);
       (byArtist[artist] ||= { artist, cnt: 0, dates: new Set() });
@@ -4143,7 +4151,7 @@ async function api(req, env, url) {
     const rows = (await env.DB.prepare(
       "SELECT site, date, COUNT(*) AS cnt FROM schedule WHERE type='work' AND site<>'' GROUP BY site, date"
     ).all()).results;
-    const byArtist = {};
+    const byArtist: Record<string, any> = {};
     for (const r of rows) {
       const artist = extractArtistName(r.site);
       (byArtist[artist] ||= { artist, cnt: 0, dates: new Set() });
@@ -4439,7 +4447,7 @@ async function api(req, env, url) {
     const chiefLabel = m => m.ka === '1課' ? 'チーフ手配(1課)' : m.ka === '2課' ? 'チーフ手配(2課)' : 'チーフ手配';
 
     const groupBy = (rows, keyFn) => {
-      const map = {};
+      const map: Record<string, any[]> = {};
       for (const r of rows) { const k = keyFn(r) || '未設定'; (map[k] ||= []).push(r); }
       return Object.entries(map).map(([key, list]) => ({ key, count: list.length, ratio: rows.length ? list.length / rows.length : 0 }))
         .sort((a, b) => b.count - a.count);
@@ -4457,7 +4465,7 @@ async function api(req, env, url) {
     }
 
     // 手配担当者ごとの内訳(担当未設定は課ごとの「チーフ手配」としてまとめる)
-    const byManagerMap = {};
+    const byManagerMap: Record<string, any> = {};
     for (const m of members) {
       const key = m.manager_id ? 'm' + m.manager_id : 'chief:' + (m.ka || '未設定');
       const g = byManagerMap[key] ||= {
@@ -4567,7 +4575,7 @@ async function api(req, env, url) {
     };
 
     // ④ 気になる人(稼働サマリーと同じ判定基準)
-    const byUser = {};
+    const byUser: Record<string, any> = {};
     for (const r of monthRowsRes.results) {
       const a = byUser[r.user_id] ||= { dates: new Set(), hours: 0, overtime: 0, siteCounts: {} };
       a.hours += r.hours || 0; a.overtime += r.overtime || 0;
@@ -4575,13 +4583,13 @@ async function api(req, env, url) {
     }
     // maxStreakの計算にはdate列も要るため、別途取得(user_id, dateのみ、軽量)
     const dateRows = (await safe(env.DB.prepare("SELECT user_id, date FROM schedule WHERE type='work' AND site<>'' AND date LIKE ?").bind(month + '%').all(), emptyAll)).results;
-    const datesByUser = {};
+    const datesByUser: Record<string, any[]> = {};
     for (const r of dateRows) (datesByUser[r.user_id] ||= []).push(r.date);
     let overTotal = 0, streak = 0, few = 0, samesite = 0, overtimeCnt = 0;
     for (const [uid, a] of Object.entries(byUser)) {
       const workDays = new Set(dateRows.filter(r => String(r.user_id) === uid).map(r => r.date)).size;
       const ms = longestStreak(datesByUser[uid] || []);
-      let topCnt = 0; for (const c of Object.values(a.siteCounts)) if (c > topCnt) topCnt = c;
+      let topCnt = 0; for (const c of Object.values(a.siteCounts) as number[]) if (c > topCnt) topCnt = c;
       if (canPay && a.hours >= 100) overTotal++;
       if (ms >= 6) streak++;
       if (workDays > 0 && workDays <= 2) few++;
@@ -4677,8 +4685,8 @@ async function api(req, env, url) {
     ]);
     const rows = rowsRes.results;
     const users = usersRes.results;
-    const umap = {}; for (const u of users) umap[u.id] = u;
-    const agg = {};
+    const umap: Record<string, any> = {}; for (const u of users) umap[u.id] = u;
+    const agg: Record<string, any> = {};
     for (const r of rows) {
       const a = agg[r.user_id] ||= { dates: [], shifts: 0, hours: 0, overtime: 0, siteCounts: {} };
       a.dates.push(r.date); a.shifts++; a.hours += r.hours || 0; a.overtime += r.overtime || 0;
@@ -4691,7 +4699,7 @@ async function api(req, env, url) {
       const a = agg[u.id] || { dates: [], shifts: 0, hours: 0, overtime: 0, siteCounts: {} };
       // 今月最も多く入った現場(「同じ現場ばかり」検知用)
       let topSite = '', topSiteCount = 0;
-      for (const [site, cnt] of Object.entries(a.siteCounts)) { if (cnt > topSiteCount) { topSite = site; topSiteCount = cnt; } }
+      for (const [site, cnt] of Object.entries(a.siteCounts) as [string, number][]) { if (cnt > topSiteCount) { topSite = site; topSiteCount = cnt; } }
       return {
         uid: u.id, name: u.name, regno: u.regno, role: u.role, rank: u.rank, han: u.han, ka: u.ka || '',
         manager_id: u.manager_id,
@@ -4706,7 +4714,7 @@ async function api(req, env, url) {
       };
     });
     // 手配担当ごとの偏り(担当未設定はチーフ手配(課)単位でまとめる)
-    const byMgr = {};
+    const byMgr: Record<string, any> = {};
     for (const it of items) {
       const k = it.manager_id ? 'm' + it.manager_id : 'chief:' + (it.ka || '未設定');
       const g = byMgr[k] ||= { key: k, manager_id: it.manager_id || null, name: it.manager_name, members: 0, activeMembers: 0, workDays: 0, shifts: 0 };
@@ -5022,7 +5030,7 @@ async function api(req, env, url) {
   // ことなく、正しく元の状態まで辿り着けるようにする。
   if (method === 'POST' && path === '/history/undo-batch') {
     if (!handlerMode && !has(me, 'handler_tools')) return ERR('取り消しには手配モードが必要です', 403);
-    const ids = Array.isArray(body.ids) ? body.ids.map(Number).filter(n => n > 0) : [];
+    const ids: number[] = Array.isArray(body.ids) ? body.ids.map(Number).filter(n => n > 0) : [];
     if (!ids.length) return ERR('取り消す履歴を選択してください');
     const sorted = [...new Set(ids)].sort((a, b) => b - a);
     let okCount = 0; const failed = [];
@@ -5204,9 +5212,9 @@ async function api(req, env, url) {
       meta: {
         title: 'RB事業2課 スケジュール管理システム',
         generated: jst.toISOString().slice(0, 10),
-        stack: ['Cloudflare Workers', 'D1 (SQLite互換)', 'R2', 'Vanilla JavaScript(ビルド不要・単一ファイル構成)'],
+        stack: ['Cloudflare Workers', 'D1 (SQLite互換)', 'R2', 'バックエンド: TypeScript(wrangler内蔵esbuildでビルド)', 'フロントエンド: Vanilla JavaScript(ビルド不要・単一ファイル構成)'],
         files: {
-          backend: `src/index.js (API・cron処理を含む単一ファイル)`,
+          backend: `src/index.ts (API・cron処理を含む単一ファイル)`,
           frontend: `public/app.js (全画面・全モーダルを含む単一ファイル)`,
           css: `public/style.css`,
         },
@@ -5353,7 +5361,7 @@ async function api(req, env, url) {
 //   対象にした手動実行では、他の未選択ファイルに載っている人まで誤って休暇にしてしまうため、
 //   「保存済み全URL」を対象にした場合のみ true にすること。
 // opt.sourceLabel: daicho_archive に残す取込元ラベル。
-async function runDaichoReload(env, urls, opt = {}) {
+async function runDaichoReload(env, urls, opt: any = {}) {
   const sourceLabel = opt.sourceLabel || '台帳再取り込み';
   if (!urls.length) return { okCount: 0, ngCount: 0, totalApplied: 0, results: [], absentResult: { clearedPeople: 0, clearedDays: 0 }, incomplete: false };
 
@@ -5607,7 +5615,7 @@ async function cronRankPromotion(env) {
   return { promoted };
 }
 
-async function cronNotify(env, opt = {}) {
+async function cronNotify(env, opt: any = {}) {
   console.log('[cronNotify] start', JSON.stringify(opt));
   const enabled = await getSetting(env, 'notify_enabled', '1');
   if (enabled === '0' && !opt.force) { console.log('[cronNotify] disabled'); return { sent: 0, reason: '通知設定がOFFです' }; }
@@ -5719,7 +5727,7 @@ async function cronScheduleSources(env) {
       // fetch自体のタイムアウトに加え、パース等の処理も含めた全体に上限を設ける(二重の安全策)。
       // 1ソースが極端に重くても、cron全体・他のソースの処理を巻き込んで止めないようにするため。
       const timeoutMs = 28000;
-      const r = await Promise.race([
+      const r: any = await Promise.race([
         importScheduleSheet(env, 'sched_src_' + src.id, src.url, adminUser ? adminUser.id : 0, fromDate, { excludeUnmanaged: !!src.exclude_unmanaged }),
         new Promise((_, rej) => setTimeout(() => rej(new Error(`処理がタイムアウトしました(${timeoutMs / 1000}秒)`)), timeoutMs)),
       ]);
@@ -5751,9 +5759,9 @@ async function cronScheduleSources(env) {
 }
 
 export default {
-  async fetch(req, env) {
+  async fetch(req: Request, env: Env, ctx: ExecutionContext) {
     const url = new URL(req.url);
-    const withSecurityHeaders = (resp) => {
+    const withSecurityHeaders = (resp: Response) => {
       const headers = new Headers(resp.headers);
       // クリックジャッキング対策(他サイトのiframeにこのアプリを埋め込ませない)
       headers.set('X-Frame-Options', 'DENY');
@@ -5791,7 +5799,7 @@ export default {
   // 順番に全部実行していたが、台帳・予定表の取込が重くなった際に1回の起動に処理が
   // 集中し、Cloudflare側の自動リトライで数十分後にようやく完了する遅延が本番で
   // 実際に発生したため、この構成に変更した(2026年8月)。
-  async scheduled(event, env) {
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
     const startTs = jstTs();
     console.log(`[scheduled] cron=${event.cron} start at ${startTs}`);
     try {

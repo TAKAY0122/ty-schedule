@@ -155,7 +155,7 @@ const LV = { member:0, chief:1, handler:2, admin:3 };
 // 各権限の基準レベル(どのロールから標準で使えるか)。ここに書いてあるのはコード上の既定値で、
 // 管理者がアプリ構造ビューアの権限マトリクスから変更した場合は、ログイン時に /me が返す
 // permBaseLv(サーバー側の実効値)で上書きされる。サーバーのhas()と判定を一致させるための仕組み。
-// 新しい権限を追加する時は、src/index.jsのPERMSとこことの両方に1行ずつ追記すること。
+// 新しい権限を追加する時は、src/index.tsのPERMSとこことの両方に1行ずつ追記すること。
 const PERM_BASE_LV = { report_check:1, blacklist_manage:1, summary_view:1, day_schedule_view:1, member_stats_view:1, sites_view:1, members_view:1, site_pay:2, site_manage:2, import_data:2, handler_tools:2, wage_settings:3, account_manage:3, daicho_manage:3, dashboard_view:3, member_summary_view:2, activity_view:3 };
 // 権限の一括設定画面で、baseLvごとに見出しを出してグループ分けするためのラベル
 const PERM_GROUP_LABELS = { 0:'メンツ以上', 1:'チーフ以上', 2:'手配者以上', 3:'管理者のみ', 4:'個別付与のみ(標準では誰も持たない)' };
@@ -181,7 +181,7 @@ let TOKEN = localStorage.getItem('tk') || '';
 let ME = null;
 let UPDATE_NOTICE_SHOWN = false; // 1セッション中に一度だけ表示するためのフラグ
 // アップデートのお知らせに表示する項目。新機能を追加したら、ここに { v: 新しいバージョン番号, ... } で
-// 追記し、src/index.js の CURRENT_UPDATE_VERSION をインクリメントする(バージョン番号は
+// 追記し、src/index.ts の CURRENT_UPDATE_VERSION をインクリメントする(バージョン番号は
 // サーバー側の値が唯一の正としてME.currentUpdateVersionから取得する。以前はここにも同名の定数を
 // 持っていたが、更新のたびに両方をインクリメントし忘れ、片方だけ古いまま残ってお知らせが正しく
 // 出なくなる事故があったため、フロント側の定数は廃止した)。過去の項目はそのまま残しておいてよい
@@ -219,7 +219,7 @@ const UPDATE_ITEMS = [
   { v:12, icon:'gauge', title:'ダッシュボードの「気になる人」から直接絞り込めるように', desc:'ダッシュボードの「気になる人」カードをタップすると、稼働サマリーの該当する絞り込み条件が最初から適用された状態で開くようになりました。', show: () => ME.role === 'admin' },
 ];
 // 機能公開設定の対象画面。バックエンドのFEATURE_KEYSと必ず一致させる。
-// 新しい画面を追加したら、ここと src/index.js の FEATURE_KEYS の両方に追記する。
+// 新しい画面を追加したら、ここと src/index.ts の FEATURE_KEYS の両方に追記する。
 const FEATURE_LABELS = {
   'system': { icon:'settings', label:'システム管理(管理系の入口)' },
   'dashboard': { icon:'gauge', label:'ダッシュボード' },
@@ -7591,7 +7591,7 @@ async function pageLegacyImportDetail(app, ym){
 // 診断画面。ダッシュボードと同じ計器盤テーマ(.ops-root)を使う。
 // 権限一覧・機能公開キーはPERMS/FEATURE_KEYS定数から、DBのテーブル構造と行数は実際のD1から
 // リクエストのたびに取得しているため、コード変更や本番の実態に自動追従する
-// (schema.sqlと本番DBの食い違いにも気づける)。画面一覧・API一覧・ファイル説明はsrc/index.jsの
+// (schema.sqlと本番DBの食い違いにも気づける)。画面一覧・API一覧・ファイル説明はsrc/index.tsの
 // APP_STRUCTURE_*静的データなので、新しい画面/APIを追加したらそちらに追記する。
 
 // リクエストが流れる経路を、実際にパケットが動いて見える形で描いた構成図。
@@ -7622,7 +7622,7 @@ function appStructureArchSvg(){
     // Workerの下辺(左寄り)から出してGoogleカレンダー等の右辺へ向かうよう経路を分離する
     ${flow(400, 224, 250, 350, '.ics 配信', 3.0, 1.4, '')}
     ${box(30, 60, 220, 62, ['ブラウザ', 'public/app.js + style.css'], 'client', 0)}
-    ${box(335, 140, 240, 84, ['Cloudflare Worker', 'src/index.js', 'fetch() / scheduled()'], 'worker', 120)}
+    ${box(335, 140, 240, 84, ['Cloudflare Worker', 'src/index.ts', 'fetch() / scheduled()'], 'worker', 120)}
     ${box(645, 88, 225, 62, ['D1: schedule-db', '33テーブル'], 'store', 240)}
     ${box(645, 218, 225, 62, ['R2: ty-daicho', '台帳ファイル保管'], 'store', 300)}
     ${box(335, 26, 240, 52, ['Cron Trigger', '0/5/10/15分'], 'ext', 60)}
@@ -7951,7 +7951,7 @@ async function pageAppStructure(app){
         <div class="ops-flow">
           <span class="ops-flow-b">index.html</span><span class="ops-flow-a">${icon('arrowRight', { size: '13px' })}</span>
           <span class="ops-flow-b">app.js + style.css</span><span class="ops-flow-a">api()${icon('arrowRight', { size: '13px' })}</span>
-          <span class="ops-flow-b strong">src/index.js</span><span class="ops-flow-a">${icon('arrowRight', { size: '13px' })}</span>
+          <span class="ops-flow-b strong">src/index.ts</span><span class="ops-flow-a">${icon('arrowRight', { size: '13px' })}</span>
           <span class="ops-flow-b">D1 / R2</span>
         </div>
         <div class="ops-note">上記はリクエスト単位の実行時の関係です。schema.sql・migrate-*.sql・wrangler.tomlはデプロイ作業時にだけ関わり、Workerの実行中に読み込まれるものではありません。</div>

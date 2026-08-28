@@ -1,8 +1,8 @@
 // xlsx(zipで圧縮されたOffice Open XML)を、外部ライブラリなしでバイト列から直接パースする層。
-// src/index.js の巨大化を緩和するため、DB(env)に一切依存しない純粋な「バイト列 → シート内容」の
+// src/index.ts の巨大化を緩和するため、DB(env)に一切依存しない純粋な「バイト列 → シート内容」の
 // 変換ロジックだけをこのファイルに切り出した(2026年8月、バックエンド部分TypeScript化の第一弾)。
 // フォーマットC/AB/D固有の業務ルール(現場名・時刻の解釈など)は含まない。それらは
-// src/index.js 側の parseFormatC/parseFormatAB/parseFormatD が、ここで作った grid を受け取って行う。
+// src/index.ts 側の parseFormatC/parseFormatAB/parseFormatD が、ここで作った grid を受け取って行う。
 
 export interface XlsxSheet {
   name: string;
