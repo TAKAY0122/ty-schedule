@@ -101,7 +101,7 @@ const APP_STRUCTURE_CRON = [
 const APP_STRUCTURE_PAGES = [
   { hash: '#/home', name: 'ホーム', role: '全員', desc: 'ログイン後の最初の画面。今日から1週間分の予定をスワイプで確認でき、未読通知・承認待ち件数、権限に応じたメニューショートカットを表示する。' },
   { hash: '#/dashboard', name: '管理者ダッシュボード', role: 'dashboard_view権限者', desc: '定期処理(台帳再取込・予定表ソース取込・ランク昇格適用・新人報告リマインド)の最終実行日時、予定表ソースのエラー詳細等、システム状態を一覧表示する。' },
-  { hash: '#/schedule', name: 'マイスケジュール', role: '全員', desc: '月間カレンダーで自身(または閲覧権限のある他者)のスケジュールを表示する。日付タップで現場変更報告・休み希望の入力モーダルを開く。member_summary_view権限があれば画面末尾に個人の年間サマリーを表示。sites_view権限があれば「行った会場」「行った公演」ボタンと現場検索バーを表示。月見出しタップで年月を直接選択できる。' },
+  { hash: '#/schedule', name: 'マイスケジュール', role: '全員', desc: '月間カレンダーで自身(または閲覧権限のある他者)のスケジュールを表示する。日付タップで現場変更報告・休み希望の入力モーダルを開く。member_summary_view権限があれば画面末尾に個人の年間サマリーを表示。「行った会場」「行った公演」ボタン(全員の中での順位表示含む)は誰でも見られるが、そこから会場/公演詳細への遷移と、現場検索バーの利用はsites_view権限(チーフ以上)に限る。月見出しタップで年月を直接選択できる。' },
   { hash: '#/edit', name: 'スケジュール入力', role: '手配者(手配モード中)', desc: '現場へのメンバー一括登録、個人ごとの詳細編集(時刻・業務・休憩等)を行う。' },
   { hash: '#/self-reports', name: '現場変更報告の承認', role: 'handler以上', desc: 'メンツからの現場変更報告を確認し、承認(現場への変更は個別入力/休暇等は一括可)・却下する。現場への変更の承認画面では、対象日に既に登録されている現場があれば一覧から選んで入力を省略できる。' },
   { hash: '#/availability', name: '休み希望・稼働時間の提出', role: '全員', desc: '月間カレンダー形式で、日ごとに休み希望・稼働可能時間(開始/終了/出発地点)を入力する。' },
@@ -191,13 +191,13 @@ const APP_STRUCTURE_API_GROUPS = [
     ['POST', '/venue-manual/upload', '会場マニュアル用の写真/動画をR2(MANUALSバケット)へアップロードしキーを返す(チーフ以上)'],
     ['GET', '/venue-manual/media/:key', '会場マニュアルの写真/動画配信。<img>/<video>から直接読み込むため、セッショントークンをクエリ文字列(?t=)で受け取る専用経路'],
     ['GET', '/venue-members', '指定した会場を経験したことのあるメンバー一覧(チーフ以上)。sortパラメータでcnt/recent/rankに切替可能。停止中アカウントも含む'],
-    ['GET', '/member-venues', '指定したメンバーが行ったことのある会場一覧(使用回数・使用日数・最終日。チーフ以上)。各行に、その会場を経験した全員の中での順位(rank/total)と、あと何回で1つ上の順位に並べるか(nextRank/gap)を付与'],
+    ['GET', '/member-venues', '指定したメンバーが行ったことのある会場一覧(使用回数・使用日数・最終日。全員が閲覧可能)。各行に、その会場を経験した全員の中での順位(rank/total)と、あと何回で1つ上の順位に並べるか(nextRank/gap)を付与。一覧のタップ先(会場詳細)はsites_view権限(チーフ以上)に限る'],
     ['GET/POST', '/site-groups', '会場・公演のグループ一覧取得・新規作成(kindでvenue/artistを指定)。GETはチーフ以上、POSTは手配者以上'],
     ['PUT/DELETE', '/site-groups/:id', 'グループ名・所属メンバーの更新、グループ自体の削除(手配者以上)'],
     ['GET', '/artists', '公演一覧(準備中、チーフ以上)。現場名から【セクション等】を除いた本体名で集計。グループ・フォルダ所属情報を付与'],
     ['GET', '/artist-history', '指定した公演の現場一覧を過去/今後に分けて返す(準備中、チーフ以上)。対象は本体名一致の表記ゆれ全て。visitedを付与'],
     ['GET', '/artist-members', '指定した公演を経験したことのあるメンバー一覧(準備中、チーフ以上)。sortパラメータ対応'],
-    ['GET', '/member-artists', '指定したメンバーが行ったことのある公演一覧(準備中、チーフ以上)。/member-venuesと同様、その公演を経験した全員の中での順位(rank/total)・あと何回で1つ上の順位か(nextRank/gap)を付与'],
+    ['GET', '/member-artists', '指定したメンバーが行ったことのある公演一覧(準備中、全員が閲覧可能)。/member-venuesと同様、その公演を経験した全員の中での順位(rank/total)・あと何回で1つ上の順位か(nextRank/gap)を付与。一覧のタップ先(公演詳細)はsites_view権限(チーフ以上)に限る'],
     ['GET', '/member-site-log', '指定したメンバーの現場ログ(1稼働=1行、日付降順。チーフ以上)。集計はせず生ログを返す'],
     ['GET', '/name-site-log', '新人報告・ブラックリストの氏名(自由記述)と同じ名前のアプリ登録者を探し、その人の過去の現場ログを返す(blacklist_manage/report_check権限者)。同姓同名は全員分を返す'],
     ['POST', '/artists/bulk-rename', 'チェックした複数の公演名をまとめて統一名称に変更(準備中、手配者以上)。【セクション等】表記は維持'],
@@ -4143,10 +4143,10 @@ async function api(req, env, url) {
     return J(rows);
   }
 
-  // ---- 個人が行ったことのある会場一覧(チーフ以上)。個人スケジュール画面のボタンから開く。
+  // ---- 個人が行ったことのある会場一覧(全員)。個人スケジュール画面のボタンから開く。
+  //      一覧・順位の閲覧は誰でもできる(タップ先の会場詳細だけがsites_view権限=チーフ以上)。
   //      使用回数の多い順に返す(並び替えはフロント側で行う)。 ----
   if (method === 'GET' && path === '/member-venues') {
-    if (!has(me, 'sites_view')) return ERR('ページが見つかりません', 404);
     const uid = Number(url.searchParams.get('uid'));
     if (!uid) return ERR('uid が必要です');
     const rows = (await env.DB.prepare(
@@ -4162,10 +4162,10 @@ async function api(req, env, url) {
     return J(result);
   }
 
-  // ---- 個人が行ったことのある公演一覧(準備中、チーフ以上)。GET /artistsと同じく(現場名,日付)単位で
-  //      取得し、Worker側で公演名(本体名)ごとに再集計する。個人スケジュール画面のボタンから開く。 ----
+  // ---- 個人が行ったことのある公演一覧(準備中、全員)。GET /artistsと同じく(現場名,日付)単位で
+  //      取得し、Worker側で公演名(本体名)ごとに再集計する。個人スケジュール画面のボタンから開く。
+  //      一覧・順位の閲覧は誰でもできる(タップ先の公演詳細だけがsites_view権限=チーフ以上)。 ----
   if (method === 'GET' && path === '/member-artists') {
-    if (!has(me, 'sites_view')) return ERR('ページが見つかりません', 404);
     const uid = Number(url.searchParams.get('uid'));
     if (!uid) return ERR('uid が必要です');
     const rows = (await env.DB.prepare(

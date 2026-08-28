@@ -3092,8 +3092,10 @@ async function pageSchedule(app, hash){
   const others = LV[ME.role]>=1 ? `<button class="btn ghost sm" id="pick-user">他のメンバーを見る ▾</button>` : '';
   const histBtn = LV[ME.role]>=2 ? `<button class="btn ghost sm" id="view-history">${icon('fileText')} 変更履歴</button>` : '';
   const calSyncBtn = uid===ME.id ? `<button class="btn ghost sm" id="cal-sync">${icon('calendar')} カレンダー連携</button>` : '';
-  const venueListBtn = has('sites_view') ? `<button class="btn ghost sm" id="member-venue-list">${icon('mapPin')} 行った会場</button>` : '';
-  const artistListBtn = has('sites_view') ? `<button class="btn ghost sm" id="member-artist-list">${icon('megaphone')} 行った公演</button>` : '';
+  // 「行った会場/公演」の一覧・ランキング表示自体は誰でも見られる(全員対象)。
+  // タップした先の会場/公演の詳細(openVenueModal/openArtistModal)だけはsites_view権限(チーフ以上)に限る。
+  const venueListBtn = `<button class="btn ghost sm" id="member-venue-list">${icon('mapPin')} 行った会場</button>`;
+  const artistListBtn = `<button class="btn ghost sm" id="member-artist-list">${icon('megaphone')} 行った公演</button>`;
   app.innerHTML = `
   <h2>${h(u.name)} のスケジュール ${uid!==ME.id?'<span class="muted">(閲覧中)</span>':''}</h2>
   <div class="card">
@@ -4078,15 +4080,20 @@ async function openMemberVisitedList(title, iconName, apiPath, uid, emptyMsg, da
   let rows;
   try{ rows = await api(`${apiPath}?uid=${uid}`); }
   catch(e){ popup(e.message, 'error'); return; }
+  // 一覧・ランキングの閲覧自体は誰でもできるが、タップした先の会場/公演の詳細(openVenueModal/
+  // openArtistModal)はsites_view権限(チーフ以上)に限るため、権限が無い人には遷移させない
+  // (押せる見た目にして権限エラーを出すより、押せないことが分かる表示にする)。
+  const canOpenDetail = has('sites_view');
   modal(`<h3>${icon(iconName,{size:'15px'})} ${title}</h3>
     <div class="muted" style="margin-bottom:10px">${rows.length}件</div>
     <div style="max-height:60vh;overflow-y:auto">
-      ${rows.length ? rows.map(r=>`<div class="mgr-row member-visited-row" style="cursor:pointer" data-key="${h(r[dataKey])}">
+      ${rows.length ? rows.map(r=>`<div class="mgr-row member-visited-row" style="${canOpenDetail?'cursor:pointer':''}" data-key="${h(r[dataKey])}">
         <div class="mgr-name">${h(r[dataKey])}</div>
         <div class="muted" style="font-size:12.5px;white-space:nowrap">${r.cnt}回(${r.dateCnt}日) <span style="font-size:11px">(最終:${h(r.lastDate)})</span></div>
         <div style="margin-top:3px">${visitedRankBadgeHtml(r)}</div>
       </div>`).join('') : `<div class="muted" style="text-align:center;padding:16px">${emptyMsg}</div>`}
     </div>`);
+  if(!canOpenDetail) return;
   document.querySelectorAll('#modal-layer .member-visited-row').forEach(el => {
     el.onclick = () => { closeModal(); onItemClick(el.dataset.key); };
   });
