@@ -146,7 +146,7 @@ const PAGE_LABELS = {
   'role-permissions':'権限の一括設定','handler-status':'ログイン中・編集履歴','import':'スプレッドシート取り込み','sched-sources':'予定表ソース管理',
   'daicho':'台帳保管','permissions':'権限の個人設定','calendar-guide':'カレンダー連携のやり方','version-history':'アップデート履歴',
   'password':'パスワード変更','login':'ログイン画面','venues':'会場一覧','legacy-import':'過去データ取込確認','artists':'公演一覧',
-  'app-structure':'アプリ構造ビューア','system':'システム管理',
+  'app-structure':'アプリ構造ビューア','system':'システム管理','venue-manual':'会場マニュアル',
 };
 function pageLabelFromHash(hash){
   if(!hash) return '';
