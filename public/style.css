@@ -174,6 +174,7 @@ tr.slot-extra{background:#fcfcfa}
 .msg.err{background:#fdebeb;color:#b71c1c}
 .tag{display:inline-block;font-size:11px;border-radius:3px;padding:2px 7px;font-weight:700}
 .tag.handler{background:var(--gold);color:#1b2333}
+.tag.rank{background:var(--gold);color:#1b2333}
 .tag.pending{background:#ffe1b3;color:#8a5300}
 .tag.checked{background:#d7ecd7;color:#2e7d32}
 .tag.acquired{background:#e7f6ec;color:#1f7a3d;font-size:11px}
@@ -418,6 +419,26 @@ table.list tr.click:hover{background:#fdf6e0;cursor:pointer}
 .venue-item.has-manual{background:#eef7ef;border-color:#8fc9a0}
 .venue-item.has-manual:hover{background:#e2f2e4}
 .venue-manual-badge{flex:0 0 auto;display:inline-flex;align-items:center;gap:4px;background:#e7f6ec;color:#1f7a3d;border-radius:10px;padding:2px 8px;font-size:11.5px;font-weight:700;white-space:nowrap}
+
+/* 会場マニュアル: 自由配置キャンバス(#/venue-manual)。基準幅1000pxの仮想キャンバスを
+   transform:scale()で画面幅に合わせて一括縮小/拡大する(詳細はpublic/app.jsのコメント参照) */
+.vm-canvas-viewport{position:relative;width:100%;overflow:hidden;border:1px solid var(--line);border-radius:10px;background:#fafafa}
+.vm-canvas{position:relative;transform-origin:top left;background:#fff}
+.vm-block{position:absolute;box-sizing:border-box;overflow:hidden;border-radius:6px}
+.vm-block.text{background:#fffdf4;border:1px solid #eee0b0;padding:10px}
+.vm-block-body{font-size:15px;line-height:1.6;white-space:pre-wrap;word-break:break-word;height:100%;overflow:auto}
+.vm-block img,.vm-block video{width:100%;height:100%;object-fit:cover;display:block;background:#000}
+.vm-block-empty{width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:#bbb;background:#f0f0f0}
+.vm-block.edit-mode{cursor:move;touch-action:none;user-select:none}
+.vm-block.edit-mode.selected{outline:2px dashed var(--gold)}
+.vm-block-del,.vm-block-editbtn,.vm-block-handle{position:absolute;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 3px rgba(0,0,0,.3);touch-action:none}
+.vm-block-del{top:-10px;right:-10px;width:22px;height:22px;border-radius:50%;background:#c0392b;color:#fff;cursor:pointer}
+.vm-block-editbtn{top:-10px;left:-10px;width:22px;height:22px;border-radius:50%;background:var(--sat);color:#fff;cursor:pointer}
+.vm-block-handle{right:-8px;bottom:-8px;width:20px;height:20px;border-radius:4px;background:var(--gold);color:#1b2333;cursor:nwse-resize}
+:is(body.ops-page,body.theme-dark) #app .vm-canvas-viewport{background:var(--ops-panel2);border-color:var(--ops-line)}
+:is(body.ops-page,body.theme-dark) #app .vm-canvas{background:var(--ops-panel)}
+:is(body.ops-page,body.theme-dark) #app .vm-block.text{background:rgba(201,162,39,.12);border-color:var(--ops-gold)}
+:is(body.ops-page,body.theme-dark) #app .vm-block-empty{background:var(--ops-panel2);color:var(--ops-dim)}
 .st-rookie-list{display:flex;flex-direction:column;gap:4px;margin:4px 0 8px;padding-left:8px}
 .st-rookie-item{display:flex;align-items:center;gap:6px;width:fit-content;max-width:100%;background:#e7f6ec;color:#1f7a3d;border:none;border-radius:8px;padding:5px 10px;font-size:12px;font-weight:700;cursor:pointer;text-align:left;transition:background .15s ease}
 .st-rookie-item:hover{background:#d5efdc}
@@ -1493,6 +1514,7 @@ a.ops-hash.link{display:inline-flex;align-items:center;gap:4px;cursor:pointer}
 :is(body.ops-page,body.theme-dark) #app .msg.err{background:rgba(248,81,73,.14);color:var(--ops-danger)}
 
 :is(body.ops-page,body.theme-dark) #app .tag.handler{background:var(--ops-gold);color:#1b2333}
+:is(body.ops-page,body.theme-dark) #app .tag.rank{background:var(--ops-gold);color:#1b2333}
 :is(body.ops-page,body.theme-dark) #app .tag.pending{background:rgba(210,153,34,.18);color:var(--ops-warn)}
 :is(body.ops-page,body.theme-dark) #app .tag.checked{background:rgba(63,185,80,.16);color:var(--ops-ok)}
 :is(body.ops-page,body.theme-dark) #app .tag.acquired{background:rgba(63,185,80,.16);color:var(--ops-ok)}
@@ -1618,6 +1640,7 @@ body.theme-dark #modal-layer .dk{color:var(--ops-dim)}
 body.theme-dark #modal-layer .dv{color:var(--ops-txt)}
 body.theme-dark #modal-layer .bulk-members{border-color:var(--ops-line)}
 body.theme-dark #modal-layer .tag.handler{background:var(--ops-gold);color:#1b2333}
+body.theme-dark #modal-layer .tag.rank{background:var(--ops-gold);color:#1b2333}
 body.theme-dark #modal-layer .tag.pending{background:rgba(210,153,34,.18);color:var(--ops-warn)}
 body.theme-dark #modal-layer .tag.checked,
 body.theme-dark #modal-layer .tag.acquired{background:rgba(63,185,80,.16);color:var(--ops-ok)}

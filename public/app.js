@@ -76,6 +76,9 @@ const ICONS = {
   alertTriangle:'<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4M12 17h.01"/>',
   inbox:'<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
   sitemap:'<circle cx="12" cy="4" r="2"/><path d="M12 6v4"/><path d="M5 14v-2a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v2"/><path d="M5 14a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/><path d="M12 14a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/><path d="M19 14a2 2 0 1 0 0 4 2 2 0 0 0 0-4z"/>',
+  image:'<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>',
+  video:'<path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/>',
+  move:'<path d="M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20"/>',
 };
 // icon('home')のように呼び、絵文字の代わりに使える線画SVGを返す。sizeとcolorは省略可(currentColorを継承)
 function icon(name, opt={}){
@@ -4064,6 +4067,13 @@ function openArtistMemberList(artist){
 }
 
 // 個人が行ったことのある会場・公演一覧の共通描画。個人スケジュール画面のボタンから開く。
+// 「行った回数」が全体の中で何位か(同数タイは同順位)を、あと何回で1つ上に並べるかと合わせて表示する。
+function visitedRankBadgeHtml(r){
+  if(!r || !r.total) return '';
+  const cls = r.rank <= 3 ? 'tag rank' : 'tag';
+  const next = r.nextRank ? `<span class="muted" style="font-size:11px;margin-left:6px">あと${r.gap}回で${r.nextRank}位</span>` : '';
+  return `<span class="${cls}" style="font-size:11px">${r.rank}位 / ${r.total}人中</span>${next}`;
+}
 async function openMemberVisitedList(title, iconName, apiPath, uid, emptyMsg, dataKey, onItemClick){
   let rows;
   try{ rows = await api(`${apiPath}?uid=${uid}`); }
@@ -4074,6 +4084,7 @@ async function openMemberVisitedList(title, iconName, apiPath, uid, emptyMsg, da
       ${rows.length ? rows.map(r=>`<div class="mgr-row member-visited-row" style="cursor:pointer" data-key="${h(r[dataKey])}">
         <div class="mgr-name">${h(r[dataKey])}</div>
         <div class="muted" style="font-size:12.5px;white-space:nowrap">${r.cnt}回(${r.dateCnt}日) <span style="font-size:11px">(最終:${h(r.lastDate)})</span></div>
+        <div style="margin-top:3px">${visitedRankBadgeHtml(r)}</div>
       </div>`).join('') : `<div class="muted" style="text-align:center;padding:16px">${emptyMsg}</div>`}
     </div>`);
   document.querySelectorAll('#modal-layer .member-visited-row').forEach(el => {
@@ -4089,12 +4100,283 @@ function openMemberArtistList(uid, name){
   return openMemberVisitedList(`${h(name)} さんが行った公演`, 'megaphone', '/member-artists', uid, 'まだ公演の記録がありません', 'artist', openArtistModal);
 }
 
-// 会場マニュアル(準備中)。中身はまだ無いため、機能公開設定を「準備中」で登録し、通常は
-// render()の共通ゲートで自動的に案内される。管理者はゲートを常にスキップするため、
-// プレビューできるようここでも同じ準備中メッセージを表示する。
+// 会場マニュアルの写真/動画URL。<img>/<video>のsrcはAuthorizationヘッダーを送れないため、
+// セッショントークンをクエリ文字列で渡す専用配信経路(GET /venue-manual/media/:key)を使う。
+function manualMediaUrl(key){ return `/api/venue-manual/media/${key}?t=${encodeURIComponent(TOKEN)}`; }
+// 会場マニュアルの写真/動画アップロード。multipart/form-dataを使うため、JSON専用の共通api()は使わず
+// 個別にfetchする(認証ヘッダーの付け方はapi()と同じ)。
+async function uploadManualMedia(venue, kind, file){
+  const fd = new FormData();
+  fd.append('venue', venue); fd.append('kind', kind); fd.append('file', file);
+  const res = await fetch('/api/venue-manual/upload', {
+    method: 'POST',
+    headers: TOKEN ? { authorization: 'Bearer ' + TOKEN } : {},
+    body: fd,
+  });
+  const d = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(d.error || 'アップロードに失敗しました');
+  return d.key;
+}
+
+// 会場マニュアル(準備中機能)。自由配置キャンバス方式でテキスト/写真/動画のブロックを自由に
+// 配置・リサイズできる。機能公開設定は既定で「準備中」のため、通常はrender()の共通ゲートで
+// 案内され、管理者だけが(feature-statusを自分で公開に変えるまでの間)ここに到達して
+// プレビュー・編集できる。追加・保存・編集はsites_view権限者(チーフ以上)なら誰でも可能。
+// 座標系は基準幅1000pxの仮想キャンバス(高さは内容に応じて自由に伸びる)。フロント側で
+// コンテナの実際の幅÷1000を拡大率としてtransform:scale()で一括縮小/拡大することで、
+// PC(1280px)・スマホ(375px)どちらでも同じレイアウトに見せる(詳細はsrc/index.tsのコメント参照)。
 async function pageVenueManual(app, hash){
   const venue = decodeURIComponent(hash.split('/')[2] || '');
-  renderFeatureBlocked(app, 'hidden', { icon:'bookOpen', label: venue ? `${venue} マニュアル` : '会場マニュアル' });
+  if(!venue){ notFound(app); return; }
+  app.innerHTML = `<div class="loading-box"><span class="spinner"></span>読み込み中…</div>`;
+  let data;
+  try{ data = await api('/venue-manual?venue=' + encodeURIComponent(venue)); }
+  catch(e){ app.innerHTML = `<div class="msg err">${h(e.message)}</div>`; return; }
+
+  const CANVAS_W = 1000;
+  const canEdit = has('sites_view');
+  const state = { blocks: data.blocks.map(b => ({ ...b })), history: data.history, editMode: false, dirty: false, selected: null, nextTemp: -1 };
+  let onResize = null;
+
+  const blockLabel = (t) => t === 'text' ? 'テキスト' : t === 'photo' ? '写真' : '動画';
+  const canvasHeight = () => Math.max(700, state.blocks.reduce((m, b) => Math.max(m, b.y + b.h), 0) + 80);
+  const nextZ = () => state.blocks.reduce((m, b) => Math.max(m, b.z || 0), 0) + 1;
+  const nextY = () => state.blocks.length ? Math.max(...state.blocks.map(b => b.y + b.h)) + 20 : 20;
+  const markDirty = () => { state.dirty = true; };
+
+  function blockInnerHtml(b){
+    if(b.type === 'text') return `<div class="vm-block-body">${b.content ? h(b.content) : (state.editMode ? '<span class="muted">(クリックして編集)</span>' : '')}</div>`;
+    if(b.type === 'photo') return b.content ? `<img src="${manualMediaUrl(b.content)}" alt="">` : `<div class="vm-block-empty">${icon('image',{size:'22px'})}</div>`;
+    return b.content ? `<video src="${manualMediaUrl(b.content)}" controls></video>` : `<div class="vm-block-empty">${icon('video',{size:'22px'})}</div>`;
+  }
+
+  function fitCanvas(){
+    const viewport = $('#vm-viewport'), canvas = $('#vm-canvas');
+    if(!viewport || !canvas) return;
+    const scale = viewport.clientWidth / CANVAS_W;
+    canvas.style.transform = `scale(${scale})`;
+    viewport.style.height = Math.round(canvasHeight() * scale) + 'px';
+  }
+
+  function openTextEditor(b){
+    modal(`<h3>${icon('fileText',{size:'15px'})} テキストを編集</h3>
+      <textarea id="vm-text-input" rows="8" style="width:100%;box-sizing:border-box;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:15px;resize:vertical">${h(b.content||'')}</textarea>
+      <div class="row" style="margin-top:12px;gap:8px">
+        <button class="btn gold" id="vm-text-save">保存</button>
+        <button class="btn ghost" id="vm-text-cancel">キャンセル</button>
+      </div>`);
+    $('#vm-text-input').focus();
+    $('#vm-text-cancel').onclick = closeModal;
+    $('#vm-text-save').onclick = () => {
+      b.content = $('#vm-text-input').value;
+      closeModal();
+      markDirty();
+      render();
+    };
+  }
+
+  function addTextBlock(){
+    const b = { _tempId: state.nextTemp--, type:'text', content:'', x:20, y:nextY(), w:300, h:120, z:nextZ() };
+    state.blocks.push(b); state.selected = b; markDirty(); render();
+    openTextEditor(b);
+  }
+
+  function addMediaBlock(kind){
+    const input = $(kind === 'photo' ? '#vm-photo-input' : '#vm-video-input');
+    input.value = '';
+    input.onchange = async () => {
+      const file = input.files[0];
+      if(!file) return;
+      try{
+        const btn = $(kind === 'photo' ? '#vm-add-photo' : '#vm-add-video');
+        const key = await withLoading(btn, () => uploadManualMedia(venue, kind, file));
+        const b = { _tempId: state.nextTemp--, type:kind, content:key, x:20, y:nextY(), w: kind === 'photo' ? 320 : 400, h: kind === 'photo' ? 220 : 240, z:nextZ() };
+        state.blocks.push(b); state.selected = b; markDirty(); render();
+      }catch(e){ popup(e.message, 'error'); }
+    };
+    input.click();
+  }
+
+  function replaceMediaBlock(b){
+    const input = $(b.type === 'photo' ? '#vm-photo-input' : '#vm-video-input');
+    input.value = '';
+    input.onchange = async () => {
+      const file = input.files[0];
+      if(!file) return;
+      try{ b.content = await uploadManualMedia(venue, b.type, file); markDirty(); render(); }
+      catch(e){ popup(e.message, 'error'); }
+    };
+    input.click();
+  }
+
+  function deleteBlock(b){
+    if(!confirm(`この${blockLabel(b.type)}ブロックを削除しますか?`)) return;
+    state.blocks = state.blocks.filter(x => x !== b);
+    if(state.selected === b) state.selected = null;
+    markDirty(); render();
+  }
+
+  // ドラッグ移動。実際に動いた場合だけdirty扱いにする(タップして選択しただけの操作と区別するため)
+  function startDrag(ev, b, el){
+    if(ev.target.closest('.vm-block-del,.vm-block-editbtn,.vm-block-handle')) return;
+    ev.preventDefault();
+    state.selected = b;
+    document.querySelectorAll('#vm-canvas .vm-block.selected').forEach(x => x.classList.remove('selected'));
+    el.classList.add('selected');
+    const canvas = $('#vm-canvas');
+    const scale = canvas.getBoundingClientRect().width / CANVAS_W;
+    const startX = ev.clientX, startY = ev.clientY, origX = b.x, origY = b.y;
+    let moved = false;
+    const onMove = (e2) => {
+      const dx = (e2.clientX - startX) / scale, dy = (e2.clientY - startY) / scale;
+      if(Math.abs(dx) > 1 || Math.abs(dy) > 1) moved = true;
+      if(!moved) return;
+      b.x = Math.max(0, Math.min(CANVAS_W - 20, origX + dx));
+      b.y = Math.max(0, origY + dy);
+      el.style.left = b.x + 'px'; el.style.top = b.y + 'px';
+    };
+    const onUp = () => {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      if(moved) markDirty();
+      render();
+    };
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+  }
+
+  function startResize(ev, b, el){
+    ev.preventDefault(); ev.stopPropagation();
+    const canvas = $('#vm-canvas');
+    const scale = canvas.getBoundingClientRect().width / CANVAS_W;
+    const startX = ev.clientX, startY = ev.clientY, origW = b.w, origH = b.h;
+    const onMove = (e2) => {
+      const dx = (e2.clientX - startX) / scale, dy = (e2.clientY - startY) / scale;
+      b.w = Math.max(40, origW + dx); b.h = Math.max(40, origH + dy);
+      el.style.width = b.w + 'px'; el.style.height = b.h + 'px';
+    };
+    const onUp = () => {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      markDirty(); render();
+    };
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+  }
+
+  async function doSave(){
+    const payload = state.blocks.map(b => ({ id: typeof b.id === 'number' ? b.id : undefined, type:b.type, content:b.content, x:b.x, y:b.y, w:b.w, h:b.h, z:b.z }));
+    try{
+      const r = await withLoading($('#vm-save'), () => api('/venue-manual', { method:'PUT', body:{ venue, blocks: payload } }));
+      state.blocks = r.blocks.map(b => ({ ...b }));
+      state.history = r.history;
+      state.dirty = false; state.selected = null;
+      popup('保存しました');
+      render();
+    }catch(e){ popup(e.message, 'error'); }
+  }
+
+  function doDiscard(){
+    if(!confirm('保存されていない変更を破棄しますか?')) return;
+    pageVenueManual(app, hash);
+  }
+
+  function openHistory(){
+    modal(`<h3>${icon('clock',{size:'15px'})} 更新履歴</h3>
+      <div style="max-height:60vh;overflow-y:auto">
+        ${state.history.length ? state.history.map(row => `<div class="mgr-row">
+          <div style="font-size:13px">${h(row.summary||'')}</div>
+          <div class="muted" style="font-size:11.5px">${h(row.created_at||'')} ${h(row.user_name||'')}</div>
+        </div>`).join('') : `<div class="muted" style="text-align:center;padding:16px">まだ更新履歴がありません</div>`}
+      </div>`);
+  }
+
+  function toggleEditMode(){
+    if(state.editMode && state.dirty){
+      if(!confirm('編集モードを終了します。保存されていない変更は破棄されます。よろしいですか?')) return;
+      pageVenueManual(app, hash);
+      return;
+    }
+    state.editMode = !state.editMode; state.selected = null; render();
+  }
+
+  function wireEvents(){
+    wireBackBtn(app, '#vm-back', '#/venues');
+    const histBtn = $('#vm-history-btn'); if(histBtn) histBtn.onclick = openHistory;
+    const toggleBtn = $('#vm-edit-toggle'); if(toggleBtn) toggleBtn.onclick = toggleEditMode;
+    const addTextBtn = $('#vm-add-text'); if(addTextBtn) addTextBtn.onclick = addTextBlock;
+    const addPhotoBtn = $('#vm-add-photo'); if(addPhotoBtn) addPhotoBtn.onclick = () => addMediaBlock('photo');
+    const addVideoBtn = $('#vm-add-video'); if(addVideoBtn) addVideoBtn.onclick = () => addMediaBlock('video');
+    const saveBtn = $('#vm-save'); if(saveBtn) saveBtn.onclick = doSave;
+    const discardBtn = $('#vm-discard'); if(discardBtn) discardBtn.onclick = doDiscard;
+
+    const canvas = $('#vm-canvas');
+    if(canvas){
+      canvas.addEventListener('pointerdown', (e) => {
+        if(!e.target.closest('.vm-block')){ state.selected = null; render(); }
+      });
+      canvas.querySelectorAll('.vm-block').forEach(el => {
+        const key = el.dataset.key;
+        const b = state.blocks.find(x => String(x.id ?? x._tempId) === key);
+        if(!b) return;
+        el.addEventListener('pointerdown', (e) => startDrag(e, b, el));
+        const del = el.querySelector('.vm-block-del');
+        if(del) del.addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); deleteBlock(b); });
+        const editBtn = el.querySelector('.vm-block-editbtn');
+        if(editBtn) editBtn.addEventListener('pointerdown', (e) => {
+          e.stopPropagation(); e.preventDefault();
+          if(b.type === 'text') openTextEditor(b); else replaceMediaBlock(b);
+        });
+        const handle = el.querySelector('.vm-block-handle');
+        if(handle) handle.addEventListener('pointerdown', (e) => startResize(e, b, el));
+      });
+    }
+    if(onResize) window.removeEventListener('resize', onResize);
+    onResize = fitCanvas;
+    window.addEventListener('resize', onResize);
+  }
+
+  function render(){
+    app.innerHTML = `<div class="vm-page">
+      <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+        <button class="btn ghost sm" id="vm-back">${icon('arrowLeft',{size:'13px'})} 戻る</button>
+        <h2 style="margin:0;font-size:16px;flex:1;min-width:0;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${icon('bookOpen',{size:'15px'})} ${h(venue)}</h2>
+        <div class="row" style="gap:6px">
+          ${canEdit ? `<button class="btn ghost sm" id="vm-history-btn">${icon('clock',{size:'13px'})} 履歴</button>` : ''}
+          ${canEdit ? `<button class="btn ${state.editMode?'gold':'ghost'} sm" id="vm-edit-toggle">${icon('edit',{size:'13px'})} ${state.editMode?'編集を終了':'編集する'}</button>` : ''}
+        </div>
+      </div>
+      ${state.editMode ? `<div class="vm-toolbar row" style="gap:6px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
+        <button class="btn ghost sm" id="vm-add-text">${icon('fileText',{size:'13px'})} テキスト</button>
+        <button class="btn ghost sm" id="vm-add-photo">${icon('image',{size:'13px'})} 写真</button>
+        <button class="btn ghost sm" id="vm-add-video">${icon('video',{size:'13px'})} 動画</button>
+        <input type="file" id="vm-photo-input" accept="image/*" style="display:none">
+        <input type="file" id="vm-video-input" accept="video/*" style="display:none">
+        <span style="flex:1"></span>
+        ${state.dirty ? `<span class="muted" style="font-size:12px">未保存の変更があります</span>` : ''}
+        <button class="btn ghost sm" id="vm-discard" ${state.dirty?'':'disabled'}>破棄</button>
+        <button class="btn gold sm" id="vm-save" ${state.dirty?'':'disabled'}>${icon('check',{size:'13px'})} 保存</button>
+      </div>` : ''}
+      <div class="vm-canvas-viewport" id="vm-viewport">
+        <div class="vm-canvas" id="vm-canvas" style="width:${CANVAS_W}px;height:${canvasHeight()}px">
+          ${state.blocks.map(b => `<div class="vm-block ${b.type} ${state.editMode?'edit-mode':''} ${state.selected===b?'selected':''}" data-key="${b.id ?? b._tempId}"
+              style="left:${b.x}px;top:${b.y}px;width:${b.w}px;height:${b.h}px;z-index:${state.selected===b?9999:(b.z||0)}">
+            ${blockInnerHtml(b)}
+            ${state.editMode && state.selected===b ? `
+              <div class="vm-block-del" data-action="del" title="削除">${icon('x',{size:'13px'})}</div>
+              <div class="vm-block-editbtn" data-action="edit" title="${b.type==='text'?'テキストを編集':'差し替え'}">${icon(b.type==='text'?'edit':'upload',{size:'12px'})}</div>
+              <div class="vm-block-handle" data-action="resize" title="サイズ変更">${icon('move',{size:'10px'})}</div>
+            ` : ''}
+          </div>`).join('')}
+        </div>
+      </div>
+      ${!state.blocks.length ? `<div class="muted" style="text-align:center;padding:20px">${state.editMode ? 'まだ何もありません。上のボタンから追加してください' : 'まだマニュアルの内容がありません'}</div>` : ''}
+    </div>`;
+    fitCanvas();
+    wireEvents();
+  }
+
+  render();
 }
 
 /* ===== 公演一覧(旧アーティスト一覧。準備中、chief以上)。会場一覧と同じ操作感で、現場名から

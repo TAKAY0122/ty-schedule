@@ -6,6 +6,7 @@ import { parseXlsxBuffer } from './lib/xlsxParser.ts';
 interface Env {
   DB: D1Database;
   DAICHO: R2Bucket;
+  MANUALS: R2Bucket;
   ASSETS: Fetcher;
 }
 
@@ -108,7 +109,8 @@ const APP_STRUCTURE_PAGES = [
   { hash: '#/nominate', name: 'メンバーを希望する', role: 'chief以上', desc: '自身の現場に、希望するメンバーを選んで指名を送信する。' },
   { hash: '#/nominations', name: 'メンバー指名の承認', role: 'handler以上', desc: '受け取った指名を確認し、承認(スケジュールへ自動追加)・見送りを行う。複数選択して一括処理可能。' },
   { hash: '#/sites', name: '現場一覧', role: 'chief以上', desc: '月間の現場を日付ごとに一覧表示。新人共有🔰・要注意共有⚠️のマークを表示。現場詳細モーダルから、複数日にわたる現場の稼働表、同会場・同アーティストの過去/今後の公演参照を開ける。site_manage権限(手配者以上)があれば現場名・会場の一括改名、まだ配置されていない現場の手動登録・削除ができる(手配モード中)。過去/今後の公演一覧には本人の訪問済みマーカーが付く。' },
-  { hash: '#/venues', name: '会場一覧', role: 'chief以上', desc: '会場名で検索できる一覧。会場をタップするとその会場の過去/今後の現場を確認でき、現場をタップすると現場詳細が開く。「会場マニュアル」ボタンは機能公開設定で準備中。site_manage権限があれば会場名の一括改名、マニュアル有無フラグの設定、メンバーリスト(経験者一覧、並び替え対応)の閲覧、グループ分けによる絞り込みができる。' },
+  { hash: '#/venues', name: '会場一覧', role: 'chief以上', desc: '会場名で検索できる一覧。会場をタップするとその会場の過去/今後の現場を確認でき、現場をタップすると現場詳細が開く。「会場マニュアル」ボタンから#/venue-manualへ遷移する(機能公開設定は既定で準備中のため、通常は管理者のみ到達できる)。site_manage権限があれば会場名の一括改名、マニュアル有無フラグの設定、メンバーリスト(経験者一覧、並び替え対応)の閲覧、グループ分けによる絞り込みができる。' },
+  { hash: '#/venue-manual/:venue', name: '会場マニュアル', role: 'sites_view権限者(チーフ以上)', desc: '会場ごとのマニュアルを、テキスト/写真/動画のブロックを自由な位置・サイズで配置して作成する自由配置キャンバス方式の画面。基準幅1000pxの仮想キャンバスに絶対座標で保存し、画面幅に応じてtransform:scale()で一括拡大縮小することでPC/スマホ双方に対応する。追加・移動・リサイズ・削除・保存はsites_view権限者なら誰でも可能(site_manage等の追加権限は不要)。保存操作ごとに、実際に変化したブロックだけ更新履歴(誰が・いつ・何を)に記録される。機能公開設定は既定で「準備中」のため、通常ユーザーには表示されず管理者のみプレビュー・編集できる(2026年8月時点、内容は試作段階)。' },
   { hash: '#/artists', name: '公演一覧(準備中)', role: 'chief以上', desc: '会場一覧と同じ操作感で、現場名から本体名を集計する一覧。フリーワード検索・並び替え、過去/今後の公演参照、メンバーリストに対応。site_manage権限があれば公演名の一括改名・部分置換、グループ分け、フォルダ(複数公演を1件に集約表示)の作成ができる。実運用未確定のため機能公開設定で準備中。' },
   { hash: '#/members', name: 'メンバー一覧', role: 'chief以上', desc: '課・班・手配担当で絞り込んだメンバー一覧。役割・担当手配者等をインライン編集できる。' },
   { hash: '#/summary', name: '稼働サマリー', role: 'chief以上', desc: '出勤日数・連勤・時間の集計。働きすぎ・機会少・同じ現場ばかり等の統計カードをタップしてフィルタできる。' },
@@ -184,14 +186,18 @@ const APP_STRUCTURE_API_GROUPS = [
     ['GET', '/venue-history', '指定した会場の現場一覧を今日を境に過去/今後に分けて返す(チーフ以上)。hasManual・visitedも返す'],
     ['POST', '/venues/bulk-rename', 'チェックした複数の会場名をまとめて統一名称に変更(手配者以上)。site_registry.venue・venue_manuals・site_group_membersも引き継ぐ'],
     ['POST', '/venues/manual-flag', '会場マニュアルの有無フラグを設定(手配者以上)'],
+    ['GET', '/venue-manual', '会場マニュアル本文(自由配置キャンバス方式)のブロック一覧・更新履歴を取得(準備中機能、チーフ以上)'],
+    ['PUT', '/venue-manual', '会場マニュアル本文を差分保存(追加/変更/削除を判定し、変化したブロックだけ履歴に記録。追加・保存・編集はチーフ以上)'],
+    ['POST', '/venue-manual/upload', '会場マニュアル用の写真/動画をR2(MANUALSバケット)へアップロードしキーを返す(チーフ以上)'],
+    ['GET', '/venue-manual/media/:key', '会場マニュアルの写真/動画配信。<img>/<video>から直接読み込むため、セッショントークンをクエリ文字列(?t=)で受け取る専用経路'],
     ['GET', '/venue-members', '指定した会場を経験したことのあるメンバー一覧(チーフ以上)。sortパラメータでcnt/recent/rankに切替可能。停止中アカウントも含む'],
-    ['GET', '/member-venues', '指定したメンバーが行ったことのある会場一覧(使用回数・使用日数・最終日。チーフ以上)'],
+    ['GET', '/member-venues', '指定したメンバーが行ったことのある会場一覧(使用回数・使用日数・最終日。チーフ以上)。各行に、その会場を経験した全員の中での順位(rank/total)と、あと何回で1つ上の順位に並べるか(nextRank/gap)を付与'],
     ['GET/POST', '/site-groups', '会場・公演のグループ一覧取得・新規作成(kindでvenue/artistを指定)。GETはチーフ以上、POSTは手配者以上'],
     ['PUT/DELETE', '/site-groups/:id', 'グループ名・所属メンバーの更新、グループ自体の削除(手配者以上)'],
     ['GET', '/artists', '公演一覧(準備中、チーフ以上)。現場名から【セクション等】を除いた本体名で集計。グループ・フォルダ所属情報を付与'],
     ['GET', '/artist-history', '指定した公演の現場一覧を過去/今後に分けて返す(準備中、チーフ以上)。対象は本体名一致の表記ゆれ全て。visitedを付与'],
     ['GET', '/artist-members', '指定した公演を経験したことのあるメンバー一覧(準備中、チーフ以上)。sortパラメータ対応'],
-    ['GET', '/member-artists', '指定したメンバーが行ったことのある公演一覧(準備中、チーフ以上)'],
+    ['GET', '/member-artists', '指定したメンバーが行ったことのある公演一覧(準備中、チーフ以上)。/member-venuesと同様、その公演を経験した全員の中での順位(rank/total)・あと何回で1つ上の順位か(nextRank/gap)を付与'],
     ['GET', '/member-site-log', '指定したメンバーの現場ログ(1稼働=1行、日付降順。チーフ以上)。集計はせず生ログを返す'],
     ['GET', '/name-site-log', '新人報告・ブラックリストの氏名(自由記述)と同じ名前のアプリ登録者を探し、その人の過去の現場ログを返す(blacklist_manage/report_check権限者)。同姓同名は全員分を返す'],
     ['POST', '/artists/bulk-rename', 'チェックした複数の公演名をまとめて統一名称に変更(準備中、手配者以上)。【セクション等】表記は維持'],
@@ -285,7 +291,9 @@ const APP_STRUCTURE_TABLE_COMMENTS = {
   site_nominations: 'チーフ以上による現場メンバー指名',
   rookie_site_matches: '台帳取込時、新人報告/ブラックリスト対象者と同姓同名が現場に入っていた検知記録',
   site_registry: '現場一覧に未配置のまま表示するための現場情報の手動登録',
-  venue_manuals: '会場マニュアルの有無フラグ(本文は未実装)',
+  venue_manuals: '会場マニュアルの有無フラグ(会場一覧のバッジ表示用。実際の本文はvenue_manual_blocksが持つ数から自動同期される)',
+  venue_manual_blocks: '会場マニュアル本文の各ブロック(テキスト/写真/動画)。x/y/w/hは基準幅1000pxの仮想キャンバスに対する絶対座標・サイズで自由配置レイアウトを表現',
+  venue_manual_history: '会場マニュアルの更新履歴(誰が・いつ・どのブロックに何をしたか)',
   login_attempts: 'ログイン失敗回数の記録(ブルートフォース対策)',
   rank_history: 'ランク変更履歴(自動昇格・査定・手動変更)',
   legacy_import_shifts: '過去データ(手配帳から外部で再構築した給与実績)の取込ステージング',
@@ -1582,6 +1590,20 @@ function extractArtistName(site) {
   if (!s) return s;
   return splitSiteBracket(s).base || s;
 }
+// 「行った会場/公演」一覧の各行に添える順位情報。valuesは同じ会場/公演を経験した全員の回数一覧、
+// myValueは対象者本人の回数。rankは同数タイは同順位、次はタイ人数分飛ぶ標準的な順位付け
+// (例: [10,10,8,5]で8の人は3位)。gapは「あと何回で1つ上の順位に並べるか」(タイで足りるため+1しない)。
+function rankInfo(values, myValue) {
+  let greater = 0, nextCnt = null;
+  for (const v of values) {
+    if (v > myValue) { greater++; if (nextCnt === null || v < nextCnt) nextCnt = v; }
+  }
+  const rank = greater + 1;
+  const total = values.length;
+  const nextRank = nextCnt !== null ? values.filter(v => v > nextCnt).length + 1 : null;
+  const gap = nextCnt !== null ? nextCnt - myValue : null;
+  return { rank, total, nextRank, gap };
+}
 // 現場名の本体名(公演名)だけを新しい名前に差し替え、【セクション等】表記はそのまま維持する。
 function rebuildSiteName(site, newArtist) {
   const { bracket, pos } = splitSiteBracket(site);
@@ -2288,7 +2310,11 @@ async function findGigDateRange(env, date, site, opts: any = {}) {
 async function api(req, env, url) {
   const path = url.pathname.replace(/^\/api/, '');
   const method = req.method;
-  const body = method === 'GET' ? {} : await req.json().catch(() => ({}));
+  // multipart/form-data(会場マニュアルの写真/動画アップロード等)はここでJSONとして読み込んで
+  // しまうとリクエストボディが消費され、各ルート側でreq.formData()を呼んでも空になってしまうため、
+  // Content-Typeで判定して読み飛ばす(該当ルート側で改めてreq.formData()を呼ぶ)。
+  const isMultipart = (req.headers.get('content-type') || '').includes('multipart/form-data');
+  const body = method === 'GET' || isMultipart ? {} : await req.json().catch(() => ({}));
 
   // ---- 認証不要 ----
   if (method === 'POST' && path === '/login') {
@@ -2353,6 +2379,49 @@ async function api(req, env, url) {
     const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//RB Jigyou 2ka//Schedule//JA', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH',
       `X-WR-CALNAME:${icsEscape(u.name + 'のスケジュール(RB事業2課)')}`, events, 'END:VCALENDAR'].filter(Boolean).join('\r\n');
     return new Response(ics, { headers: { 'Content-Type': 'text/calendar; charset=utf-8' } });
+  }
+
+  // ---- 会場マニュアルの写真/動画配信(準備中機能)。<img>/<video>のsrcはAuthorizationヘッダーを
+  //      送れないため、この経路だけ例外的に、共通のセッショントークンをクエリ文字列(?t=)で受け取って
+  //      本人確認する(/calendar/:token.icsと同じ「認証不要ブロックでの専用トークン確認」方式)。
+  //      動画のシーク操作に対応するため、Rangeリクエストにも対応する。 ----
+  if (method === 'GET' && path.startsWith('/venue-manual/media/')) {
+    const qtoken = url.searchParams.get('t') || '';
+    const s = qtoken ? await env.DB.prepare(
+      'SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token=?'
+    ).bind(qtoken).first() : null;
+    if (!s || !has(s, 'sites_view')) return new Response('Not Found', { status: 404 });
+    if (!env.MANUALS) return ERR('R2が未設定です', 500);
+    // キーはPOST /venue-manual/uploadでencodeURIComponent(venue)を含む形でR2に保存しているため、
+    // URLのpathnameはWorkersがパーセントエンコードを保持したまま渡してくる(自動デコードしない)
+    // ことを利用し、ここではデコードせずそのままR2のキーとして使う(decodeURIComponentすると
+    // 元のキーと文字列が一致しなくなり404になってしまう)。
+    const key = path.slice('/venue-manual/media/'.length);
+    const rangeHeader = req.headers.get('range');
+    let range = null;
+    if (rangeHeader) {
+      const m = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+      if (m) range = { offset: Number(m[1]), length: m[2] ? Number(m[2]) - Number(m[1]) + 1 : undefined };
+    }
+    const obj = await env.MANUALS.get(key, range ? { range } : undefined);
+    if (!obj) return new Response('Not Found', { status: 404 });
+    const contentType = obj.httpMetadata?.contentType || 'application/octet-stream';
+    if (range) {
+      const length = range.length ?? (obj.size - range.offset);
+      return new Response(obj.body, {
+        status: 206,
+        headers: {
+          'Content-Type': contentType,
+          'Content-Range': `bytes ${range.offset}-${range.offset + length - 1}/${obj.size}`,
+          'Content-Length': String(length),
+          'Accept-Ranges': 'bytes',
+          'Cache-Control': 'private, max-age=3600',
+        }
+      });
+    }
+    return new Response(obj.body, {
+      headers: { 'Content-Type': contentType, 'Content-Length': String(obj.size), 'Accept-Ranges': 'bytes', 'Cache-Control': 'private, max-age=3600' }
+    });
   }
 
   // ---- スプレッドシート取り込み(GAS用・共有トークン認証)----
@@ -4083,7 +4152,14 @@ async function api(req, env, url) {
     const rows = (await env.DB.prepare(
       "SELECT venue, COUNT(*) AS cnt, COUNT(DISTINCT date) AS dateCnt, MAX(date) AS lastDate FROM schedule WHERE type='work' AND user_id=? AND venue<>'' GROUP BY venue ORDER BY cnt DESC"
     ).bind(uid).all()).results;
-    return J(rows);
+    // 全員分の(会場,人)ごとの回数を取得し、対象者の順位・あと何回で1つ上の順位に並べるかを算出する
+    const allRows = (await env.DB.prepare(
+      "SELECT venue, user_id, COUNT(*) AS cnt FROM schedule WHERE type='work' AND venue<>'' GROUP BY venue, user_id"
+    ).all()).results;
+    const byVenueUsers: Record<string, number[]> = {};
+    for (const r of allRows) (byVenueUsers[r.venue] ||= []).push(r.cnt);
+    const result = rows.map(r => ({ ...r, ...rankInfo(byVenueUsers[r.venue] || [r.cnt], r.cnt) }));
+    return J(result);
   }
 
   // ---- 個人が行ったことのある公演一覧(準備中、チーフ以上)。GET /artistsと同じく(現場名,日付)単位で
@@ -4102,10 +4178,22 @@ async function api(req, env, url) {
       byArtist[artist].cnt += r.cnt;
       byArtist[artist].dates.add(r.date);
     }
-    const result = Object.values(byArtist).map(a => {
+    const myArtistRows = Object.values(byArtist).map(a => {
       const sorted = [...a.dates].sort();
       return { artist: a.artist, cnt: a.cnt, dateCnt: a.dates.size, lastDate: sorted[sorted.length - 1] };
     }).sort((x, y) => y.cnt - x.cnt);
+    // 全員分の(公演,人)ごとの回数を取得し、対象者の順位・あと何回で1つ上の順位に並べるかを算出する
+    // (公演名は現場名から都度抽出する値のためSQLでは集計できず、Worker側で全件から再集計する)
+    const allRows = (await env.DB.prepare(
+      "SELECT user_id, site, date, COUNT(*) AS cnt FROM schedule WHERE type='work' AND site<>'' GROUP BY user_id, site, date"
+    ).all()).results;
+    const byArtistUsers: Record<string, Record<string, number>> = {};
+    for (const r of allRows) {
+      const artist = extractArtistName(r.site);
+      const bucket = byArtistUsers[artist] ||= {};
+      bucket[r.user_id] = (bucket[r.user_id] || 0) + r.cnt;
+    }
+    const result = myArtistRows.map(a => ({ ...a, ...rankInfo(Object.values(byArtistUsers[a.artist] || { me: a.cnt }), a.cnt) }));
     return J(result);
   }
 
@@ -4338,9 +4426,11 @@ async function api(req, env, url) {
     return J({ ok: 1 });
   }
 
-  // ---- 会場マニュアルの有無フラグ(手配者以上)。マニュアル本文自体はまだ実装していないが、
-  //      「この会場は既にマニュアルを用意済みか」を会場一覧で一目で分かるようにするための機能。
-  //      行の存在=あり、として扱う(venue_manualsに行が無ければ「なし」)。 ----
+  // ---- 会場マニュアルの有無フラグの手動設定(手配者以上)。「この会場は既にマニュアルを
+  //      用意済みか」を会場一覧で一目で分かるようにするための機能。行の存在=あり、として扱う
+  //      (venue_manualsに行が無ければ「なし」)。本文(venue_manual_blocks)が実際に1件以上あれば
+  //      PUT /venue-manual側で自動的にこのフラグも同期されるため、通常はここを手動で操作する
+  //      必要はない(本文が無いままフラグだけ立てたい場合等の補助的な経路として残している)。 ----
   if (method === 'POST' && path === '/venues/manual-flag') {
     if (!has(me, 'site_manage')) return ERR('権限がありません', 403);
     const venue = typeof body.venue === 'string' ? body.venue.trim() : '';
@@ -4351,6 +4441,134 @@ async function api(req, env, url) {
       await env.DB.prepare('DELETE FROM venue_manuals WHERE venue=?').bind(venue).run();
     }
     return J({ ok: 1 });
+  }
+
+  // ---- 会場マニュアル本文(準備中機能、機能公開設定で通常は非表示)。自由配置キャンバス方式で、
+  //      テキスト/写真/動画のブロックをx/y/w/h(基準幅1000pxの仮想キャンバスに対する絶対座標・
+  //      サイズ。高さ方向は内容に応じて自由に伸ばせる)で保持する。フロント側はコンテナの実際の
+  //      幅÷1000を拡大率としてtransform:scale()で一括縮小/拡大し、PC/スマホどちらでも同じ
+  //      レイアウトに見せる。閲覧はsites_view、編集はsite_manage(手配者以上)。 ----
+  if (method === 'GET' && path === '/venue-manual') {
+    if (!has(me, 'sites_view')) return ERR('ページが見つかりません', 404);
+    const venue = (url.searchParams.get('venue') || '').trim();
+    if (!venue) return ERR('会場名が必要です');
+    const [blocksRes, historyRes] = await Promise.all([
+      env.DB.prepare('SELECT * FROM venue_manual_blocks WHERE venue=? ORDER BY z ASC, id ASC').bind(venue).all(),
+      env.DB.prepare('SELECT * FROM venue_manual_history WHERE venue=? ORDER BY id DESC LIMIT 100').bind(venue).all(),
+    ]);
+    return J({ venue, blocks: blocksRes.results, history: historyRes.results });
+  }
+
+  // ---- 会場マニュアル本文の一括保存(sites_view、チーフ以上。マニュアルの追加・保存・編集は
+  //      現場名一括改名等より対象を広く取り、チーフ以上なら誰でも書き込める)。フロントから現在の
+  //      全ブロックを配列で受け取り、DB側の現在の内容とid単位で突き合わせて追加/変更/削除を判定する
+  //      (差分diff方式)。ドラッグ中の中間状態は送られてこない(フロント側が「保存」操作単位で
+  //      まとめて呼ぶ設計)ため、履歴には実際に変化したブロックの分だけ1行ずつ記録される。 ----
+  if (method === 'PUT' && path === '/venue-manual') {
+    if (!has(me, 'sites_view')) return ERR('権限がありません', 403);
+    const venue = typeof body.venue === 'string' ? body.venue.trim() : '';
+    if (!venue) return ERR('会場名が必要です');
+    const MANUAL_TYPES = ['text', 'photo', 'video'];
+    const MANUAL_MAX_BLOCKS = 300; // 暴走防止の安全網(1会場あたり)
+    const MANUAL_CANVAS_W = 1000; // 仮想キャンバスの基準幅(px相当)。高さは内容に応じて自由に伸ばせる
+    const typeLabelOf = (t) => t === 'text' ? 'テキスト' : t === 'photo' ? '写真' : '動画';
+    const clampNum = (n, def, min, max) => { const v = Number(n); return Number.isFinite(v) ? Math.round(Math.max(min, Math.min(max, v)) * 100) / 100 : def; };
+
+    const incoming = Array.isArray(body.blocks) ? body.blocks : [];
+    if (incoming.length > MANUAL_MAX_BLOCKS) return ERR(`ブロック数が多すぎます(1会場あたり上限${MANUAL_MAX_BLOCKS}件)`);
+
+    const existing: any[] = (await env.DB.prepare('SELECT * FROM venue_manual_blocks WHERE venue=?').bind(venue).all()).results;
+    const existingById: Map<number, any> = new Map(existing.map(b => [b.id, b]));
+    const ts = jstTs();
+    const historyRows = [];
+    const seenIds = new Set();
+
+    for (const raw of incoming) {
+      const type = MANUAL_TYPES.includes(raw && raw.type) ? raw.type : null;
+      if (!type) continue; // 不正な種別のブロックは無視し、他の正常なブロックの保存は継続する
+      const content = typeof raw.content === 'string' ? raw.content : '';
+      const x = clampNum(raw.x, 0, 0, MANUAL_CANVAS_W);
+      const y = clampNum(raw.y, 0, 0, 20000);
+      const w = clampNum(raw.w, 300, 10, MANUAL_CANVAS_W);
+      const h = clampNum(raw.h, 150, 10, 20000);
+      const z = Number.isFinite(Number(raw.z)) ? Math.trunc(Number(raw.z)) : 0;
+      const id = Number(raw.id);
+
+      if (raw.id && existingById.has(id)) {
+        seenIds.add(id);
+        const cur = existingById.get(id);
+        const contentChanged = cur.content !== content;
+        const posChanged = cur.x !== x || cur.y !== y || cur.w !== w || cur.h !== h || cur.z !== z;
+        if (!contentChanged && !posChanged) continue;
+        // 差し替えられた写真/動画は、古いR2オブジェクトを削除する(孤児化防止)
+        if (contentChanged && (cur.type === 'photo' || cur.type === 'video') && cur.content && env.MANUALS) {
+          try { await env.MANUALS.delete(cur.content); } catch (e) {}
+        }
+        await env.DB.prepare('UPDATE venue_manual_blocks SET content=?,x=?,y=?,w=?,h=?,z=?,updated_by=?,updated_at=? WHERE id=?')
+          .bind(content, x, y, w, h, z, me.id, ts, id).run();
+        const summary = contentChanged && posChanged ? `${typeLabelOf(type)}ブロックの内容と配置を変更`
+          : contentChanged ? `${typeLabelOf(type)}ブロックの内容を変更` : `${typeLabelOf(type)}ブロックの配置を変更`;
+        historyRows.push([venue, id, 'edit', summary, me.id, me.name, ts]);
+      } else {
+        const ins = await env.DB.prepare(
+          'INSERT INTO venue_manual_blocks(venue,type,content,x,y,w,h,z,created_by,created_at,updated_by,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)'
+        ).bind(venue, type, content, x, y, w, h, z, me.id, ts, me.id, ts).run();
+        historyRows.push([venue, ins.meta.last_row_id, 'add', `${typeLabelOf(type)}ブロックを追加`, me.id, me.name, ts]);
+      }
+    }
+
+    for (const b of existing) {
+      if (seenIds.has(b.id)) continue;
+      if ((b.type === 'photo' || b.type === 'video') && b.content && env.MANUALS) {
+        try { await env.MANUALS.delete(b.content); } catch (e) {}
+      }
+      await env.DB.prepare('DELETE FROM venue_manual_blocks WHERE id=?').bind(b.id).run();
+      historyRows.push([venue, b.id, 'delete', `${typeLabelOf(b.type)}ブロックを削除`, me.id, me.name, ts]);
+    }
+
+    if (historyRows.length) {
+      await env.DB.batch(historyRows.map(row => env.DB.prepare(
+        'INSERT INTO venue_manual_history(venue,block_id,action,summary,user_id,user_name,created_at) VALUES(?,?,?,?,?,?,?)'
+      ).bind(...row)));
+    }
+
+    // 実際にブロックが残っているかどうかで、会場一覧の「マニュアルあり」フラグを自動的に同期する
+    const remain = await env.DB.prepare('SELECT COUNT(*) AS c FROM venue_manual_blocks WHERE venue=?').bind(venue).first();
+    if ((remain.c || 0) > 0) {
+      await env.DB.prepare('INSERT OR REPLACE INTO venue_manuals(venue,updated_by,updated_at) VALUES(?,?,?)').bind(venue, me.id, ts).run();
+    } else {
+      await env.DB.prepare('DELETE FROM venue_manuals WHERE venue=?').bind(venue).run();
+    }
+
+    const blocks = (await env.DB.prepare('SELECT * FROM venue_manual_blocks WHERE venue=? ORDER BY z ASC, id ASC').bind(venue).all()).results;
+    const history = (await env.DB.prepare('SELECT * FROM venue_manual_history WHERE venue=? ORDER BY id DESC LIMIT 100').bind(venue).all()).results;
+    return J({ ok: 1, blocks, history });
+  }
+
+  // ---- 会場マニュアルの写真/動画アップロード(sites_view、チーフ以上。PUT /venue-manualと同じ
+  //      対象範囲)。multipart/form-dataでvenue・kind('photo'|'video')・fileを受け取り、
+  //      R2(MANUALSバケット)へ保存してキーを返す。返されたキーを、PUT /venue-manualの
+  //      ブロックcontentとして使う。 ----
+  if (method === 'POST' && path === '/venue-manual/upload') {
+    if (!has(me, 'sites_view')) return ERR('権限がありません', 403);
+    if (!env.MANUALS) return ERR('R2が未設定です', 500);
+    let form;
+    try { form = await req.formData(); } catch (e) { return ERR('アップロード形式が不正です'); }
+    const venue = String(form.get('venue') || '').trim();
+    const kind = String(form.get('kind') || '');
+    const file = form.get('file');
+    if (!venue) return ERR('会場名が必要です');
+    if (kind !== 'photo' && kind !== 'video') return ERR('種別が不正です');
+    if (!file || typeof file === 'string' || typeof file.arrayBuffer !== 'function') return ERR('ファイルが指定されていません');
+    const contentType = file.type || '';
+    if (kind === 'photo' && !contentType.startsWith('image/')) return ERR('画像ファイルを選択してください');
+    if (kind === 'video' && !contentType.startsWith('video/')) return ERR('動画ファイルを選択してください');
+    const MAX = kind === 'photo' ? 8 * 1024 * 1024 : 80 * 1024 * 1024;
+    if (file.size > MAX) return ERR(`ファイルが大きすぎます(上限${Math.round(MAX / 1024 / 1024)}MB)`);
+    const ext = (String(file.name || '').match(/\.[a-zA-Z0-9]+$/) || [''])[0] || (kind === 'photo' ? '.jpg' : '.mp4');
+    const key = `manuals/${encodeURIComponent(venue)}/${jstTs().replace(/[: ]/g, '-')}_${rnd().slice(0, 10)}${ext}`;
+    await env.MANUALS.put(key, await file.arrayBuffer(), { httpMetadata: { contentType } });
+    return J({ key });
   }
 
   // ---- 会場一覧: 選択した複数の会場名を、まとめて統一名称に変更(手配者以上)。
@@ -4401,6 +4619,10 @@ async function api(req, env, url) {
     const hadManual = await env.DB.prepare(`SELECT 1 FROM venue_manuals WHERE venue IN (${ph}) LIMIT 1`).bind(...venues).first();
     await env.DB.prepare(`DELETE FROM venue_manuals WHERE venue IN (${ph})`).bind(...venues).run();
     if (hadManual) await env.DB.prepare('INSERT OR REPLACE INTO venue_manuals(venue,updated_by,updated_at) VALUES(?,?,?)').bind(newVenue, me.id, ts).run();
+    // 会場マニュアルの本文・更新履歴も、統合後の新しい会場名にそのまま付け替える
+    // (両方に本文がある場合は単純に合算されるため、必要なら手動で位置を整理し直す想定)
+    await env.DB.prepare(`UPDATE venue_manual_blocks SET venue=? WHERE venue IN (${ph})`).bind(newVenue, ...venues).run();
+    await env.DB.prepare(`UPDATE venue_manual_history SET venue=? WHERE venue IN (${ph})`).bind(newVenue, ...venues).run();
 
     // 会場グループのメンバー名も、統合後の新しい会場名に付け替える(OR IGNOREで、同じグループに
     // 既に新名が存在する場合はそのまま=静かにスキップする)

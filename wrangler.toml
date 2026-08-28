@@ -16,6 +16,10 @@ database_id = "2806d7f0-3096-4e9a-a2cc-f45f7a1cc6f7"
 binding = "DAICHO"
 bucket_name = "ty-daicho"
 
+[[r2_buckets]]
+binding = "MANUALS"
+bucket_name = "ty-venue-manuals"
+
 [triggers]
 # 4つのcron処理(台帳再取込・予定表ソース取込・ランク昇格適用・新人報告リマインド)は、
 # 以前は1本のcron("0 * * * *")の中でscheduled()が順番に全部実行する設計だった。

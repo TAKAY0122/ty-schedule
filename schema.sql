@@ -369,14 +369,48 @@ CREATE TABLE IF NOT EXISTS site_registry(
 );
 CREATE INDEX IF NOT EXISTS idx_site_registry_date ON site_registry(date);
 
--- 会場マニュアルの有無フラグ。マニュアル本文自体は未実装(機能公開設定で「準備中」)だが、
--- 会場一覧で「この会場は既にマニュアルを用意済みか」を一目で分かるようにするための機能。
--- 行の存在=あり、として扱う(無ければ「なし」)。
+-- 会場マニュアルの有無フラグ。会場一覧で「この会場は既にマニュアルを用意済みか」を一目で分かる
+-- ようにするための機能。行の存在=あり、として扱う(無ければ「なし」)。本文自体は
+-- venue_manual_blocks/venue_manual_historyで管理する(機能公開設定は当面「準備中」のまま)。
 CREATE TABLE IF NOT EXISTS venue_manuals(
   venue TEXT PRIMARY KEY,
   updated_by INTEGER,
   updated_at TEXT
 );
+
+-- 会場マニュアル本文(自由配置キャンバス方式)。x/y/w/hは基準幅1000pxの仮想キャンバスに対する
+-- 絶対座標・サイズ(px相当)。高さ方向は内容に応じて自由に伸ばせる。フロント側でコンテナの
+-- 実際の幅÷1000を拡大率としてtransform:scale()で一括縮小/拡大し、PC/スマホ双方に対応する。
+CREATE TABLE IF NOT EXISTS venue_manual_blocks(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  venue TEXT NOT NULL,
+  type TEXT NOT NULL,           -- 'text' | 'photo' | 'video'
+  content TEXT,                 -- text: 本文そのもの。photo/video: R2キー(MANUALSバケット)
+  x REAL NOT NULL DEFAULT 0,
+  y REAL NOT NULL DEFAULT 0,
+  w REAL NOT NULL DEFAULT 20,
+  h REAL NOT NULL DEFAULT 10,
+  z INTEGER NOT NULL DEFAULT 0,
+  created_by INTEGER,
+  created_at TEXT,
+  updated_by INTEGER,
+  updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_venue_manual_blocks_venue ON venue_manual_blocks(venue);
+
+-- 会場マニュアルの更新履歴(誰が・いつ・どのブロックに何をしたか)。「保存」操作1回につき、
+-- 実際に変化したブロックの数だけ1行ずつ記録する(ドラッグ中の中間状態は記録しない)。
+CREATE TABLE IF NOT EXISTS venue_manual_history(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  venue TEXT NOT NULL,
+  block_id INTEGER,
+  action TEXT NOT NULL,         -- 'add' | 'edit' | 'delete'
+  summary TEXT,
+  user_id INTEGER,
+  user_name TEXT,
+  created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_venue_manual_history_venue ON venue_manual_history(venue, created_at DESC);
 
 -- ログイン失敗回数の記録(ブルートフォース攻撃対策)。登録番号ごとに一定回数失敗すると
 -- 一定時間ロックする。regnoが存在しない/しないに関わらず記録し、アカウント有無の推測も防ぐ。
