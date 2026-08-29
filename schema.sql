@@ -381,11 +381,14 @@ CREATE TABLE IF NOT EXISTS venue_manuals(
 -- 会場マニュアル本文(自由配置キャンバス方式)。x/y/w/hは基準幅1000pxの仮想キャンバスに対する
 -- 絶対座標・サイズ(px相当)。高さ方向は内容に応じて自由に伸ばせる。フロント側でコンテナの
 -- 実際の幅÷1000を拡大率としてtransform:scale()で一括縮小/拡大し、PC/スマホ双方に対応する。
+-- style列(JSON文字列)で、文字装飾(サイズ・色・太字等)・図形の種類/塗り/線・表の見出し色等、
+-- type別の見た目設定を保持する(2026年8月拡張)。内容の妥当性はサーバー側sanitizeStyle()で検証する。
 CREATE TABLE IF NOT EXISTS venue_manual_blocks(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   venue TEXT NOT NULL,
-  type TEXT NOT NULL,           -- 'text' | 'photo' | 'video'
-  content TEXT,                 -- text: 本文そのもの。photo/video: R2キー(MANUALSバケット)
+  type TEXT NOT NULL,           -- 'text' | 'photo' | 'video' | 'shape' | 'table'
+  content TEXT,                 -- text: 本文そのもの。photo/video: R2キー(MANUALSバケット)。table: 行列データのJSON
+  style TEXT DEFAULT '{}',      -- 見た目設定のJSON(type別。文字装飾/図形の塗り・線/表の色等)
   x REAL NOT NULL DEFAULT 0,
   y REAL NOT NULL DEFAULT 0,
   w REAL NOT NULL DEFAULT 20,

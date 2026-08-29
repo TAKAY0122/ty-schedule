@@ -186,8 +186,8 @@ const APP_STRUCTURE_API_GROUPS = [
     ['GET', '/venue-history', '指定した会場の現場一覧を今日を境に過去/今後に分けて返す(チーフ以上)。hasManual・visitedも返す'],
     ['POST', '/venues/bulk-rename', 'チェックした複数の会場名をまとめて統一名称に変更(手配者以上)。site_registry.venue・venue_manuals・site_group_membersも引き継ぐ'],
     ['POST', '/venues/manual-flag', '会場マニュアルの有無フラグを設定(手配者以上)'],
-    ['GET', '/venue-manual', '会場マニュアル本文(自由配置キャンバス方式)のブロック一覧・更新履歴を取得(準備中機能、チーフ以上)'],
-    ['PUT', '/venue-manual', '会場マニュアル本文を差分保存(追加/変更/削除を判定し、変化したブロックだけ履歴に記録。追加・保存・編集はチーフ以上)'],
+    ['GET', '/venue-manual', '会場マニュアル本文(自由配置キャンバス方式)のブロック一覧・更新履歴を取得(準備中機能、チーフ以上)。ブロック種別はtext/photo/video/shape(図形)/table(簡易表)'],
+    ['PUT', '/venue-manual', '会場マニュアル本文を差分保存(追加/変更/削除を判定し、変化したブロックだけ履歴に記録。追加・保存・編集はチーフ以上)。style列(JSON)で文字装飾・図形の塗り/線・表の色等を保持'],
     ['POST', '/venue-manual/upload', '会場マニュアル用の写真/動画をR2(MANUALSバケット)へアップロードしキーを返す(チーフ以上)'],
     ['GET', '/venue-manual/media/:key', '会場マニュアルの写真/動画配信。<img>/<video>から直接読み込むため、セッショントークンをクエリ文字列(?t=)で受け取る専用経路'],
     ['GET', '/venue-members', '指定した会場を経験したことのあるメンバー一覧(チーフ以上)。sortパラメータでcnt/recent/rankに切替可能。停止中アカウントも含む'],
@@ -292,7 +292,7 @@ const APP_STRUCTURE_TABLE_COMMENTS = {
   rookie_site_matches: '台帳取込時、新人報告/ブラックリスト対象者と同姓同名が現場に入っていた検知記録',
   site_registry: '現場一覧に未配置のまま表示するための現場情報の手動登録',
   venue_manuals: '会場マニュアルの有無フラグ(会場一覧のバッジ表示用。実際の本文はvenue_manual_blocksが持つ数から自動同期される)',
-  venue_manual_blocks: '会場マニュアル本文の各ブロック(テキスト/写真/動画)。x/y/w/hは基準幅1000pxの仮想キャンバスに対する絶対座標・サイズで自由配置レイアウトを表現',
+  venue_manual_blocks: '会場マニュアル本文の各ブロック(テキスト/写真/動画/図形/表)。x/y/w/hは基準幅1000pxの仮想キャンバスに対する絶対座標・サイズで自由配置レイアウトを表現。styleに文字装飾・図形の塗り/線・表の色等をJSONで保持',
   venue_manual_history: '会場マニュアルの更新履歴(誰が・いつ・どのブロックに何をしたか)',
   login_attempts: 'ログイン失敗回数の記録(ブルートフォース対策)',
   rank_history: 'ランク変更履歴(自動昇格・査定・手動変更)',
@@ -4468,11 +4468,57 @@ async function api(req, env, url) {
     if (!has(me, 'sites_view')) return ERR('権限がありません', 403);
     const venue = typeof body.venue === 'string' ? body.venue.trim() : '';
     if (!venue) return ERR('会場名が必要です');
-    const MANUAL_TYPES = ['text', 'photo', 'video'];
+    const MANUAL_TYPES = ['text', 'photo', 'video', 'shape', 'table'];
     const MANUAL_MAX_BLOCKS = 300; // 暴走防止の安全網(1会場あたり)
     const MANUAL_CANVAS_W = 1000; // 仮想キャンバスの基準幅(px相当)。高さは内容に応じて自由に伸ばせる
-    const typeLabelOf = (t) => t === 'text' ? 'テキスト' : t === 'photo' ? '写真' : '動画';
+    const typeLabelOf = (t) => t === 'text' ? 'テキスト' : t === 'photo' ? '写真' : t === 'video' ? '動画' : t === 'shape' ? '図形' : '表';
     const clampNum = (n, def, min, max) => { const v = Number(n); return Number.isFinite(v) ? Math.round(Math.max(min, Math.min(max, v)) * 100) / 100 : def; };
+
+    // 自由装飾(文字サイズ・色・図形の塗り/線・表の色等)の値を、type別に許可された範囲・形式だけ
+    // 通すサニタイズ。フロントは<input type="color">等のUI部品からしか値を渡してこない前提だが、
+    // 不正なJSONが送られてもCSS注入(styleクエリ文字列への攻撃)にならないよう、サーバー側でも
+    // 16進カラーコード・enum・数値範囲を必ず検証してから保存する。
+    const SHAPE_KINDS = ['rect', 'ellipse', 'line', 'arrow'];
+    const TEXT_ALIGNS = ['left', 'center', 'right'];
+    const isColor = (v) => typeof v === 'string' && (v === 'transparent' || /^#[0-9a-fA-F]{6}$/.test(v));
+    const numIn = (v, def, min, max) => { const n = Number(v); return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : def; };
+    const sanitizeStyle = (type, raw) => {
+      const s = raw && typeof raw === 'object' ? raw : {};
+      if (type === 'text') return {
+        fontSize: numIn(s.fontSize, 15, 10, 96),
+        color: isColor(s.color) ? s.color : '#1b2333',
+        bg: isColor(s.bg) ? s.bg : '#fffdf4',
+        bold: !!s.bold, italic: !!s.italic, underline: !!s.underline,
+        align: TEXT_ALIGNS.includes(s.align) ? s.align : 'left',
+        rotation: numIn(s.rotation, 0, -180, 180),
+      };
+      if (type === 'shape') return {
+        shape: SHAPE_KINDS.includes(s.shape) ? s.shape : 'rect',
+        fill: isColor(s.fill) ? s.fill : '#f5e9b8',
+        stroke: isColor(s.stroke) ? s.stroke : '#c9a227',
+        strokeWidth: numIn(s.strokeWidth, 2, 0, 20),
+        rotation: numIn(s.rotation, 0, -180, 180),
+        opacity: numIn(s.opacity, 1, 0.1, 1),
+      };
+      if (type === 'table') return {
+        headerBg: isColor(s.headerBg) ? s.headerBg : '#f5e9b8',
+        borderColor: isColor(s.borderColor) ? s.borderColor : '#d8cfa8',
+        fontSize: numIn(s.fontSize, 13, 10, 40),
+      };
+      // photo / video
+      return { rotation: numIn(s.rotation, 0, -180, 180), opacity: numIn(s.opacity, 1, 0.1, 1) };
+    };
+    // 表ブロックのcontent(行列データ)。行数・列数・セル文字数に上限を設け、
+    // 全行の列数を最大列数にそろえる(不揃いだと表示側で崩れるため)。
+    const TABLE_MAX_ROWS = 30, TABLE_MAX_COLS = 12, TABLE_MAX_CELL = 500;
+    const sanitizeTableContent = (raw) => {
+      let obj; try { obj = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { obj = null; }
+      let cells = (obj && Array.isArray(obj.cells) && obj.cells.length) ? obj.cells : [['', '']];
+      cells = cells.slice(0, TABLE_MAX_ROWS).map(row => (Array.isArray(row) ? row : ['']).slice(0, TABLE_MAX_COLS).map(c => String(c ?? '').slice(0, TABLE_MAX_CELL)));
+      const cols = Math.max(1, ...cells.map(r => r.length));
+      cells = cells.map(r => { while (r.length < cols) r.push(''); return r; });
+      return JSON.stringify({ cells, header: !!(obj && obj.header) });
+    };
 
     const incoming = Array.isArray(body.blocks) ? body.blocks : [];
     if (incoming.length > MANUAL_MAX_BLOCKS) return ERR(`ブロック数が多すぎます(1会場あたり上限${MANUAL_MAX_BLOCKS}件)`);
@@ -4486,7 +4532,8 @@ async function api(req, env, url) {
     for (const raw of incoming) {
       const type = MANUAL_TYPES.includes(raw && raw.type) ? raw.type : null;
       if (!type) continue; // 不正な種別のブロックは無視し、他の正常なブロックの保存は継続する
-      const content = typeof raw.content === 'string' ? raw.content : '';
+      const content = type === 'table' ? sanitizeTableContent(raw.content) : (typeof raw.content === 'string' ? raw.content : '');
+      const style = JSON.stringify(sanitizeStyle(type, raw.style));
       const x = clampNum(raw.x, 0, 0, MANUAL_CANVAS_W);
       const y = clampNum(raw.y, 0, 0, 20000);
       const w = clampNum(raw.w, 300, 10, MANUAL_CANVAS_W);
@@ -4498,21 +4545,24 @@ async function api(req, env, url) {
         seenIds.add(id);
         const cur = existingById.get(id);
         const contentChanged = cur.content !== content;
+        const styleChanged = (cur.style || '{}') !== style;
         const posChanged = cur.x !== x || cur.y !== y || cur.w !== w || cur.h !== h || cur.z !== z;
-        if (!contentChanged && !posChanged) continue;
+        if (!contentChanged && !styleChanged && !posChanged) continue;
         // 差し替えられた写真/動画は、古いR2オブジェクトを削除する(孤児化防止)
         if (contentChanged && (cur.type === 'photo' || cur.type === 'video') && cur.content && env.MANUALS) {
           try { await env.MANUALS.delete(cur.content); } catch (e) {}
         }
-        await env.DB.prepare('UPDATE venue_manual_blocks SET content=?,x=?,y=?,w=?,h=?,z=?,updated_by=?,updated_at=? WHERE id=?')
-          .bind(content, x, y, w, h, z, me.id, ts, id).run();
-        const summary = contentChanged && posChanged ? `${typeLabelOf(type)}ブロックの内容と配置を変更`
-          : contentChanged ? `${typeLabelOf(type)}ブロックの内容を変更` : `${typeLabelOf(type)}ブロックの配置を変更`;
-        historyRows.push([venue, id, 'edit', summary, me.id, me.name, ts]);
+        await env.DB.prepare('UPDATE venue_manual_blocks SET content=?,style=?,x=?,y=?,w=?,h=?,z=?,updated_by=?,updated_at=? WHERE id=?')
+          .bind(content, style, x, y, w, h, z, me.id, ts, id).run();
+        const parts = [];
+        if (contentChanged) parts.push('内容');
+        if (styleChanged) parts.push('見た目');
+        if (posChanged) parts.push('配置');
+        historyRows.push([venue, id, 'edit', `${typeLabelOf(type)}ブロックの${parts.join('・')}を変更`, me.id, me.name, ts]);
       } else {
         const ins = await env.DB.prepare(
-          'INSERT INTO venue_manual_blocks(venue,type,content,x,y,w,h,z,created_by,created_at,updated_by,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)'
-        ).bind(venue, type, content, x, y, w, h, z, me.id, ts, me.id, ts).run();
+          'INSERT INTO venue_manual_blocks(venue,type,content,style,x,y,w,h,z,created_by,created_at,updated_by,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)'
+        ).bind(venue, type, content, style, x, y, w, h, z, me.id, ts, me.id, ts).run();
         historyRows.push([venue, ins.meta.last_row_id, 'add', `${typeLabelOf(type)}ブロックを追加`, me.id, me.name, ts]);
       }
     }

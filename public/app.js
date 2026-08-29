@@ -79,6 +79,10 @@ const ICONS = {
   image:'<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>',
   video:'<path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/>',
   move:'<path d="M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20"/>',
+  alignLeft:'<path d="M21 6H3M15 12H3M17 18H3"/>',
+  alignCenter:'<path d="M21 6H3M17 12H7M19 18H5"/>',
+  alignRight:'<path d="M21 6H3M21 12H9M21 18H7"/>',
+  minus:'<path d="M5 12h14"/>',
 };
 // icon('home')のように呼び、絵文字の代わりに使える線画SVGを返す。sizeとcolorは省略可(currentColorを継承)
 function icon(name, opt={}){
@@ -4125,13 +4129,35 @@ async function uploadManualMedia(venue, kind, file){
   return d.key;
 }
 
-// 会場マニュアル(準備中機能)。自由配置キャンバス方式でテキスト/写真/動画のブロックを自由に
-// 配置・リサイズできる。機能公開設定は既定で「準備中」のため、通常はrender()の共通ゲートで
-// 案内され、管理者だけが(feature-statusを自分で公開に変えるまでの間)ここに到達して
-// プレビュー・編集できる。追加・保存・編集はsites_view権限者(チーフ以上)なら誰でも可能。
+// 会場マニュアル(準備中機能)。自由配置キャンバス方式でテキスト/写真/動画/図形/表のブロックを
+// 自由に配置・リサイズ・装飾できる(2026年8月、文字装飾・図形・簡易表に拡張)。機能公開設定は
+// 既定で「準備中」のため、通常はrender()の共通ゲートで案内され、管理者だけが
+// (feature-statusを自分で公開に変えるまでの間)ここに到達してプレビュー・編集できる。
+// 追加・保存・編集はsites_view権限者(チーフ以上)なら誰でも可能。
 // 座標系は基準幅1000pxの仮想キャンバス(高さは内容に応じて自由に伸びる)。フロント側で
 // コンテナの実際の幅÷1000を拡大率としてtransform:scale()で一括縮小/拡大することで、
 // PC(1280px)・スマホ(375px)どちらでも同じレイアウトに見せる(詳細はsrc/index.tsのコメント参照)。
+// ブロックのstyle(文字サイズ・色・図形の塗り/線・表の色等)は、色ピッカー・数値入力・selectといった
+// 制約されたUI部品からしか値を作らないため、そのままstyle属性文字列へ埋め込んでいる
+// (自由記述のテキストはcontentであり、常にh()でエスケープしてから埋め込む。両者を混同しないこと)。
+function vmDefaultStyle(type){
+  if(type === 'text') return { fontSize:15, color:'#1b2333', bg:'#fffdf4', bold:false, italic:false, underline:false, align:'left', rotation:0 };
+  if(type === 'shape') return { shape:'rect', fill:'#f5e9b8', stroke:'#c9a227', strokeWidth:2, rotation:0, opacity:1 };
+  if(type === 'table') return { headerBg:'#f5e9b8', borderColor:'#d8cfa8', fontSize:13 };
+  return { rotation:0, opacity:1 }; // photo / video
+}
+function vmParseStyle(type, raw){
+  let s; try{ s = JSON.parse(raw || '{}'); }catch(e){ s = {}; }
+  return { ...vmDefaultStyle(type), ...s };
+}
+function vmParseTableContent(raw){
+  let obj; try{ obj = JSON.parse(raw || '{}'); }catch(e){ obj = {}; }
+  let cells = (Array.isArray(obj.cells) && obj.cells.length) ? obj.cells.map(r => (Array.isArray(r) ? r : ['']).map(c => String(c ?? ''))) : [['',''],['','']];
+  return { cells, header: !!obj.header };
+}
+function vmHydrateBlock(b){
+  return { ...b, style: vmParseStyle(b.type, b.style), content: b.type === 'table' ? vmParseTableContent(b.content) : b.content };
+}
 async function pageVenueManual(app, hash){
   const venue = decodeURIComponent(hash.split('/')[2] || '');
   if(!venue){ notFound(app); return; }
@@ -4142,19 +4168,74 @@ async function pageVenueManual(app, hash){
 
   const CANVAS_W = 1000;
   const canEdit = has('sites_view');
-  const state = { blocks: data.blocks.map(b => ({ ...b })), history: data.history, editMode: false, dirty: false, selected: null, nextTemp: -1 };
+  const state = { blocks: data.blocks.map(vmHydrateBlock), history: data.history, editMode: false, dirty: false, selected: null, nextTemp: -1 };
   let onResize = null;
 
-  const blockLabel = (t) => t === 'text' ? 'テキスト' : t === 'photo' ? '写真' : '動画';
+  const blockLabel = (t) => t === 'text' ? 'テキスト' : t === 'photo' ? '写真' : t === 'video' ? '動画' : t === 'shape' ? '図形' : '表';
   const canvasHeight = () => Math.max(700, state.blocks.reduce((m, b) => Math.max(m, b.y + b.h), 0) + 80);
   const nextZ = () => state.blocks.reduce((m, b) => Math.max(m, b.z || 0), 0) + 1;
   const nextY = () => state.blocks.length ? Math.max(...state.blocks.map(b => b.y + b.h)) + 20 : 20;
   const markDirty = () => { state.dirty = true; };
 
+  // 装飾値は色ピッカー・数値入力・selectからしか来ない前提だが、style属性へ直接埋め込むため、
+  // 保存前の値だろうと必ずこの2関数を通し、想定外の形式(不正な色文字列等)を弾く。
+  const cssColor = (v, fb) => (typeof v === 'string' && (v === 'transparent' || /^#[0-9a-fA-F]{6}$/.test(v))) ? v : fb;
+  const cssNum = (v, def, min, max) => { const n = Number(v); return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : def; };
+
+  function blockOuterStyle(b){
+    const rot = cssNum(b.style.rotation, 0, -180, 180);
+    const zIndex = state.selected===b ? 9999 : (b.z||0);
+    let extra = '';
+    if(b.type === 'text'){
+      extra = `background:${cssColor(b.style.bg,'transparent')}`;
+    } else if(b.type === 'photo' || b.type === 'video'){
+      extra = `opacity:${cssNum(b.style.opacity,1,0.1,1)}`;
+    } else if(b.type === 'shape'){
+      const shape = ['rect','ellipse','line','arrow'].includes(b.style.shape) ? b.style.shape : 'rect';
+      const op = cssNum(b.style.opacity,1,0.1,1);
+      if(shape === 'line' || shape === 'arrow'){
+        extra = `background:transparent;border:none;opacity:${op}`;
+      } else {
+        const fill = cssColor(b.style.fill,'transparent');
+        const stroke = cssColor(b.style.stroke,'#000000');
+        const sw = cssNum(b.style.strokeWidth,2,0,20);
+        extra = `background:${fill};border:${sw}px solid ${stroke};opacity:${op};border-radius:${shape==='ellipse'?'50%':'4px'}`;
+      }
+    }
+    return `left:${b.x}px;top:${b.y}px;width:${b.w}px;height:${b.h}px;z-index:${zIndex};transform:rotate(${rot}deg);${extra}`;
+  }
+
   function blockInnerHtml(b){
-    if(b.type === 'text') return `<div class="vm-block-body">${b.content ? h(b.content) : (state.editMode ? '<span class="muted">(クリックして編集)</span>' : '')}</div>`;
+    if(b.type === 'text'){
+      const align = ['left','center','right'].includes(b.style.align) ? b.style.align : 'left';
+      const color = cssColor(b.style.color, '#1b2333');
+      const fs = cssNum(b.style.fontSize, 15, 10, 96);
+      const bodyStyle = `text-align:${align};color:${color};font-size:${fs}px;font-weight:${b.style.bold?'bold':'normal'};font-style:${b.style.italic?'italic':'normal'};text-decoration:${b.style.underline?'underline':'none'}`;
+      return `<div class="vm-block-body" style="${bodyStyle}">${b.content ? h(b.content) : (state.editMode ? '<span class="muted">(クリックして編集)</span>' : '')}</div>`;
+    }
     if(b.type === 'photo') return b.content ? `<img src="${manualMediaUrl(b.content)}" alt="">` : `<div class="vm-block-empty">${icon('image',{size:'22px'})}</div>`;
-    return b.content ? `<video src="${manualMediaUrl(b.content)}" controls></video>` : `<div class="vm-block-empty">${icon('video',{size:'22px'})}</div>`;
+    if(b.type === 'video') return b.content ? `<video src="${manualMediaUrl(b.content)}" controls></video>` : `<div class="vm-block-empty">${icon('video',{size:'22px'})}</div>`;
+    if(b.type === 'shape'){
+      const shape = ['rect','ellipse','line','arrow'].includes(b.style.shape) ? b.style.shape : 'rect';
+      if(shape !== 'line' && shape !== 'arrow') return ''; // rect/ellipseは外枠div自体(blockOuterStyle)で表現する
+      const stroke = cssColor(b.style.stroke, '#000000');
+      const sw = cssNum(b.style.strokeWidth, 2, 0, 20);
+      const markerId = 'vm-arrow-' + (b.id ?? b._tempId);
+      const midY = Math.max(1, b.h / 2);
+      return `<svg width="100%" height="100%" viewBox="0 0 ${Math.max(1,b.w)} ${Math.max(1,b.h)}" preserveAspectRatio="none" style="overflow:visible;display:block">
+        ${shape==='arrow' ? `<defs><marker id="${markerId}" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="${stroke}"/></marker></defs>` : ''}
+        <line x1="4" y1="${midY}" x2="${Math.max(4,b.w-4)}" y2="${midY}" stroke="${stroke}" stroke-width="${sw}" ${shape==='arrow'?`marker-end="url(#${markerId})"`:''}/>
+      </svg>`;
+    }
+    if(b.type === 'table'){
+      const cells = b.content && Array.isArray(b.content.cells) ? b.content.cells : [['']];
+      const header = !!(b.content && b.content.header);
+      const fs = cssNum(b.style.fontSize, 13, 10, 40);
+      const bc = cssColor(b.style.borderColor, '#d8cfa8');
+      const hbg = cssColor(b.style.headerBg, '#f5e9b8');
+      return `<table class="vm-table" style="font-size:${fs}px;--vm-table-border:${bc}">${cells.map((row,ri) => `<tr>${row.map((c,ci) => `<td data-r="${ri}" data-c="${ci}" ${header && ri===0 ? `style="background:${hbg};font-weight:600"` : ''}>${h(c)}</td>`).join('')}</tr>`).join('')}</table>`;
+    }
+    return '';
   }
 
   function fitCanvas(){
@@ -4183,7 +4264,7 @@ async function pageVenueManual(app, hash){
   }
 
   function addTextBlock(){
-    const b = { _tempId: state.nextTemp--, type:'text', content:'', x:20, y:nextY(), w:300, h:120, z:nextZ() };
+    const b = { _tempId: state.nextTemp--, type:'text', content:'', x:20, y:nextY(), w:300, h:120, z:nextZ(), style: vmDefaultStyle('text') };
     state.blocks.push(b); state.selected = b; markDirty(); render();
     openTextEditor(b);
   }
@@ -4197,11 +4278,22 @@ async function pageVenueManual(app, hash){
       try{
         const btn = $(kind === 'photo' ? '#vm-add-photo' : '#vm-add-video');
         const key = await withLoading(btn, () => uploadManualMedia(venue, kind, file));
-        const b = { _tempId: state.nextTemp--, type:kind, content:key, x:20, y:nextY(), w: kind === 'photo' ? 320 : 400, h: kind === 'photo' ? 220 : 240, z:nextZ() };
+        const b = { _tempId: state.nextTemp--, type:kind, content:key, x:20, y:nextY(), w: kind === 'photo' ? 320 : 400, h: kind === 'photo' ? 220 : 240, z:nextZ(), style: vmDefaultStyle(kind) };
         state.blocks.push(b); state.selected = b; markDirty(); render();
       }catch(e){ popup(e.message, 'error'); }
     };
     input.click();
+  }
+
+  function addShapeBlock(kind){
+    const isLine = kind === 'line' || kind === 'arrow';
+    const b = { _tempId: state.nextTemp--, type:'shape', content:'', x:20, y:nextY(), w:180, h: isLine ? 40 : 140, z:nextZ(), style: { ...vmDefaultStyle('shape'), shape:kind } };
+    state.blocks.push(b); state.selected = b; markDirty(); render();
+  }
+
+  function addTableBlock(){
+    const b = { _tempId: state.nextTemp--, type:'table', content:{ cells:[['',''],['','']], header:true }, x:20, y:nextY(), w:360, h:140, z:nextZ(), style: vmDefaultStyle('table') };
+    state.blocks.push(b); state.selected = b; markDirty(); render();
   }
 
   function replaceMediaBlock(b){
@@ -4225,7 +4317,7 @@ async function pageVenueManual(app, hash){
 
   // ドラッグ移動。実際に動いた場合だけdirty扱いにする(タップして選択しただけの操作と区別するため)
   function startDrag(ev, b, el){
-    if(ev.target.closest('.vm-block-del,.vm-block-editbtn,.vm-block-handle')) return;
+    if(ev.target.closest('.vm-block-del,.vm-block-editbtn,.vm-block-handle,.vm-table td')) return;
     ev.preventDefault();
     state.selected = b;
     document.querySelectorAll('#vm-canvas .vm-block.selected').forEach(x => x.classList.remove('selected'));
@@ -4272,10 +4364,14 @@ async function pageVenueManual(app, hash){
   }
 
   async function doSave(){
-    const payload = state.blocks.map(b => ({ id: typeof b.id === 'number' ? b.id : undefined, type:b.type, content:b.content, x:b.x, y:b.y, w:b.w, h:b.h, z:b.z }));
+    const payload = state.blocks.map(b => ({
+      id: typeof b.id === 'number' ? b.id : undefined, type:b.type,
+      content: b.type === 'table' ? JSON.stringify(b.content) : b.content,
+      x:b.x, y:b.y, w:b.w, h:b.h, z:b.z, style:b.style,
+    }));
     try{
       const r = await withLoading($('#vm-save'), () => api('/venue-manual', { method:'PUT', body:{ venue, blocks: payload } }));
-      state.blocks = r.blocks.map(b => ({ ...b }));
+      state.blocks = r.blocks.map(vmHydrateBlock);
       state.history = r.history;
       state.dirty = false; state.selected = null;
       popup('保存しました');
@@ -4307,6 +4403,118 @@ async function pageVenueManual(app, hash){
     state.editMode = !state.editMode; state.selected = null; render();
   }
 
+  // 選択中ブロックの装飾コントロール(文字サイズ・色・図形の塗り/線・表の行列操作等)。
+  // typeによって出す項目が変わるため、種別ごとに専用コントロールを組み立て、末尾に
+  // 回転・不透明度・最前面/最背面(全type共通、写真/動画/図形/文字のみ回転・不透明度を出す)を足す。
+  function renderInspector(){
+    const b = state.selected;
+    if(!b || !state.editMode) return '';
+    const colorInput = (id, val, title) => `<input type="color" id="${id}" value="${/^#[0-9a-fA-F]{6}$/.test(val)?val:'#000000'}" title="${title}">`;
+    let controls = '';
+    if(b.type === 'text'){
+      controls = `
+        <input type="number" id="vm-i-fontsize" class="vm-insp-num" min="10" max="96" value="${b.style.fontSize}" title="文字サイズ">
+        <button type="button" class="btn ghost sm ${b.style.bold?'on':''}" id="vm-i-bold" title="太字"><b>B</b></button>
+        <button type="button" class="btn ghost sm ${b.style.italic?'on':''}" id="vm-i-italic" title="斜体"><i>I</i></button>
+        <button type="button" class="btn ghost sm ${b.style.underline?'on':''}" id="vm-i-underline" title="下線"><u>U</u></button>
+        <span class="vm-insp-sep"></span>
+        <button type="button" class="btn ghost sm ${b.style.align==='left'?'on':''}" id="vm-i-align-left" title="左揃え">${icon('alignLeft',{size:'13px'})}</button>
+        <button type="button" class="btn ghost sm ${b.style.align==='center'?'on':''}" id="vm-i-align-center" title="中央揃え">${icon('alignCenter',{size:'13px'})}</button>
+        <button type="button" class="btn ghost sm ${b.style.align==='right'?'on':''}" id="vm-i-align-right" title="右揃え">${icon('alignRight',{size:'13px'})}</button>
+        <span class="vm-insp-sep"></span>
+        <label class="vm-insp-item">文字${colorInput('vm-i-color', b.style.color, '文字色')}</label>
+        <label class="vm-insp-item">背景${colorInput('vm-i-bg', b.style.bg==='transparent'?'#ffffff':b.style.bg, '背景色')}</label>
+        <label class="vm-insp-item"><input type="checkbox" id="vm-i-bg-none" ${b.style.bg==='transparent'?'checked':''}> 背景なし</label>
+      `;
+    } else if(b.type === 'shape'){
+      controls = `
+        <select id="vm-i-shape" class="vm-insp-sel" title="図形の種類">
+          <option value="rect" ${b.style.shape==='rect'?'selected':''}>四角</option>
+          <option value="ellipse" ${b.style.shape==='ellipse'?'selected':''}>円・楕円</option>
+          <option value="line" ${b.style.shape==='line'?'selected':''}>直線</option>
+          <option value="arrow" ${b.style.shape==='arrow'?'selected':''}>矢印</option>
+        </select>
+        <label class="vm-insp-item">塗り${colorInput('vm-i-fill', b.style.fill==='transparent'?'#ffffff':b.style.fill, '塗りつぶし色')}</label>
+        <label class="vm-insp-item"><input type="checkbox" id="vm-i-fill-none" ${b.style.fill==='transparent'?'checked':''}> 塗りなし</label>
+        <label class="vm-insp-item">線${colorInput('vm-i-stroke', b.style.stroke, '線の色')}</label>
+        <input type="number" id="vm-i-strokewidth" class="vm-insp-num" min="0" max="20" value="${b.style.strokeWidth}" title="線の太さ">
+      `;
+    } else if(b.type === 'table'){
+      controls = `
+        <button type="button" class="btn ghost sm" id="vm-i-row-add" title="行を追加">${icon('plus',{size:'12px'})}行</button>
+        <button type="button" class="btn ghost sm" id="vm-i-row-del" title="行を削除">${icon('minus',{size:'12px'})}行</button>
+        <button type="button" class="btn ghost sm" id="vm-i-col-add" title="列を追加">${icon('plus',{size:'12px'})}列</button>
+        <button type="button" class="btn ghost sm" id="vm-i-col-del" title="列を削除">${icon('minus',{size:'12px'})}列</button>
+        <span class="vm-insp-sep"></span>
+        <label class="vm-insp-item"><input type="checkbox" id="vm-i-header" ${b.content.header?'checked':''}> 見出し行</label>
+        <label class="vm-insp-item">見出し${colorInput('vm-i-headerbg', b.style.headerBg, '見出し背景色')}</label>
+        <label class="vm-insp-item">罫線${colorInput('vm-i-bordercolor', b.style.borderColor, '罫線色')}</label>
+        <input type="number" id="vm-i-fontsize" class="vm-insp-num" min="10" max="40" value="${b.style.fontSize}" title="文字サイズ">
+      `;
+    }
+    const showRotation = b.type === 'text' || b.type === 'photo' || b.type === 'video' || b.type === 'shape';
+    const showOpacity = b.type === 'photo' || b.type === 'video' || b.type === 'shape';
+    return `<div class="vm-inspector row" id="vm-inspector">
+      ${controls}
+      ${showRotation || showOpacity ? '<span class="vm-insp-sep"></span>' : ''}
+      ${showRotation ? `<input type="number" id="vm-i-rotation" class="vm-insp-num" min="-180" max="180" value="${b.style.rotation||0}" title="回転(度)">°` : ''}
+      ${showOpacity ? `<input type="range" id="vm-i-opacity" min="0.1" max="1" step="0.05" value="${b.style.opacity??1}" title="不透明度">` : ''}
+      <span style="flex:1"></span>
+      <button type="button" class="btn ghost sm" id="vm-i-front" title="最前面へ">${icon('chevronsUp',{size:'12px'})}最前面</button>
+      <button type="button" class="btn ghost sm" id="vm-i-back" title="最背面へ">${icon('chevronsDown',{size:'12px'})}最背面</button>
+    </div>`;
+  }
+
+  function wireInspector(){
+    const b = state.selected;
+    if(!b || !state.editMode) return;
+    // render()はapp.innerHTMLをまるごと差し替えるため、フォーカス中の<input>自身のイベント
+    // ハンドラから同期的に呼ぶと、その要素を除去する際のブラウザ標準のフォーカス移動(blur)処理と
+    // 競合してコンソールエラーになることがある(実際に発生した不具合)。1タスク遅延させ、
+    // change/clickイベントの既定動作(フォーカス移動含む)が完了してから再描画する。
+    const rerender = () => setTimeout(render, 0);
+    const num = (id, apply) => { const el = $(id); if(el) el.addEventListener('change', () => { apply(Number(el.value)); markDirty(); rerender(); }); };
+    const colorEl = (id, apply) => { const el = $(id); if(el) el.addEventListener('change', () => { apply(el.value); markDirty(); rerender(); }); };
+    const toggle = (id, apply) => { const el = $(id); if(el) el.addEventListener('click', () => { apply(); markDirty(); rerender(); }); };
+
+    if(b.type === 'text'){
+      num('#vm-i-fontsize', v => b.style.fontSize = Math.max(10, Math.min(96, v)));
+      toggle('#vm-i-bold', () => b.style.bold = !b.style.bold);
+      toggle('#vm-i-italic', () => b.style.italic = !b.style.italic);
+      toggle('#vm-i-underline', () => b.style.underline = !b.style.underline);
+      toggle('#vm-i-align-left', () => b.style.align = 'left');
+      toggle('#vm-i-align-center', () => b.style.align = 'center');
+      toggle('#vm-i-align-right', () => b.style.align = 'right');
+      colorEl('#vm-i-color', v => b.style.color = v);
+      colorEl('#vm-i-bg', v => b.style.bg = v);
+      const bgNone = $('#vm-i-bg-none');
+      if(bgNone) bgNone.addEventListener('change', () => { b.style.bg = bgNone.checked ? 'transparent' : '#ffffff'; markDirty(); rerender(); });
+    } else if(b.type === 'shape'){
+      const shapeSel = $('#vm-i-shape');
+      if(shapeSel) shapeSel.addEventListener('change', () => { b.style.shape = shapeSel.value; markDirty(); rerender(); });
+      colorEl('#vm-i-fill', v => b.style.fill = v);
+      const fillNone = $('#vm-i-fill-none');
+      if(fillNone) fillNone.addEventListener('change', () => { b.style.fill = fillNone.checked ? 'transparent' : '#ffffff'; markDirty(); rerender(); });
+      colorEl('#vm-i-stroke', v => b.style.stroke = v);
+      num('#vm-i-strokewidth', v => b.style.strokeWidth = Math.max(0, Math.min(20, v)));
+    } else if(b.type === 'table'){
+      const rowAdd = $('#vm-i-row-add'); if(rowAdd) rowAdd.onclick = () => { const cols = (b.content.cells[0]||['']).length; b.content.cells.push(new Array(cols).fill('')); markDirty(); rerender(); };
+      const rowDel = $('#vm-i-row-del'); if(rowDel) rowDel.onclick = () => { if(b.content.cells.length>1) b.content.cells.pop(); markDirty(); rerender(); };
+      const colAdd = $('#vm-i-col-add'); if(colAdd) colAdd.onclick = () => { b.content.cells.forEach(r => r.push('')); markDirty(); rerender(); };
+      const colDel = $('#vm-i-col-del'); if(colDel) colDel.onclick = () => { if((b.content.cells[0]||[]).length>1) b.content.cells.forEach(r => r.pop()); markDirty(); rerender(); };
+      const headerCb = $('#vm-i-header');
+      if(headerCb) headerCb.addEventListener('change', () => { b.content.header = headerCb.checked; markDirty(); rerender(); });
+      colorEl('#vm-i-headerbg', v => b.style.headerBg = v);
+      colorEl('#vm-i-bordercolor', v => b.style.borderColor = v);
+      num('#vm-i-fontsize', v => b.style.fontSize = Math.max(10, Math.min(40, v)));
+    }
+    num('#vm-i-rotation', v => b.style.rotation = Math.max(-180, Math.min(180, v)));
+    const opEl = $('#vm-i-opacity');
+    if(opEl) opEl.addEventListener('change', () => { b.style.opacity = Number(opEl.value); markDirty(); rerender(); });
+    const frontBtn = $('#vm-i-front'); if(frontBtn) frontBtn.onclick = () => { b.z = nextZ(); markDirty(); rerender(); };
+    const backBtn = $('#vm-i-back'); if(backBtn) backBtn.onclick = () => { const minZ = Math.min(0, ...state.blocks.map(x=>x.z||0)); b.z = minZ - 1; markDirty(); rerender(); };
+  }
+
   function wireEvents(){
     wireBackBtn(app, '#vm-back', '#/venues');
     const histBtn = $('#vm-history-btn'); if(histBtn) histBtn.onclick = openHistory;
@@ -4314,12 +4522,18 @@ async function pageVenueManual(app, hash){
     const addTextBtn = $('#vm-add-text'); if(addTextBtn) addTextBtn.onclick = addTextBlock;
     const addPhotoBtn = $('#vm-add-photo'); if(addPhotoBtn) addPhotoBtn.onclick = () => addMediaBlock('photo');
     const addVideoBtn = $('#vm-add-video'); if(addVideoBtn) addVideoBtn.onclick = () => addMediaBlock('video');
+    const addShapeSel = $('#vm-add-shape-sel'); if(addShapeSel) addShapeSel.onchange = (e) => { if(e.target.value){ addShapeBlock(e.target.value); e.target.value=''; } };
+    const addTableBtn = $('#vm-add-table'); if(addTableBtn) addTableBtn.onclick = addTableBlock;
     const saveBtn = $('#vm-save'); if(saveBtn) saveBtn.onclick = doSave;
     const discardBtn = $('#vm-discard'); if(discardBtn) discardBtn.onclick = doDiscard;
 
     const canvas = $('#vm-canvas');
     if(canvas){
-      canvas.addEventListener('pointerdown', (e) => {
+      // 'click'を使う(pointerdownではない): 表ブロックのセルはcontenteditableのため、
+      // セル編集中に外側をpointerdownで即renderすると、ブラウザ標準のフォーカス移動(blur)処理と
+      // render()によるDOM置き換えが競合し、コンソールエラーになることがある(実際に発生した不具合)。
+      // clickはmousedownの既定動作(フォーカス移動)が完了した後に発火するため、この競合を避けられる。
+      canvas.addEventListener('click', (e) => {
         if(!e.target.closest('.vm-block')){ state.selected = null; render(); }
       });
       canvas.querySelectorAll('.vm-block').forEach(el => {
@@ -4336,8 +4550,26 @@ async function pageVenueManual(app, hash){
         });
         const handle = el.querySelector('.vm-block-handle');
         if(handle) handle.addEventListener('pointerdown', (e) => startResize(e, b, el));
+        // 表ブロックはセルがcontenteditableで埋め尽くされるため、通常のドラッグでは選択・移動できない。
+        // セルのクリックは選択のみ行い(移動しない)、移動は専用の.vm-block-movegripから行う。
+        if(b.type === 'table'){
+          el.querySelectorAll('td').forEach(td => {
+            td.addEventListener('pointerdown', (e) => {
+              e.stopPropagation();
+              if(state.selected !== b){ state.selected = b; setTimeout(render, 0); }
+            });
+            if(state.editMode){
+              td.contentEditable = 'true';
+              td.addEventListener('blur', () => {
+                const ri = Number(td.dataset.r), ci = Number(td.dataset.c);
+                if(b.content.cells[ri]) { b.content.cells[ri][ci] = td.textContent; markDirty(); }
+              });
+            }
+          });
+        }
       });
     }
+    wireInspector();
     if(onResize) window.removeEventListener('resize', onResize);
     onResize = fitCanvas;
     window.addEventListener('resize', onResize);
@@ -4357,6 +4589,14 @@ async function pageVenueManual(app, hash){
         <button class="btn ghost sm" id="vm-add-text">${icon('fileText',{size:'13px'})} テキスト</button>
         <button class="btn ghost sm" id="vm-add-photo">${icon('image',{size:'13px'})} 写真</button>
         <button class="btn ghost sm" id="vm-add-video">${icon('video',{size:'13px'})} 動画</button>
+        <select id="vm-add-shape-sel" class="vm-insp-sel" title="図形を追加">
+          <option value="" selected disabled>図形を追加…</option>
+          <option value="rect">四角</option>
+          <option value="ellipse">円・楕円</option>
+          <option value="line">直線</option>
+          <option value="arrow">矢印</option>
+        </select>
+        <button class="btn ghost sm" id="vm-add-table">${icon('layoutGrid',{size:'13px'})} 表</button>
         <input type="file" id="vm-photo-input" accept="image/*" style="display:none">
         <input type="file" id="vm-video-input" accept="video/*" style="display:none">
         <span style="flex:1"></span>
@@ -4364,14 +4604,17 @@ async function pageVenueManual(app, hash){
         <button class="btn ghost sm" id="vm-discard" ${state.dirty?'':'disabled'}>破棄</button>
         <button class="btn gold sm" id="vm-save" ${state.dirty?'':'disabled'}>${icon('check',{size:'13px'})} 保存</button>
       </div>` : ''}
+      ${renderInspector()}
       <div class="vm-canvas-viewport" id="vm-viewport">
         <div class="vm-canvas" id="vm-canvas" style="width:${CANVAS_W}px;height:${canvasHeight()}px">
           ${state.blocks.map(b => `<div class="vm-block ${b.type} ${state.editMode?'edit-mode':''} ${state.selected===b?'selected':''}" data-key="${b.id ?? b._tempId}"
-              style="left:${b.x}px;top:${b.y}px;width:${b.w}px;height:${b.h}px;z-index:${state.selected===b?9999:(b.z||0)}">
+              style="${blockOuterStyle(b)}">
             ${blockInnerHtml(b)}
             ${state.editMode && state.selected===b ? `
               <div class="vm-block-del" data-action="del" title="削除">${icon('x',{size:'13px'})}</div>
-              <div class="vm-block-editbtn" data-action="edit" title="${b.type==='text'?'テキストを編集':'差し替え'}">${icon(b.type==='text'?'edit':'upload',{size:'12px'})}</div>
+              ${b.type === 'table'
+                ? `<div class="vm-block-movegrip" title="移動">${icon('move',{size:'11px'})}</div>`
+                : (b.type === 'shape' ? '' : `<div class="vm-block-editbtn" data-action="edit" title="${b.type==='text'?'テキストを編集':'差し替え'}">${icon(b.type==='text'?'edit':'upload',{size:'12px'})}</div>`)}
               <div class="vm-block-handle" data-action="resize" title="サイズ変更">${icon('move',{size:'10px'})}</div>
             ` : ''}
           </div>`).join('')}
