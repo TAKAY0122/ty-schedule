@@ -8128,7 +8128,9 @@ async function pageLegacyImportDetail(app, ym){
 
 // リクエストが流れる経路を、実際にパケットが動いて見える形で描いた構成図。
 // 「どのファイルが何をして、どこへ繋がるのか」を文章より先に掴ませるのが目的。
-function appStructureArchSvg(){
+// DBテーブル数は引数で受け取り(呼び出し元がGET /app-structureの実データから渡す)、
+// ハードコードしない。ハードコードしていた過去バージョンでテーブル数が実態とズレていた反省から。
+function appStructureArchSvg(tableCount){
   const box = (x, y, w, hgt, lines, cls, delay) => `<g class="ops-arch-g" style="animation-delay:${delay}ms">
     <rect x="${x}" y="${y}" width="${w}" height="${hgt}" rx="9" class="ops-arch-box ${cls || ''}"/>
     <text x="${x + w / 2}" y="${y + hgt / 2 - (lines.length - 1) * 8 + 4}" text-anchor="middle" class="ops-arch-text ${cls === 'worker' ? 'inv' : ''}">
@@ -8143,26 +8145,30 @@ function appStructureArchSvg(){
     <circle r="3.5" class="ops-packet" style="--x1:${x1}px;--y1:${y1}px;--x2:${x2}px;--y2:${y2}px;animation-duration:${dur}s;animation-delay:${delay}s"/>
   </g>`;
   return `<div class="ops-arch-wrap">
-  <svg class="ops-arch" viewBox="0 0 900 420" role="img" aria-label="システム構成図">
+  <svg class="ops-arch" viewBox="0 0 900 460" role="img" aria-label="システム構成図">
     <defs><marker id="ops-arrow" markerWidth="9" markerHeight="9" refX="8" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" class="ops-arrowhead"/></marker></defs>
-    ${flow(250, 90, 335, 150, 'HTTPS / api()', 2.4, 0, '')}
-    ${flow(575, 165, 645, 120, 'SQL', 1.8, .5, '')}
-    ${flow(575, 205, 645, 250, 'get/put', 2.0, 1.1, '')}
-    ${flow(450, 78, 450, 140, '毎時 cron', 2.2, .3, '', 42)}
-    ${flow(250, 250, 335, 200, 'シート取得', 2.6, .8, '')}
-    // .ics配信は、SQL/get-putの矢印(Workerの右辺から出る)と始点が重なって交差して見えていたため、
-    // Workerの下辺(左寄り)から出してGoogleカレンダー等の右辺へ向かうよう経路を分離する
-    ${flow(400, 224, 250, 350, '.ics 配信', 3.0, 1.4, '')}
-    ${box(30, 60, 220, 62, ['ブラウザ', 'public/app.js + style.css'], 'client', 0)}
-    ${box(335, 140, 240, 84, ['Cloudflare Worker', 'src/index.ts', 'fetch() / scheduled()'], 'worker', 120)}
-    ${box(645, 88, 225, 62, ['D1: schedule-db', '33テーブル'], 'store', 240)}
-    ${box(645, 218, 225, 62, ['R2: ty-daicho', '台帳ファイル保管'], 'store', 300)}
-    ${box(335, 26, 240, 52, ['Cron Trigger', '0/5/10/15分'], 'ext', 60)}
-    ${box(30, 220, 220, 62, ['Googleスプレッドシート', '予定表ソース・台帳URL'], 'ext', 180)}
-    ${box(30, 320, 220, 62, ['Googleカレンダー等', '.ics 購読フィード'], 'ext', 360)}
+    ${flow(250, 71, 335, 120, 'HTTPS / api()', 2.4, 0, '')}
+    ${flow(455, 58, 455, 90, '毎時 cron', 2.2, .3, '', 42)}
+    ${flow(575, 110, 645, 71, 'SQL', 1.8, .5, '')}
+    ${flow(575, 140, 645, 181, 'get/put', 2.0, 1.1, '')}
+    ${flow(575, 160, 645, 291, 'get/put', 2.1, 1.35, '', -30)}
+    ${flow(250, 181, 335, 140, 'シート取得', 2.6, .8, '')}
+    // .ics配信・プッシュ送信は、SQL/get-putの矢印(Workerの右辺から出る)と始点が重なって交差して
+    // 見えていたため、Workerの下辺(左寄り)から出して左列の各外部サービスへ向かうよう経路を分離する
+    ${flow(400, 174, 250, 291, '.ics 配信', 3.0, 1.4, '')}
+    ${flow(370, 174, 250, 401, 'プッシュ送信', 2.8, 1.6, '', -18)}
+    ${box(30, 40, 220, 62, ['ブラウザ', 'public/app.js + style.css'], 'client', 0)}
+    ${box(335, 10, 240, 48, ['Cron Trigger', '0/5/10/15分'], 'ext', 60)}
+    ${box(335, 90, 240, 84, ['Cloudflare Worker', 'src/index.ts', 'fetch() / scheduled()'], 'worker', 120)}
+    ${box(645, 40, 225, 62, ['D1: schedule-db', `${tableCount}テーブル`], 'store', 240)}
+    ${box(645, 150, 225, 62, ['R2: ty-daicho', '台帳ファイル保管'], 'store', 300)}
+    ${box(645, 260, 225, 62, ['R2: ty-venue-manuals', '会場マニュアル写真/動画'], 'store', 330)}
+    ${box(30, 150, 220, 62, ['Googleスプレッドシート', '予定表ソース・台帳URL'], 'ext', 180)}
+    ${box(30, 260, 220, 62, ['Googleカレンダー等', '.ics 購読フィード'], 'ext', 300)}
+    ${box(30, 370, 220, 62, ['Firebase Cloud Messaging', 'ブラウザ/アプリへのプッシュ通知'], 'ext', 420)}
   </svg>
   </div>
-  <div class="ops-arch-cap">${icon('activity', { size: '12px' })} 光の粒はリクエストの流れです。矢印の向きがデータの向きを表します。</div>`;
+  <div class="ops-arch-cap">${icon('activity', { size: '12px' })}<span>光の粒はリクエストの流れです。矢印の向きがデータの向きを表します。静的アセット(index.html/app.js/style.css)は<code>/api/</code>以外のパスとして、Workerのビジネスロジックを介さず直接ASSETSバインディングから配信されます。</span></div>`;
 }
 
 async function pageAppStructure(app){
@@ -8227,7 +8233,7 @@ async function pageAppStructure(app){
 
       <div class="ops-card">
         <div class="ops-card-h"><b>${icon('layoutGrid', { size: '15px' })} システム構成とデータの流れ</b><span class="ops-card-sub">${h(data.meta.stack[0])}</span></div>
-        ${appStructureArchSvg()}
+        ${appStructureArchSvg(data.db.tableCount)}
       </div>
 
       <div class="ops-grid2">
@@ -8475,7 +8481,7 @@ async function pageAppStructure(app){
     panel.innerHTML = `
       <div class="ops-card">
         <div class="ops-card-h"><b>${icon('layoutGrid', { size: '15px' })} システム構成とデータの流れ</b></div>
-        ${appStructureArchSvg()}
+        ${appStructureArchSvg(data.db.tableCount)}
       </div>
 
       <div class="ops-card">

@@ -309,7 +309,7 @@ const APP_STRUCTURE_FILES = [
   { name: 'public/style.css', role: '見た目(CSS)', desc: 'app.jsが生成するHTML全体のスタイル。ビルド工程が無いため、app.jsのクラス名と1対1で対応させる必要がある。', dependsOn: [] },
   { name: 'src/index.ts', role: 'バックエンド本体(Cloudflare Worker)', desc: 'fetch()ハンドラでAPIルーティングと静的ファイル配信、scheduled()ハンドラで4種類のcron処理を行う単一ファイル。D1(env.DB)・R2(ファイル保管用バケット)にアクセスする。2026年8月にJavaScriptからTypeScript化(拡張子.js→.ts)。tsconfig.jsonはstrict:false/noImplicitAny:falseの緩い設定にしており、既存コードの動作を変えない範囲で型付けしている(全面的な厳密型付けは目的にしていない)。', dependsOn: ['src/lib/xlsxParser.ts'] },
   { name: 'src/lib/xlsxParser.ts', role: 'xlsxバイト列パーサー', desc: 'xlsx(zip化されたOffice Open XML)をバイト列から直接パースする、env/DBに依存しない純粋なロジックだけを切り出したファイル。2026年8月、バックエンド部分TypeScript化の第一弾として、後発のsrc/index.tsのTypeScript化に先行して型付けされた。フォーマットC/AB/D固有の業務ルールはsrc/index.ts側が担う。', dependsOn: [] },
-  { name: 'schema.sql', role: '新規DB構築用スキーマ', desc: 'D1データベースを新規構築する際に一度だけ流し込む、33テーブル全ての完全なCREATE TABLE定義。デプロイのたびに自動実行されるものではない(本番は既に構築済み)。', dependsOn: [] },
+  { name: 'schema.sql', role: '新規DB構築用スキーマ', desc: 'D1データベースを新規構築する際に一度だけ流し込む、全テーブル分の完全なCREATE TABLE定義(テーブル数は上記「DB」タブの実データ参照)。デプロイのたびに自動実行されるものではない(本番は既に構築済み)。', dependsOn: [] },
   { name: 'migrate-*.sql', role: '既存環境向けマイグレーション', desc: '機能追加のたびに作成する差分SQL(ALTER TABLE等)。コードのデプロイより先に本番D1へ手動実行する運用。1機能=1ファイル。', dependsOn: ['schema.sql'] },
   { name: 'wrangler.toml', role: 'Cloudflare設定', desc: 'D1(schedule-db)・R2バインディング、Cron実行スケジュール(毎時0分)を定義する。src/index.tsのenv.DB/env経由のアクセス先を決めている。mainフィールドがsrc/index.tsを指し、wranglerが内蔵のesbuildでTypeScriptを直接バンドルする(別途ビルドコマンドは不要)。', dependsOn: [] },
 ];

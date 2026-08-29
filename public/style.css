@@ -1268,7 +1268,9 @@ body.ops-page main{max-width:1280px}
   90%{opacity:1}
   100%{transform:translate(var(--x2),var(--y2));opacity:0}
 }
-.ops-arch-cap{display:flex;align-items:center;gap:6px;margin-top:8px;font-size:11px;color:var(--ops-dim)}
+.ops-arch-cap{display:flex;align-items:flex-start;gap:6px;margin-top:8px;font-size:11px;color:var(--ops-dim);line-height:1.6}
+.ops-arch-cap svg{flex:none;margin-top:2px}
+.ops-arch-cap code{font-size:10.5px}
 .ops-arch-cap svg{color:var(--ops-gold)}
 
 /* cron一覧 */
