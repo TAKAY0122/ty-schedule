@@ -8126,37 +8126,53 @@ async function pageLegacyImportDetail(app, ym){
 // (schema.sqlと本番DBの食い違いにも気づける)。画面一覧・API一覧・ファイル説明はsrc/index.tsの
 // APP_STRUCTURE_*静的データなので、新しい画面/APIを追加したらそちらに追記する。
 
-// リクエストが流れる経路を、実際にパケットが動いて見える形で描いた構成図。
-// 「どのファイルが何をして、どこへ繋がるのか」を文章より先に掴ませるのが目的。
-// DBテーブル数は引数で受け取り(呼び出し元がGET /app-structureの実データから渡す)、
-// ハードコードしない。ハードコードしていた過去バージョンでテーブル数が実態とズレていた反省から。
-function appStructureArchSvg(tableCount){
-  const box = (x, y, w, hgt, lines, cls, delay) => `<g class="ops-arch-g" style="animation-delay:${delay}ms">
+// アプリ構造ビューアの各種図解(システム構成・業務フロー・データフロー等)で共通する
+// 「箱」と「流れるパケット付きの矢印」の描画ヘルパー。1つの画面に複数の図を並べる場合、
+// <marker>のidはSVGをまたいで文書内で一意である必要があるため、opt.markerIdで図ごとに
+// 変えられるようにしてある(既定は既存の構成図と同じ'ops-arrow')。
+function opsDiagBox(x, y, w, hgt, lines, cls, delay){
+  return `<g class="ops-arch-g" style="animation-delay:${delay}ms">
     <rect x="${x}" y="${y}" width="${w}" height="${hgt}" rx="9" class="ops-arch-box ${cls || ''}"/>
     <text x="${x + w / 2}" y="${y + hgt / 2 - (lines.length - 1) * 8 + 4}" text-anchor="middle" class="ops-arch-text ${cls === 'worker' ? 'inv' : ''}">
       ${lines.map((l, i) => `<tspan x="${x + w / 2}" dy="${i === 0 ? 0 : 15}" class="${i === 0 ? 'ttl' : 'sub'}">${h(l)}</tspan>`).join('')}
     </text>
   </g>`;
-  // 経路。dur/delayを変えて、複数のパケットが別々のリズムで流れるようにする
-  // ldx: 垂直な経路など、線の真上にラベルが重なってしまう場合に横へずらす量
-  const flow = (x1, y1, x2, y2, label, dur, delay, cls, ldx) => `<g class="ops-arch-edge ${cls || ''}">
-    <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" class="ops-arch-line" marker-end="url(#ops-arrow)"/>
-    ${label ? `<text x="${(x1 + x2) / 2 + (ldx || 0)}" y="${(y1 + y2) / 2 - 7}" text-anchor="middle" class="ops-arch-lab">${h(label)}</text>` : ''}
-    <circle r="3.5" class="ops-packet" style="--x1:${x1}px;--y1:${y1}px;--x2:${x2}px;--y2:${y2}px;animation-duration:${dur}s;animation-delay:${delay}s"/>
+}
+// dur/delayを変えて、複数のパケットが別々のリズムで流れるようにする。
+// opt.ldx: 垂直な経路など、線の真上にラベルが重なってしまう場合に横へずらす量。
+// opt.dashed: 例外的な経路(差し戻し等)を破線・パケットなしで表す。
+function opsDiagFlow(x1, y1, x2, y2, label, dur, delay, opt={}){
+  const { cls = '', ldx = 0, markerId = 'ops-arrow', dashed = false } = opt;
+  return `<g class="ops-arch-edge ${cls}">
+    <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" class="ops-arch-line${dashed ? ' dashed' : ''}" marker-end="url(#${markerId})"/>
+    ${label ? `<text x="${(x1 + x2) / 2 + ldx}" y="${(y1 + y2) / 2 - 7}" text-anchor="middle" class="ops-arch-lab">${h(label)}</text>` : ''}
+    ${dashed ? '' : `<circle r="3.5" class="ops-packet" style="--x1:${x1}px;--y1:${y1}px;--x2:${x2}px;--y2:${y2}px;animation-duration:${dur}s;animation-delay:${delay}s"/>`}
   </g>`;
+}
+const opsArrowDefs = (markerId = 'ops-arrow') => `<defs><marker id="${markerId}" markerWidth="9" markerHeight="9" refX="8" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" class="ops-arrowhead"/></marker></defs>`;
+// 図解系のSVGは横幅が広く(min-width:660px)、スマホ幅では横スクロールが必要になる。
+// 権限マトリクス(renderPerms)と同じ「狭い画面でだけ表示するヒント文」パターンを流用する。
+const OPS_DIAG_SCROLL_HINT = '<div class="ops-scroll-hint">← 横にスクロールすると全体を確認できます →</div>';
+
+// リクエストが流れる経路を、実際にパケットが動いて見える形で描いた構成図。
+// 「どのファイルが何をして、どこへ繋がるのか」を文章より先に掴ませるのが目的。
+// DBテーブル数は引数で受け取り(呼び出し元がGET /app-structureの実データから渡す)、
+// ハードコードしない。ハードコードしていた過去バージョンでテーブル数が実態とズレていた反省から。
+function appStructureArchSvg(tableCount){
+  const box = opsDiagBox, flow = opsDiagFlow;
   return `<div class="ops-arch-wrap">
   <svg class="ops-arch" viewBox="0 0 900 460" role="img" aria-label="システム構成図">
-    <defs><marker id="ops-arrow" markerWidth="9" markerHeight="9" refX="8" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 z" class="ops-arrowhead"/></marker></defs>
-    ${flow(250, 71, 335, 120, 'HTTPS / api()', 2.4, 0, '')}
-    ${flow(455, 58, 455, 90, '毎時 cron', 2.2, .3, '', 42)}
-    ${flow(575, 110, 645, 71, 'SQL', 1.8, .5, '')}
-    ${flow(575, 140, 645, 181, 'get/put', 2.0, 1.1, '')}
-    ${flow(575, 160, 645, 291, 'get/put', 2.1, 1.35, '', -30)}
-    ${flow(250, 181, 335, 140, 'シート取得', 2.6, .8, '')}
-    // .ics配信・プッシュ送信は、SQL/get-putの矢印(Workerの右辺から出る)と始点が重なって交差して
-    // 見えていたため、Workerの下辺(左寄り)から出して左列の各外部サービスへ向かうよう経路を分離する
-    ${flow(400, 174, 250, 291, '.ics 配信', 3.0, 1.4, '')}
-    ${flow(370, 174, 250, 401, 'プッシュ送信', 2.8, 1.6, '', -18)}
+    ${opsArrowDefs()}
+    ${flow(250, 71, 335, 120, 'HTTPS / api()', 2.4, 0)}
+    ${flow(455, 58, 455, 90, '毎時 cron', 2.2, .3, { ldx: 42 })}
+    ${flow(575, 110, 645, 71, 'SQL', 1.8, .5)}
+    ${flow(575, 140, 645, 181, 'get/put', 2.0, 1.1)}
+    ${flow(575, 160, 645, 291, 'get/put', 2.1, 1.35, { ldx: -30 })}
+    ${flow(250, 181, 335, 140, 'シート取得', 2.6, .8)}
+    ${/* .ics配信・プッシュ送信は、SQL/get-putの矢印(Workerの右辺から出る)と始点が重なって交差して
+         見えていたため、Workerの下辺(左寄り)から出して左列の各外部サービスへ向かうよう経路を分離する */''}
+    ${flow(400, 174, 250, 291, '.ics 配信', 3.0, 1.4)}
+    ${flow(370, 174, 250, 401, 'プッシュ送信', 2.8, 1.6, { ldx: -18 })}
     ${box(30, 40, 220, 62, ['ブラウザ', 'public/app.js + style.css'], 'client', 0)}
     ${box(335, 10, 240, 48, ['Cron Trigger', '0/5/10/15分'], 'ext', 60)}
     ${box(335, 90, 240, 84, ['Cloudflare Worker', 'src/index.ts', 'fetch() / scheduled()'], 'worker', 120)}
@@ -8168,7 +8184,126 @@ function appStructureArchSvg(tableCount){
     ${box(30, 370, 220, 62, ['Firebase Cloud Messaging', 'ブラウザ/アプリへのプッシュ通知'], 'ext', 420)}
   </svg>
   </div>
+  ${OPS_DIAG_SCROLL_HINT}
   <div class="ops-arch-cap">${icon('activity', { size: '12px' })}<span>光の粒はリクエストの流れです。矢印の向きがデータの向きを表します。静的アセット(index.html/app.js/style.css)は<code>/api/</code>以外のパスとして、Workerのビジネスロジックを介さず直接ASSETSバインディングから配信されます。</span></div>`;
+}
+
+// 業務フロー図: 現場配置〜給与確定までの一連の流れ。承認/差し戻しのループがある点が
+// システム構成図と違う特徴なので、差し戻しは破線・パケットなしの矢印で「例外経路」として表す。
+function appWorkflowSvg(){
+  const box = opsDiagBox, flow = opsDiagFlow, MID = 'ops-arrow-wf';
+  return `<div class="ops-arch-wrap">
+  <svg class="ops-arch" viewBox="0 0 960 300" role="img" aria-label="業務フロー図">
+    ${opsArrowDefs(MID)}
+    ${flow(280, 65, 340, 65, '', 2.0, 0, { markerId: MID })}
+    ${flow(600, 65, 660, 65, '', 2.0, .2, { markerId: MID })}
+    ${flow(790, 100, 790, 190, '提出', 2.2, .4, { markerId: MID })}
+    ${flow(850, 190, 850, 100, '差し戻し', 0, 0, { markerId: MID, dashed: true, ldx: 26 })}
+    ${flow(660, 225, 600, 225, '承認後', 2.0, .8, { markerId: MID, ldx: 0 })}
+    ${flow(340, 225, 280, 225, '実績確定後', 2.0, 1.0, { markerId: MID, ldx: 6 })}
+    ${box(20, 30, 260, 70, ['予定表・台帳の取込', '3系統(URL/Excel)→applyImportRows'], 'worker', 0)}
+    ${box(340, 30, 260, 70, ['現場配置(確定)', 'schedule テーブルへ反映'], 'worker', 80)}
+    ${box(660, 30, 260, 70, ['現場変更報告', 'メンバーが起票'], 'client', 160)}
+    ${box(660, 190, 260, 70, ['承認 / 差し戻し', '手配者以上のみ(canManageTarget)'], 'ext', 240)}
+    ${box(340, 190, 260, 70, ['実績反映', '台帳(実績)取込で確定'], 'worker', 320)}
+    ${box(20, 190, 260, 70, ['給与自動計算→確定', 'ランク・時間から算出、ロックで確定'], 'store', 400)}
+  </svg>
+  </div>
+  ${OPS_DIAG_SCROLL_HINT}
+  <div class="ops-arch-cap">${icon('activity', { size: '12px' })}<span>予定表・台帳の取込から給与確定までの主要な流れです。「承認/差し戻し」だけがループを持つ例外経路で、破線で表しています。降格・給与の巻き戻しはこの業務フローには存在しません。</span></div>`;
+}
+
+// シーケンス図: 典型的なAPIリクエスト1件が処理される流れ(認証→ハンドラ→DB→応答)。
+// UMLのアクティベーションボックスは省略し、ライフライン+矢印だけの簡易版にしている
+// (アプリ構造ビューアの他の図と同じ、概念を素早く掴ませるための軽量な描き方に合わせるため)。
+function appSequenceSvg(){
+  const box = opsDiagBox, flow = opsDiagFlow, MID = 'ops-arrow-seq';
+  const actors = [
+    { x: 80, lines: ['ブラウザ'], cls: 'client' },
+    { x: 260, lines: ['Worker', 'fetch()'], cls: 'worker' },
+    { x: 440, lines: ['auth()'], cls: 'ext' },
+    { x: 620, lines: ['ハンドラ'], cls: 'ext' },
+    { x: 800, lines: ['D1'], cls: 'store' },
+  ];
+  const LIFE_TOP = 50, LIFE_BOTTOM = 450;
+  const steps = [
+    [80, 260, 90, 'HTTPS(Bearer token, X-Page)'],
+    [260, 440, 140, '認証チェック'],
+    [440, 800, 190, 'SELECT sessions/users'],
+    [800, 440, 230, 'ユーザー行'],
+    [440, 620, 270, 'me(ユーザー)'],
+    [620, 800, 310, '権限チェック済みSQL'],
+    [800, 620, 350, '結果セット'],
+    [620, 260, 390, 'JSON生成'],
+    [260, 80, 430, '応答(セキュリティヘッダー付与)'],
+  ];
+  return `<div class="ops-arch-wrap">
+  <svg class="ops-arch" viewBox="0 0 900 480" role="img" aria-label="シーケンス図">
+    ${opsArrowDefs(MID)}
+    ${actors.map(a => `<line x1="${a.x}" y1="${LIFE_TOP}" x2="${a.x}" y2="${LIFE_BOTTOM}" class="ops-seq-life"/>`).join('')}
+    ${steps.map(([x1, x2, y, label], i) => flow(x1, y, x2, y, label, 1.6, i * .15, { markerId: MID })).join('')}
+    ${actors.map((a, i) => box(a.x - 70, 8, 140, a.lines.length > 1 ? 40 : 34, a.lines, a.cls, i * 60)).join('')}
+  </svg>
+  </div>
+  ${OPS_DIAG_SCROLL_HINT}
+  <div class="ops-arch-cap">${icon('activity', { size: '12px' })}<span>1件のAPIリクエストが処理される典型的な流れです。実際にはエンドポイントごとに権限チェック・SQLの内容が異なりますが、共通する骨格(auth()でセッション検証→ハンドラで権限確認済みの処理→D1へアクセス→応答)はどのエンドポイントも同じです。</span></div>`;
+}
+
+// データフロー図: 台帳・予定表取込の3系統が、共通のパース・反映ロジックへ集約されるまでの流れ。
+// CLAUDE.mdの「台帳・スプレッドシート取込の経路」節に対応する図版。
+function appDataFlowSvg(){
+  const box = opsDiagBox, flow = opsDiagFlow, MID = 'ops-arrow-df';
+  return `<div class="ops-arch-wrap">
+  <svg class="ops-arch" viewBox="0 0 1100 300" role="img" aria-label="データフロー図">
+    ${opsArrowDefs(MID)}
+    ${flow(250, 45, 310, 128, '', 2.4, 0, { markerId: MID })}
+    ${flow(250, 145, 310, 145, '', 2.0, .2, { markerId: MID })}
+    ${flow(250, 245, 310, 162, '', 2.4, .4, { markerId: MID })}
+    ${flow(510, 145, 590, 145, '', 1.8, .6, { markerId: MID })}
+    ${flow(790, 128, 850, 45, '', 2.2, .8, { markerId: MID })}
+    ${flow(790, 145, 850, 145, '', 1.8, 1.0, { markerId: MID })}
+    ${flow(790, 162, 850, 245, '', 2.2, 1.2, { markerId: MID })}
+    ${box(20, 10, 230, 70, ['予定表ソース(URL)', 'sched_sources・毎時5分'], 'ext', 0)}
+    ${box(20, 110, 230, 70, ['台帳URL取込', 'daicho_archive+R2・毎時0分'], 'ext', 80)}
+    ${box(20, 210, 230, 70, ['台帳Excel取込', '手動アップロード/保存済み再取込'], 'ext', 160)}
+    ${box(310, 110, 200, 70, ['共通パース処理', 'parseXlsxBuffer→detectFormat'], 'worker', 240)}
+    ${box(590, 110, 200, 70, ['applyImportRows()', '1日の上限チェック等、共通反映'], 'worker', 320)}
+    ${box(850, 10, 220, 70, ['schedule 更新', '実際の配置データ'], 'store', 400)}
+    ${box(850, 110, 220, 70, ['schedule_history 記録', '現場を含む変更のみ記録'], 'store', 440)}
+    ${box(850, 210, 220, 70, ['notify()', '関係者へ通知(linkハッシュ付き)'], 'client', 480)}
+  </svg>
+  </div>
+  ${OPS_DIAG_SCROLL_HINT}
+  <div class="ops-arch-cap">${icon('activity', { size: '12px' })}<span>台帳・予定表の取込は経路が3つありますが、パース(parseXlsxBuffer→detectFormat→parseFormatC/D/AB)と反映(applyImportRows)は共通のロジックを通ります。新しい取込経路を追加する場合も、この2段目・3段目は使い回すのが原則です。</span></div>`;
+}
+
+// ライフサイクル図: ランク制度(E→D→C→B→A)の昇格ライフサイクル。降格が存在しない一方向の
+// 遷移であることと、C・BからAへ直接査定で進める分岐があることを表す。
+function appLifecycleSvg(){
+  const flow = opsDiagFlow, MID = 'ops-arrow-lc';
+  const RANKS = { E: '#94a3b8', D: '#a78bfa', C: '#5b9cf8', B: '#4fd1c5', A: '#f0b429' };
+  const pill = (x, y, w, hgt, label, sub, color, delay) => `<g class="ops-arch-g" style="animation-delay:${delay}ms">
+    <rect x="${x}" y="${y}" width="${w}" height="${hgt}" rx="${hgt / 2}" class="ops-lc-ring" style="stroke:${color};fill:${color}22"/>
+    <text x="${x + w / 2}" y="${y + hgt / 2 - 6}" text-anchor="middle" style="font-size:19px;font-weight:800;fill:${color}">${h(label)}</text>
+    <text x="${x + w / 2}" y="${y + hgt / 2 + 15}" text-anchor="middle" style="font-size:10px;fill:var(--ops-dim)">${h(sub)}</text>
+  </g>`;
+  return `<div class="ops-arch-wrap">
+  <svg class="ops-arch" viewBox="0 0 1000 380" role="img" aria-label="ランク昇格ライフサイクル図">
+    ${opsArrowDefs(MID)}
+    ${flow(160, 185, 310, 185, 'マナー研修(翌日〜)', 2.4, 0, { markerId: MID })}
+    ${flow(450, 185, 600, 185, 'チーム研修+SU(翌月1日〜)', 2.6, .3, { markerId: MID })}
+    ${flow(700, 165, 800, 100, '査定(即時)', 2.0, .6, { markerId: MID, ldx: -20 })}
+    ${flow(700, 205, 800, 270, '査定(即時)', 2.2, .9, { markerId: MID, ldx: -20 })}
+    ${flow(870, 130, 870, 240, '査定(即時)', 1.8, 1.2, { markerId: MID, ldx: 34 })}
+    ${pill(20, 140, 140, 90, 'E', '新人・研修前', RANKS.E, 0)}
+    ${pill(310, 140, 140, 90, 'D', 'マナー研修済み', RANKS.D, 80)}
+    ${pill(600, 140, 140, 90, 'C', 'チーム研修+SU済み', RANKS.C, 160)}
+    ${pill(800, 40, 140, 90, 'B', '査定で昇格', RANKS.B, 240)}
+    ${pill(800, 250, 140, 90, 'A', '最上位', RANKS.A, 320)}
+  </svg>
+  </div>
+  ${OPS_DIAG_SCROLL_HINT}
+  <div class="ops-arch-cap">${icon('activity', { size: '12px' })}<span>降格は仕様上存在せず、矢印はすべて一方向です。C→A・B→Aのように査定で段階を飛び越える昇格もできます。昇格予約は<code>promotion_pending_date</code>/<code>promotion_pending_rank</code>に記録され、日次バッチ(<code>cronRankPromotion</code>)が到来分を適用、昇格月の給与は月初に遡って再計算されます。全てのランク変更は<code>rank_history</code>に記録されます。</span></div>`;
 }
 
 async function pageAppStructure(app){
@@ -8182,6 +8317,7 @@ async function pageAppStructure(app){
   const TABS = [
     ['overview', '俯瞰', 'layoutGrid'], ['pages', '画面', 'sitemap'], ['perms', '権限', 'shieldCheck'],
     ['api', 'API', 'download'], ['db', 'DB', 'package'], ['arch', 'ファイル構成', 'wrench'],
+    ['diagrams', '図解', 'repeat'],
   ];
 
   const METHOD_COLORS = { GET: '#3fb950', POST: '#4f9df7', PUT: '#d29922', PATCH: '#a371f7', DELETE: '#f85149' };
@@ -8508,7 +8644,29 @@ async function pageAppStructure(app){
     opsAfterRender(panel);
   }
 
-  const RENDERERS = { overview: renderOverview, pages: renderPages, perms: renderPerms, api: renderApi, db: renderDb, arch: renderArch };
+  // ---------- 図解(業務フロー・シーケンス・データフロー・ライフサイクル) ----------
+  function renderDiagrams(){
+    panel.innerHTML = `
+      <div class="ops-card">
+        <div class="ops-card-h"><b>${icon('repeat', { size: '15px' })} 業務フロー図</b><span class="ops-card-sub">現場配置〜給与確定</span></div>
+        ${appWorkflowSvg()}
+      </div>
+      <div class="ops-card">
+        <div class="ops-card-h"><b>${icon('arrowUpDown', { size: '15px' })} シーケンス図</b><span class="ops-card-sub">典型的なAPIリクエスト処理</span></div>
+        ${appSequenceSvg()}
+      </div>
+      <div class="ops-card">
+        <div class="ops-card-h"><b>${icon('download', { size: '15px' })} データフロー図</b><span class="ops-card-sub">台帳・予定表取込(3系統)の集約</span></div>
+        ${appDataFlowSvg()}
+      </div>
+      <div class="ops-card">
+        <div class="ops-card-h"><b>${icon('trendingUp', { size: '15px' })} ライフサイクル図</b><span class="ops-card-sub">ランク昇格(E→D→C→B→A)</span></div>
+        ${appLifecycleSvg()}
+      </div>`;
+    opsAfterRender(panel);
+  }
+
+  const RENDERERS = { overview: renderOverview, pages: renderPages, perms: renderPerms, api: renderApi, db: renderDb, arch: renderArch, diagrams: renderDiagrams };
   function switchTab(tab){
     st.tab = tab;
     $('#as-tabs').querySelectorAll('.ops-tab').forEach(b => b.classList.toggle('on', b.dataset.tab === tab));
