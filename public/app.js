@@ -147,7 +147,7 @@ const PAGE_LABELS = {
   'self-reports':'現場変更報告の承認','sites':'現場一覧','members':'メンバー一覧','summary':'稼働サマリー','member-stats':'メンバー分析',
   'day-schedule':'スケジュール一覧','member-summary':'個人の年間サマリー','report':'新人報告','reports':'報告一覧','draft':'ドラフト',
   'blacklist':'ブラックリスト','report-export':'スプレッドシート貼り付け用コピー','admin':'アカウント管理','admin-settings':'システム設定',
-  'role-permissions':'権限の一括設定','handler-status':'ログイン中・編集履歴','import':'スプレッドシート取り込み','sched-sources':'予定表ソース管理',
+  'role-permissions':'権限の一括設定','perm-matrix':'個別権限マトリクス','handler-status':'ログイン中・編集履歴','import':'スプレッドシート取り込み','sched-sources':'予定表ソース管理',
   'daicho':'台帳保管','permissions':'権限の個人設定','calendar-guide':'カレンダー連携のやり方','version-history':'アップデート履歴',
   'password':'パスワード変更','login':'ログイン画面','venues':'会場一覧','legacy-import':'過去データ取込確認','artists':'公演一覧',
   'app-structure':'アプリ構造ビューア','system':'システム管理','venue-manual':'会場マニュアル',
