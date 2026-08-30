@@ -2464,6 +2464,8 @@ function systemHubSections(){
         desc:'アカウントの作成・編集・停止・削除。全データの閲覧とCSV出力もここから。' },
       { path:'#/role-permissions', icon:'shield', label:'権限の一括設定', role:'admin', show:has('account_manage'),
         desc:'役割ごとの権限をまとめて付与・剥奪する。1人だけ変えたい場合はアカウント管理から。' },
+      { path:'#/perm-matrix', icon:'shield', label:'個別権限マトリクス', role:'admin', show:has('account_manage'),
+        desc:'誰がどの個別権限を持っているか一覧で確認し、選んだ複数人だけまとめて許可・剥奪する。' },
     ]},
     { title:'運用状況の確認', icon:'gauge', desc:'今システムがどう動いているかを見る', items:[
       { path:'#/dashboard', icon:'gauge', label:'ダッシュボード', role:'admin', show:has('dashboard_view'),
