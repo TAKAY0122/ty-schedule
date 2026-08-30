@@ -126,6 +126,7 @@ const APP_STRUCTURE_PAGES = [
   { hash: '#/admin', name: 'アカウント管理', role: 'account_manage権限者', desc: 'アカウントの新規作成・編集・停止・削除。複数選択して一括停止/復活が可能。全データ閲覧(users/schedule/history/reports/blacklist/notifications)は件数上限なしの全件を表示・CSV出力する。ログインセッションの一覧は#/handler-statusへ移設した。' },
   { hash: '#/admin-settings', name: 'システム設定', role: 'system_settings権限者', desc: 'PIN、GAS連携トークン、通知設定、時給設定、メンテナンスモード等の各種設定。' },
   { hash: '#/role-permissions', name: '権限の一括設定', role: 'admin', desc: '役割ごとの個別権限をまとめて付与・削除する。役割が標準で持つ権限を個別に剥奪する設定にも対応。' },
+  { hash: '#/perm-matrix', name: '個別権限マトリクス', role: 'account_manage権限者', desc: '権限を1つ選ぶと、誰が個別に許可/禁止されているかが一覧できる。チェックボックスで複数人を選び、選んだ人だけまとめて許可・剥奪・個別設定の解除(標準に戻す)ができる(他の個別権限には影響しない)。役割の一括設定(#/role-permissions)が「役割全体」向けなのに対し、こちらは「特定の複数人」向け。' },
   { hash: '#/handler-status', name: 'ログイン中・編集履歴', role: 'handler_tools権限者', desc: '現在ログイン中のメンバー一覧と、スケジュール編集履歴(取り消し操作含む)を確認する。activity_view権限があれば各メンバーが今どの画面を見ているかも確認できる。管理者(role===admin)だけ「全ログインセッション」セクションが追加表示され、稼働中かどうかに関わらず全セッションと最後に見ていたページを、全データ閲覧と同じソート・絞り込み・CSV出力つきの表で確認できる(元は全データ閲覧側にあった機能をこちらへ統合)。' },
   { hash: '#/import', name: 'スプレッドシート取込', role: 'import_data権限者', desc: '台帳・予定表のURLを登録して取込を実行する。台帳ExcelファイルをPCから直接アップロードして取り込むカードもある(常に手動実行、複数ファイル一括・ファイルごとの対象日指定に対応)。' },
   { hash: '#/sched-sources', name: '予定表ソース管理', role: '設定権限者', desc: 'チーフ予定表専用フォーマットの自動取込設定。「担当手配者未設定(チーフ手配)の人はこのソースから取り込まない」オプションを持つ。' },
@@ -149,6 +150,8 @@ const APP_STRUCTURE_API_GROUPS = [
     ['POST', '/users/bulk-suspend', 'アカウントの一括停止/復活'],
     ['GET/PUT', '/users/:id/perms', '個別権限(追加extraPerms・剥奪revokedPerms)の取得・更新'],
     ['GET/PUT', '/role-perms/:role', 'ロール単位の一括権限設定(追加perms・剥奪revokedPerms)'],
+    ['GET', '/perm-matrix', '全ユーザーの個別権限(追加/剥奪)一覧を一括取得。個別権限マトリクス画面から使う'],
+    ['PUT', '/users/perms/bulk', 'チェックボックスで選んだ複数ユーザーに対し、1つの権限キーだけをまとめて許可/剥奪/解除する(他の個別権限には触れない)'],
     ['PUT', '/perm-base', '権限の基準レベル(どのロールから標準で使えるか)の変更。アプリ構造ビューアの権限マトリクスから使う(管理者専用)'],
     ['POST', '/users/:id/resetpw', 'パスワードの初期化'],
     ['POST', '/users/:id/assess', '査定によるランク変更(C→B/C→A/B→A、即時反映・当月給与も再計算)'],
@@ -2543,7 +2546,7 @@ async function api(req, env, url) {
     'edit', 'self-reports', 'availability', 'availability-team', 'nominate', 'nominations',
     'sites', 'members', 'summary', 'member-stats', 'day-schedule',
     'report', 'reports', 'draft', 'blacklist', 'report-export',
-    'admin', 'admin-settings', 'role-permissions', 'handler-status',
+    'admin', 'admin-settings', 'role-permissions', 'perm-matrix', 'handler-status',
     'import', 'sched-sources', 'daicho', 'member-summary',
     'venues', 'venue-manual', 'legacy-import', 'artists', 'app-structure', 'system',
   ];
@@ -2648,6 +2651,34 @@ async function api(req, env, url) {
       await env.DB.prepare('UPDATE users SET extra_perms=?, revoked_perms=? WHERE id=?').bind(JSON.stringify(next), JSON.stringify(nextRevoked), r.id).run();
     }
     return J({ ok: 1, role, updated: rows.length, perms: finalKeys, revokedPerms: revokedKeys });
+  }
+
+  // 個別権限マトリクス(全ユーザーの追加extra_perms・剥奪revoked_perms状況を一度に取得。
+  // 「誰がどの個別権限を持っているか」を一覧できる画面、チェックボックス一括付与画面から使う)
+  if (method === 'GET' && path === '/perm-matrix') {
+    if (!has(me, 'account_manage')) return ERR('ページが見つかりません', 404);
+    const rows = (await env.DB.prepare('SELECT id,name,regno,role,rank,han,suspended,extra_perms,revoked_perms FROM users ORDER BY regno').all()).results;
+    return J({ users: rows.map(u => ({ id: u.id, name: u.name, regno: u.regno, role: u.role, rank: u.rank, han: u.han, suspended: !!u.suspended, extraPerms: getPerms(u), revokedPerms: getRevokedPerms(u) })) });
+  }
+  // 個別権限の一括付与/剥奪/解除。チェックボックスで選んだ複数人に対し、1つの権限キーだけを
+  // まとめて変更する(/role-perms/:role と違い、対象は「特定の複数人」で、他の個別権限キーには触れない)
+  if (method === 'PUT' && path === '/users/perms/bulk') {
+    if (!has(me, 'account_manage')) return ERR('権限がありません', 403);
+    const key = String(body.key || '');
+    if (!PERMS[key]) return ERR('不明な権限キーです');
+    const action = String(body.action || '');
+    if (!['grant', 'revoke', 'clear'].includes(action)) return ERR('不正な操作です');
+    const uids = Array.isArray(body.uids) ? [...new Set(body.uids.map(Number).filter(n => Number.isInteger(n) && n > 0))] : [];
+    if (!uids.length) return ERR('対象を選択してください');
+    const rows = (await env.DB.prepare(`SELECT id, extra_perms, revoked_perms FROM users WHERE id IN (${uids.map(() => '?').join(',')})`).bind(...uids).all()).results;
+    for (const r of rows) {
+      const extra = getPerms(r).filter(k => k !== key);
+      const revoked = getRevokedPerms(r).filter(k => k !== key);
+      if (action === 'grant') extra.push(key);
+      else if (action === 'revoke') revoked.push(key);
+      await env.DB.prepare('UPDATE users SET extra_perms=?, revoked_perms=? WHERE id=?').bind(JSON.stringify(extra), JSON.stringify(revoked), r.id).run();
+    }
+    return J({ ok: 1, updated: rows.length });
   }
 
   // 手配担当の一覧(担当グループのプルダウン用)

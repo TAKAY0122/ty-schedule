@@ -249,6 +249,7 @@ const FEATURE_LABELS = {
   'admin': { icon:'shieldCheck', label:'アカウント管理' },
   'admin-settings': { icon:'wrench', label:'システム設定' },
   'role-permissions': { icon:'shield', label:'権限の一括設定' },
+  'perm-matrix': { icon:'shield', label:'個別権限マトリクス' },
   'handler-status': { icon:'circleFilled', label:'ログイン中・編集履歴' },
   'import': { icon:'download', label:'スプレッドシート取り込み' },
   'sched-sources': { icon:'rss', label:'予定表ソース管理' },
@@ -1442,7 +1443,7 @@ async function render(){
   // (body.ops-page配下の上書き、style.css「管理者専用画面の再配色」セクション)で行う。
   const OPS_PAGES = [
     '#/dashboard', '#/app-structure', '#/system',
-    '#/admin', '#/admin-settings', '#/role-permissions', '#/permissions',
+    '#/admin', '#/admin-settings', '#/role-permissions', '#/perm-matrix', '#/permissions',
     '#/sched-sources', '#/daicho', '#/legacy-import', '#/report-export',
   ];
   document.body.classList.toggle('ops-page', OPS_PAGES.some(p => hash === p || hash.startsWith(p + '/')));
@@ -1499,6 +1500,7 @@ async function render(){
     else if(hash === '#/member-summary/search') await pageMemberSummarySearch(app);
     else if(hash.startsWith('#/member-summary/')) await pageMemberYearSummary(app, hash);
     else if(hash === '#/role-permissions') await pageRolePermissions(app);
+    else if(hash === '#/perm-matrix') await pagePermMatrix(app);
     else if(hash === '#/password') pagePassword(app);
     else if(hash === '#/calendar-guide') await pageCalendarGuide(app);
     else if(hash === '#/version-history') await pageVersionHistory(app);
@@ -7435,6 +7437,174 @@ async function pageRolePermissions(app){
   });
 }
 
+/* ===== 個別権限マトリクス(誰がどの個別権限を持っているか一覧・チェックボックスで複数人を選んで一括
+   付与/剥奪。管理者のみ・専用ページ・#/perm-matrix)
+   #/role-permissions が「役割全体」を対象にした一括設定なのに対し、こちらは特定の複数人だけを
+   チェックボックスで選び、1つの権限キーだけをまとめて変更する。個人ごとに#/permissions/:idを
+   開き直す必要がなく(その方式だとページを読み込むたびに選択状態が消えてしまう)、選んだ権限について
+   「誰が個別に許可/禁止されているか」も同じ画面で一目で確認できる。 ===== */
+async function pagePermMatrix(app){
+  if(!has('account_manage')){ notFound(app); return; }
+  app.innerHTML = `<h2>${icon('shield')} 個別権限マトリクス</h2><div class="card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>`;
+  let defs, matrix;
+  try{ [defs, matrix] = await Promise.all([ api('/perm-defs'), api('/perm-matrix') ]); }
+  catch(e){ app.innerHTML = `<h2>${icon('shield')} 個別権限マトリクス</h2><div class="card"><div class="msg err">${h(e.message)}</div></div>`; return; }
+
+  const st = PAGE_STATE.permMatrix || (PAGE_STATE.permMatrix = { key: defs.perms[0]?.key || '', q:'', onlyOverride:false });
+  if(!defs.perms.some(p=>p.key===st.key)) st.key = defs.perms[0]?.key || '';
+
+  const users = matrix.users;
+  const grouped = [...defs.perms].sort((a,b)=>a.baseLv-b.baseLv);
+  const keyOptionsHtml = (() => {
+    let lastLv = null, html = '';
+    for(const p of grouped){
+      if(p.baseLv !== lastLv){ if(lastLv !== null) html += '</optgroup>'; html += `<optgroup label="${h(PERM_GROUP_LABELS[p.baseLv] || `baseLv${p.baseLv}`)}">`; lastLv = p.baseLv; }
+      html += `<option value="${h(p.key)}" ${p.key===st.key?'selected':''}>${h(p.label)}</option>`;
+    }
+    if(lastLv !== null) html += '</optgroup>';
+    return html;
+  })();
+
+  app.innerHTML = `
+  <div style="margin-bottom:14px"><button type="button" id="pm-back" class="btn ghost sm">← アカウント管理に戻る</button></div>
+  <h2 style="margin-bottom:4px">${icon('shield')} 個別権限マトリクス</h2>
+  <div class="muted" style="margin-bottom:16px">権限を1つ選ぶと、誰が個別に許可・禁止されているかを確認できます。チェックボックスで複数人を選び、まとめて許可・剥奪・解除できます。</div>
+
+  <div class="card" style="margin-bottom:16px">
+    <label style="font-size:12.5px;color:var(--muted);display:block;margin-bottom:6px">対象の権限</label>
+    <select id="pm-key" style="width:100%;max-width:520px;padding:9px 10px;border:1px solid var(--line);border-radius:8px;font-size:14px">${keyOptionsHtml}</select>
+  </div>
+
+  <div class="card" style="margin-bottom:16px" id="pm-summary"></div>
+
+  <div class="card" id="pm-listcard">
+    <div class="filter-bar" style="margin-bottom:10px">
+      <input id="pm-search" class="search-input" placeholder="氏名・登録番号で検索">
+      <label class="muted" style="display:flex;align-items:center;gap:6px;font-size:12.5px;white-space:nowrap;cursor:pointer">
+        <input type="checkbox" id="pm-only-override">個別設定がある人のみ表示
+      </label>
+    </div>
+    <div class="row" id="pm-bulk-bar" style="margin:2px 0 10px;gap:8px;align-items:center;flex-wrap:wrap">
+      <span class="muted">選択中: <span id="pm-sel-count">0</span>件</span>
+      <button class="btn gold sm" id="pm-bulk-grant" disabled>選択した人に許可する</button>
+      <button class="btn ghost sm" id="pm-bulk-revoke" disabled>選択した人から剥奪する</button>
+      <button class="btn ghost sm" id="pm-bulk-clear" disabled>個別設定を解除(標準に戻す)</button>
+    </div>
+    <div id="pm-list-area"></div>
+  </div>`;
+
+  wireBackBtn(app, '#pm-back', '#/admin');
+
+  const effective = (u, p) => LV[u.role] >= p.baseLv ? !u.revokedPerms.includes(p.key) : u.extraPerms.includes(p.key);
+
+  const renderSummary = () => {
+    const p = defs.perms.find(x=>x.key===st.key);
+    const sumEl = $('#pm-summary'); if(!sumEl || !p) return;
+    const grantedList = users.filter(u => LV[u.role] < p.baseLv && u.extraPerms.includes(p.key));
+    const revokedList = users.filter(u => LV[u.role] >= p.baseLv && u.revokedPerms.includes(p.key));
+    const effCount = users.filter(u => effective(u, p)).length;
+    sumEl.innerHTML = `
+      <div class="card-t" style="font-weight:800;margin-bottom:6px">${h(p.label)}</div>
+      <div class="muted" style="font-size:12.5px;margin-bottom:12px">標準では「${h(PERM_GROUP_LABELS[p.baseLv] || '')}」が利用可能です。現在、個別設定も含めて <b>${effCount}人</b> が利用できます。</div>
+      <div class="row" style="gap:20px;flex-wrap:wrap">
+        <div style="flex:1;min-width:220px">
+          <div style="font-size:12px;font-weight:700;color:var(--gold);margin-bottom:6px">個別に許可されている人(${grantedList.length}人)</div>
+          <div class="muted" style="font-size:12.5px;line-height:1.7">${grantedList.length ? grantedList.map(u=>h(u.name)).join('、') : 'いません'}</div>
+        </div>
+        <div style="flex:1;min-width:220px">
+          <div style="font-size:12px;font-weight:700;color:#b23b3b;margin-bottom:6px">個別に禁止されている人(${revokedList.length}人)</div>
+          <div class="muted" style="font-size:12.5px;line-height:1.7">${revokedList.length ? revokedList.map(u=>h(u.name)).join('、') : 'いません'}</div>
+        </div>
+      </div>`;
+  };
+
+  const renderList = () => {
+    const p = defs.perms.find(x=>x.key===st.key);
+    const area = $('#pm-list-area'); if(!area || !p) return;
+    const q = st.q.trim();
+    let filtered = users.filter(u => !q || (u.name||'').includes(q) || (u.regno||'').includes(q));
+    if(st.onlyOverride) filtered = filtered.filter(u => u.extraPerms.includes(p.key) || u.revokedPerms.includes(p.key));
+    const statusHtml = (u) => {
+      const already = LV[u.role] >= p.baseLv;
+      const isRevoked = u.revokedPerms.includes(p.key);
+      const checked = already ? !isRevoked : u.extraPerms.includes(p.key);
+      if(already && isRevoked) return '<span style="color:#b23b3b">この人だけ禁止</span>';
+      if(already) return '<span class="muted">標準で利用可</span>';
+      if(checked) return '<span style="color:var(--gold)">この人だけ許可</span>';
+      return '<span class="muted">利用不可</span>';
+    };
+    area.innerHTML = `
+      <div class="sched-wrap pc-only"><table class="list">
+      <tr><th><input type="checkbox" id="pm-check-all"></th><th>登録番号</th><th>氏名</th><th>役割</th><th>状態</th></tr>
+      ${filtered.map(u=>`<tr>
+        <td><input type="checkbox" class="pm-check" data-id="${u.id}"></td>
+        <td class="nowrap">${h(u.regno)}</td>
+        <td class="nowrap">${h(u.name)}${u.suspended?' <span class="muted" style="font-size:11px">(停止中)</span>':''}</td>
+        <td class="nowrap">${h(ROLE_JP[u.role]||u.role)}</td>
+        <td class="nowrap" style="font-size:12.5px">${statusHtml(u)}</td>
+      </tr>`).join('') || '<tr><td colspan="5" class="muted" style="text-align:center;padding:16px">該当する人はいません</td></tr>'}
+      </table></div>
+      <div class="cards sp-only">
+      ${filtered.map(u=>`<div class="dcard">
+        <div class="dcard-head">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" class="pm-check" data-id="${u.id}">
+            <span class="dcard-title">${h(u.name)}</span>
+          </label>
+          <span class="dcard-sub">${h(u.regno)}</span>
+        </div>
+        <div class="drow"><span class="dk">役割</span><span class="dv">${h(ROLE_JP[u.role]||u.role)}</span></div>
+        <div class="drow"><span class="dk">状態</span><span class="dv" style="font-size:12.5px">${statusHtml(u)}</span></div>
+      </div>`).join('') || '<div class="muted" style="text-align:center;padding:16px">該当する人はいません</div>'}
+      </div>`;
+
+    const updateBulkBar = () => {
+      const checkedEls = area.querySelectorAll('.pm-check:checked');
+      const cnt = $('#pm-sel-count'), gb = $('#pm-bulk-grant'), rb = $('#pm-bulk-revoke'), cb = $('#pm-bulk-clear');
+      if(cnt) cnt.textContent = checkedEls.length;
+      if(gb) gb.disabled = checkedEls.length === 0;
+      if(rb) rb.disabled = checkedEls.length === 0;
+      if(cb) cb.disabled = checkedEls.length === 0;
+    };
+    const checkAll = $('#pm-check-all');
+    if(checkAll) checkAll.onchange = () => { area.querySelectorAll('.pm-check').forEach(cb2=>cb2.checked=checkAll.checked); updateBulkBar(); };
+    area.querySelectorAll('.pm-check').forEach(cb => cb.onchange = updateBulkBar);
+    updateBulkBar();
+  };
+
+  renderSummary();
+  renderList();
+
+  $('#pm-key').onchange = (e) => { st.key = e.target.value; renderSummary(); renderList(); };
+  $('#pm-search').oninput = (e) => { st.q = e.target.value; renderList(); };
+  $('#pm-only-override').onchange = (e) => { st.onlyOverride = e.target.checked; renderList(); };
+
+  const bulkApply = async (action) => {
+    const area = $('#pm-list-area');
+    const ids = [...area.querySelectorAll('.pm-check:checked')].map(cb => Number(cb.dataset.id));
+    if(!ids.length) return;
+    const p = defs.perms.find(x=>x.key===st.key);
+    const verb = action==='grant' ? '許可' : action==='revoke' ? '剥奪' : '個別設定の解除(標準に戻す)';
+    if(!confirm(`選択した${ids.length}人について、「${p.label}」を${verb}します。よろしいですか?`)) return;
+    try{
+      const r = await api('/users/perms/bulk', { method:'PUT', body:{ uids: ids, key: st.key, action } });
+      // 手元のmatrixデータも更新して再描画する(再フェッチ不要)
+      for(const u of users){
+        if(!ids.includes(u.id)) continue;
+        u.extraPerms = u.extraPerms.filter(k=>k!==st.key);
+        u.revokedPerms = u.revokedPerms.filter(k=>k!==st.key);
+        if(action==='grant') u.extraPerms.push(st.key);
+        else if(action==='revoke') u.revokedPerms.push(st.key);
+      }
+      popup(`${r.updated}人に反映しました`);
+      renderSummary(); renderList();
+    }catch(e){ popup(e.message, 'error'); }
+  };
+  $('#pm-bulk-grant').onclick = () => bulkApply('grant');
+  $('#pm-bulk-revoke').onclick = () => bulkApply('revoke');
+  $('#pm-bulk-clear').onclick = () => bulkApply('clear');
+}
+
 /* ===== 個人の年間稼働サマリー・備考欄(member_summary_view権限があれば、対象が本人でも閲覧可) ===== */
 /* ===== 個人の年間サマリーを、メンバーを検索して開くための入口画面(左メニュー用) ===== */
 async function pageMemberSummarySearch(app){
@@ -7627,7 +7797,7 @@ async function pagePermissions(app, hash){
   app.innerHTML = `
   <div style="margin-bottom:14px"><a href="#/admin" class="btn ghost sm">← アカウント管理に戻る</a></div>
   <h2 style="margin-bottom:4px">権限編集</h2>
-  <div class="muted" style="margin-bottom:16px">${h(baseUser.name)} さん（登録番号 ${h(baseUser.regno)}）の設定を行います。</div>
+  <div class="muted" style="margin-bottom:16px">${h(baseUser.name)} さん（登録番号 ${h(baseUser.regno)}）の設定を行います。 ${canPerms?`<a href="#/perm-matrix">誰がどの権限を持っているか一覧で見る →</a>`:''}</div>
 
   ${canPerms ? `
   <div class="card" style="margin-bottom:16px">
@@ -8494,7 +8664,7 @@ async function pageAppStructure(app){
             }).join('')}
           </div>
         </div>
-        <div class="ops-note">塗られているセルが「そのロールなら標準で使える」範囲です。${canEditPerms ? 'セルをクリックすると、その権限を<b>標準で持たせるロールの範囲</b>を変更できます(即時反映)。ロールは上位が下位を包含するため、例えばチーフに付けると手配者・管理者にも自動的に付きます。' : ''}個別付与(extra_perms)を使えば、塗られていない組み合わせも個人単位で許可できます。</div>
+        <div class="ops-note">塗られているセルが「そのロールなら標準で使える」範囲です。${canEditPerms ? 'セルをクリックすると、その権限を<b>標準で持たせるロールの範囲</b>を変更できます(即時反映)。ロールは上位が下位を包含するため、例えばチーフに付けると手配者・管理者にも自動的に付きます。' : ''}個別付与(extra_perms)を使えば、塗られていない組み合わせも個人単位で許可できます。${canEditPerms ? ' 誰が個別に許可・剥奪されているかは <a href="#/perm-matrix">個別権限マトリクス</a> で確認・一括変更できます。' : ''}</div>
       </div>
 
       <div class="ops-grid3">
@@ -9093,6 +9263,7 @@ async function pageAdmin(app){
   <div class="adm-nav sticky-filters">
     ${[['data',`${icon('clipboardList')} 全データ`],['create',`${icon('plus')} 新規作成`],['list',`${icon('users')} アカウント一覧`]].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
     <a href="#/role-permissions" class="adm-chip" style="text-decoration:none;display:inline-block">${icon('shield')} 権限の一括設定</a>
+    <a href="#/perm-matrix" class="adm-chip" style="text-decoration:none;display:inline-block">${icon('shield')} 個別権限マトリクス</a>
     <a href="#/admin-settings" class="adm-chip" style="text-decoration:none;display:inline-block">${icon('wrench')} システム設定</a>
   </div>
 
