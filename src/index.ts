@@ -1594,6 +1594,21 @@ function extractArtistName(site) {
   if (!s) return s;
   return splitSiteBracket(s).base || s;
 }
+// 公演名(本体名)が一致する現場名の表記ゆれ一覧を返す(/artist-history・/artist-membersで使用)。
+// 以前は毎回SELECT DISTINCT siteでschedule全件をスキャンして絞り込んでいたが、
+// 1時間おきのcron(cronRankCache)が事前計算したキャッシュ(settings)を使うよう変更した。
+// キャッシュがまだ無い場合(デプロイ直後等)だけ、その場でスキャンする。
+async function siteVariantsForArtist(env, artist) {
+  const cached = await getSetting(env, 'site_variants_cache', '');
+  if (cached) {
+    try {
+      const map = JSON.parse(cached);
+      if (Object.keys(map).length) return map[artist] || [];
+    } catch (e) {}
+  }
+  const siteRows = (await env.DB.prepare("SELECT DISTINCT site FROM schedule WHERE type='work' AND site<>''").all()).results;
+  return siteRows.map(r => r.site).filter(s => extractArtistName(s) === artist);
+}
 // 「行った会場/公演」一覧の各行に添える順位情報。valuesは同じ会場/公演を経験した全員の回数一覧、
 // myValueは対象者本人の回数。rankは同数タイは同順位、次はタイ人数分飛ぶ標準的な順位付け
 // (例: [10,10,8,5]で8の人は3位)。gapは「あと何回で1つ上の順位に並べるか」(タイで足りるため+1しない)。
@@ -2764,14 +2779,18 @@ async function api(req, env, url) {
     const users = (await env.DB.prepare('SELECT id,rank FROM users').all()).results;
     const rankMap = {}; for (const u of users) rankMap[u.id] = u.rank;
     const rows = (await env.DB.prepare("SELECT id,user_id,date,tin,tout,duty,load_end,show_end,multi FROM schedule WHERE type='work'").all()).results;
-    let n = 0;
+    // 全件(数万行規模になりうる)を1件ずつawaitで更新すると、逐次の待ち時間が積み上がり
+    // CPU/実行時間の上限に達して途中で失敗する(markVisited等と同じ既知の問題)。
+    // 更新内容はDB呼び出し無しで計算できるため、まとめてbatchで実行する。
+    const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
+    const stmts = [];
     for (const r of rows) {
       const c = calcPay({ rank: rankMap[r.user_id], date: r.date, tin: r.tin, tout: r.tout, duty: r.duty, loadEnd: r.load_end, showEnd: r.show_end, multi: r.multi }, resolve, dutyMap);
       if (!c) continue;
-      await env.DB.prepare('UPDATE schedule SET hours=?, overtime=?, pay=? WHERE id=?').bind(c.hours, c.overtime, c.pay, r.id).run();
-      n++;
+      stmts.push(env.DB.prepare('UPDATE schedule SET hours=?, overtime=?, pay=? WHERE id=?').bind(c.hours, c.overtime, c.pay, r.id));
     }
-    return J({ ok: 1, updated: n });
+    for (const part of chunk(stmts, 200)) if (part.length) await env.DB.batch(part);
+    return J({ ok: 1, updated: stmts.length });
   }
 
   // ---- 通知設定(管理者) ----
@@ -4110,9 +4129,17 @@ async function api(req, env, url) {
   //      (会場は特定の月に紐づく概念ではなく、過去〜未来にわたって繰り返し使われるため)。 ----
   if (method === 'GET' && path === '/venues') {
     if (!has(me, 'sites_view')) return ERR('ページが見つかりません', 404);
-    const rows = (await env.DB.prepare(
-      "SELECT venue, COUNT(*) AS cnt, COUNT(DISTINCT date) AS dateCnt, MIN(date) AS firstDate, MAX(date) AS lastDate FROM schedule WHERE type='work' AND venue<>'' GROUP BY venue ORDER BY venue"
-    ).all()).results;
+    // schedule全件(会場一覧は月で区切らないため常に全期間)の集計は重いので、
+    // 1時間おきのcron(cronRankCache)が事前計算したキャッシュ(settings)を使う。
+    // キャッシュがまだ無い場合(デプロイ直後等)だけ、その場で計算する。
+    let rows = null;
+    const cachedVenues = await getSetting(env, 'venues_cache', '');
+    if (cachedVenues) { try { rows = JSON.parse(cachedVenues); } catch (e) {} }
+    if (!rows || !rows.length) {
+      rows = (await env.DB.prepare(
+        "SELECT venue, COUNT(*) AS cnt, COUNT(DISTINCT date) AS dateCnt, MIN(date) AS firstDate, MAX(date) AS lastDate FROM schedule WHERE type='work' AND venue<>'' GROUP BY venue ORDER BY venue"
+      ).all()).results;
+    }
     const manualRows = (await env.DB.prepare('SELECT venue FROM venue_manuals').all()).results;
     const manualSet = new Set(manualRows.map(r => r.venue));
     for (const r of rows) r.hasManual = manualSet.has(r.venue);
@@ -4162,8 +4189,7 @@ async function api(req, env, url) {
     if (!has(me, 'sites_view')) return ERR('ページが見つかりません', 404);
     const artist = url.searchParams.get('artist');
     if (!artist) return ERR('artist が必要です');
-    const siteRows = (await env.DB.prepare("SELECT DISTINCT site FROM schedule WHERE type='work' AND site<>''").all()).results;
-    const variants = siteRows.map(r => r.site).filter(s => extractArtistName(s) === artist);
+    const variants = await siteVariantsForArtist(env, artist);
     if (!variants.length) return J([]);
     const ph = variants.map(() => '?').join(',');
     const rows = (await env.DB.prepare(
@@ -4281,20 +4307,27 @@ async function api(req, env, url) {
   //      (現場名,日付)単位で取得しWorker側でアーティスト名ごとに再集計する。 ----
   if (method === 'GET' && path === '/artists') {
     if (!has(me, 'sites_view')) return ERR('ページが見つかりません', 404);
-    const rows = (await env.DB.prepare(
-      "SELECT site, date, COUNT(*) AS cnt FROM schedule WHERE type='work' AND site<>'' GROUP BY site, date"
-    ).all()).results;
-    const byArtist: Record<string, any> = {};
-    for (const r of rows) {
-      const artist = extractArtistName(r.site);
-      (byArtist[artist] ||= { artist, cnt: 0, dates: new Set() });
-      byArtist[artist].cnt += r.cnt;
-      byArtist[artist].dates.add(r.date);
+    // schedule全件の集計は重いので、1時間おきのcron(cronRankCache)が事前計算した
+    // キャッシュ(settings)を使う。キャッシュがまだ無い場合だけその場で計算する。
+    let result = null;
+    const cachedArtists = await getSetting(env, 'artists_cache', '');
+    if (cachedArtists) { try { result = JSON.parse(cachedArtists); } catch (e) {} }
+    if (!result || !result.length) {
+      const rows = (await env.DB.prepare(
+        "SELECT site, date, COUNT(*) AS cnt FROM schedule WHERE type='work' AND site<>'' GROUP BY site, date"
+      ).all()).results;
+      const byArtist: Record<string, any> = {};
+      for (const r of rows) {
+        const artist = extractArtistName(r.site);
+        (byArtist[artist] ||= { artist, cnt: 0, dates: new Set() });
+        byArtist[artist].cnt += r.cnt;
+        byArtist[artist].dates.add(r.date);
+      }
+      result = Object.values(byArtist).map((a: any) => {
+        const sorted = [...a.dates].sort();
+        return { artist: a.artist, cnt: a.cnt, dateCnt: a.dates.size, firstDate: sorted[0], lastDate: sorted[sorted.length - 1] };
+      }).sort((x: any, y: any) => x.artist.localeCompare(y.artist, 'ja'));
     }
-    const result = Object.values(byArtist).map(a => {
-      const sorted = [...a.dates].sort();
-      return { artist: a.artist, cnt: a.cnt, dateCnt: a.dates.size, firstDate: sorted[0], lastDate: sorted[sorted.length - 1] };
-    }).sort((x, y) => x.artist.localeCompare(y.artist, 'ja'));
     return J(result);
   }
 
@@ -4305,8 +4338,7 @@ async function api(req, env, url) {
     if (!has(me, 'sites_view')) return ERR('ページが見つかりません', 404);
     const artist = url.searchParams.get('artist');
     if (!artist) return ERR('artist が必要です');
-    const siteRows = (await env.DB.prepare("SELECT DISTINCT site FROM schedule WHERE type='work' AND site<>''").all()).results;
-    const variants = siteRows.map(r => r.site).filter(s => extractArtistName(s) === artist);
+    const variants = await siteVariantsForArtist(env, artist);
     if (!variants.length) return J({ artist, past: [], future: [] });
     const ph = variants.map(() => '?').join(',');
     const today = jstDate();
@@ -5935,35 +5967,65 @@ async function cronRankPromotion(env) {
 }
 
 // 「行った会場/公演」ランキング(全員が閲覧可能、GET /member-venues・/member-artists)の
-// 「対象の会場/公演を経験した全員の回数一覧」は、以前は毎リクエストごとにschedule全件を
-// 集計し直しており、この一覧が全メンバーに公開された直後(2026年8月)にD1の1日あたり行読み取り
+// 「対象の会場/公演を経験した全員の回数一覧」、および会場一覧・公演一覧(GET /venues・/artists、
+// チーフ以上)は、いずれも以前は毎リクエストごとにschedule全件を集計し直しており、
+// 「行った会場/公演」が全メンバーに公開された直後(2026年8月)にD1の1日あたり行読み取り
 // 無料枠を使い切る事故が本番で実際に発生した。1時間おきに全員分をまとめて計算し直し、
 // settingsにJSONでキャッシュしておく方式に変更した(自分自身の回数・一覧は各リクエストで
-// 引き続きライブ計算するため、自分の最新の実績は即座に反映される。他人との順位比較だけが
-// 最大1時間程度遅れる)。
+// 引き続きライブ計算するため、自分の最新の実績は即座に反映される。他人との順位比較・
+// 会場/公演一覧全体だけが最大1時間程度遅れる)。GET /artist-history・/artist-membersが
+// 公演名の表記ゆれ一覧を求めるために都度行っていたSELECT DISTINCT siteも、ここで一緒に
+// 事前計算しキャッシュする(site_variants_cache: 公演名→現場名表記ゆれ一覧)。
 async function cronRankCache(env) {
-  const venueRows = (await env.DB.prepare(
+  const venueUserRows = (await env.DB.prepare(
     "SELECT venue, user_id, COUNT(*) AS cnt FROM schedule WHERE type='work' AND venue<>'' GROUP BY venue, user_id"
   ).all()).results;
   const byVenueUsers = {};
-  for (const r of venueRows) (byVenueUsers[r.venue] ||= []).push(r.cnt);
+  for (const r of venueUserRows) (byVenueUsers[r.venue] ||= []).push(r.cnt);
 
-  const artistRows = (await env.DB.prepare(
+  const venueRows = (await env.DB.prepare(
+    "SELECT venue, COUNT(*) AS cnt, COUNT(DISTINCT date) AS dateCnt, MIN(date) AS firstDate, MAX(date) AS lastDate FROM schedule WHERE type='work' AND venue<>'' GROUP BY venue ORDER BY venue"
+  ).all()).results;
+
+  const siteDateUserRows = (await env.DB.prepare(
     "SELECT user_id, site, date, COUNT(*) AS cnt FROM schedule WHERE type='work' AND site<>'' GROUP BY user_id, site, date"
   ).all()).results;
   const byArtistUserTotals = {};
-  for (const r of artistRows) {
+  const bySiteDate = {}; // key: "site|date" -> {site,date,cnt}(全ユーザー合算)
+  const siteVariantSets = {}; // artist -> Set(site表記ゆれ)
+  for (const r of siteDateUserRows) {
     const artist = extractArtistName(r.site);
-    const bucket = byArtistUserTotals[artist] ||= {};
-    bucket[r.user_id] = (bucket[r.user_id] || 0) + r.cnt;
+    const userBucket = byArtistUserTotals[artist] ||= {};
+    userBucket[r.user_id] = (userBucket[r.user_id] || 0) + r.cnt;
+    const key = r.site + '|' + r.date;
+    (bySiteDate[key] ||= { site: r.site, date: r.date, cnt: 0 }).cnt += r.cnt;
+    (siteVariantSets[artist] ||= new Set()).add(r.site);
   }
   const byArtistUsers = {};
   for (const artist of Object.keys(byArtistUserTotals)) byArtistUsers[artist] = Object.values(byArtistUserTotals[artist]);
 
+  const byArtist: Record<string, any> = {};
+  for (const r of Object.values(bySiteDate) as any[]) {
+    const artist = extractArtistName(r.site);
+    (byArtist[artist] ||= { artist, cnt: 0, dates: new Set() });
+    byArtist[artist].cnt += r.cnt;
+    byArtist[artist].dates.add(r.date);
+  }
+  const artistRows = (Object.values(byArtist) as any[]).map(a => {
+    const sorted = [...a.dates].sort();
+    return { artist: a.artist, cnt: a.cnt, dateCnt: a.dates.size, firstDate: sorted[0], lastDate: sorted[sorted.length - 1] };
+  }).sort((x, y) => x.artist.localeCompare(y.artist, 'ja'));
+
+  const siteVariants = {};
+  for (const artist of Object.keys(siteVariantSets)) siteVariants[artist] = [...siteVariantSets[artist]];
+
   await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('venue_rank_cache',?)").bind(JSON.stringify(byVenueUsers)).run();
   await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('artist_rank_cache',?)").bind(JSON.stringify(byArtistUsers)).run();
+  await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('venues_cache',?)").bind(JSON.stringify(venueRows)).run();
+  await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('artists_cache',?)").bind(JSON.stringify(artistRows)).run();
+  await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('site_variants_cache',?)").bind(JSON.stringify(siteVariants)).run();
   await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('rank_cache_last_run',?)").bind(jstDate()).run();
-  console.log('[cronRankCache] venues', Object.keys(byVenueUsers).length, 'artists', Object.keys(byArtistUsers).length);
+  console.log('[cronRankCache] venues', venueRows.length, 'artists', artistRows.length);
 }
 
 async function cronNotify(env, opt: any = {}) {

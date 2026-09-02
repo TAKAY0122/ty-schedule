@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS schedule_history(
   before_json TEXT,
   after_json TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_schedule_history_target ON schedule_history(target_id);
 
 CREATE TABLE IF NOT EXISTS reports(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
