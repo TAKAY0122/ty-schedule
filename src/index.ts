@@ -97,6 +97,7 @@ const APP_STRUCTURE_CRON = [
   { name: 'cronScheduleSources', desc: '予定表ソース取込(深夜/ソースごとの指定時刻)' },
   { name: 'cronRankPromotion', desc: 'ランク昇格の適用(D→C自動昇格の予約日到来分)' },
   { name: 'cronNotify', desc: '新人報告リマインド' },
+  { name: 'cronRankCache', desc: '「行った会場/公演」ランキング全員分集計のキャッシュ更新' },
 ];
 const APP_STRUCTURE_PAGES = [
   { hash: '#/home', name: 'ホーム', role: '全員', desc: 'ログイン後の最初の画面。今日から1週間分の予定をスワイプで確認でき、未読通知・承認待ち件数、権限に応じたメニューショートカットを表示する。' },
@@ -4183,12 +4184,18 @@ async function api(req, env, url) {
     const rows = (await env.DB.prepare(
       "SELECT venue, COUNT(*) AS cnt, COUNT(DISTINCT date) AS dateCnt, MAX(date) AS lastDate FROM schedule WHERE type='work' AND user_id=? AND venue<>'' GROUP BY venue ORDER BY cnt DESC"
     ).bind(uid).all()).results;
-    // 全員分の(会場,人)ごとの回数を取得し、対象者の順位・あと何回で1つ上の順位に並べるかを算出する
-    const allRows = (await env.DB.prepare(
-      "SELECT venue, user_id, COUNT(*) AS cnt FROM schedule WHERE type='work' AND venue<>'' GROUP BY venue, user_id"
-    ).all()).results;
-    const byVenueUsers: Record<string, number[]> = {};
-    for (const r of allRows) (byVenueUsers[r.venue] ||= []).push(r.cnt);
+    // 全員分の(会場,人)ごとの回数は、毎リクエストでschedule全件を集計し直すと重すぎるため
+    // 1時間おきのcron(cronRankCache)が事前計算したキャッシュ(settings)を使う。
+    // キャッシュがまだ無い場合(デプロイ直後等)だけ、その場で計算する。
+    let byVenueUsers: Record<string, number[]> = {};
+    const cached = await getSetting(env, 'venue_rank_cache', '');
+    if (cached) { try { byVenueUsers = JSON.parse(cached); } catch (e) {} }
+    if (!Object.keys(byVenueUsers).length) {
+      const allRows = (await env.DB.prepare(
+        "SELECT venue, user_id, COUNT(*) AS cnt FROM schedule WHERE type='work' AND venue<>'' GROUP BY venue, user_id"
+      ).all()).results;
+      for (const r of allRows) (byVenueUsers[r.venue] ||= []).push(r.cnt);
+    }
     const result = rows.map(r => ({ ...r, ...rankInfo(byVenueUsers[r.venue] || [r.cnt], r.cnt) }));
     return J(result);
   }
@@ -4213,18 +4220,25 @@ async function api(req, env, url) {
       const sorted = [...a.dates].sort();
       return { artist: a.artist, cnt: a.cnt, dateCnt: a.dates.size, lastDate: sorted[sorted.length - 1] };
     }).sort((x, y) => y.cnt - x.cnt);
-    // 全員分の(公演,人)ごとの回数を取得し、対象者の順位・あと何回で1つ上の順位に並べるかを算出する
-    // (公演名は現場名から都度抽出する値のためSQLでは集計できず、Worker側で全件から再集計する)
-    const allRows = (await env.DB.prepare(
-      "SELECT user_id, site, date, COUNT(*) AS cnt FROM schedule WHERE type='work' AND site<>'' GROUP BY user_id, site, date"
-    ).all()).results;
-    const byArtistUsers: Record<string, Record<string, number>> = {};
-    for (const r of allRows) {
-      const artist = extractArtistName(r.site);
-      const bucket = byArtistUsers[artist] ||= {};
-      bucket[r.user_id] = (bucket[r.user_id] || 0) + r.cnt;
+    // 全員分の(公演,人)ごとの回数も、venueと同様に1時間おきのcron(cronRankCache)が
+    // 事前計算したキャッシュ(settings)を使う。無い場合だけその場で計算する
+    // (公演名は現場名から都度抽出する値のためSQLでは集計できず、Worker側で再集計する)。
+    let byArtistUsers: Record<string, number[]> = {};
+    const cachedArtist = await getSetting(env, 'artist_rank_cache', '');
+    if (cachedArtist) { try { byArtistUsers = JSON.parse(cachedArtist); } catch (e) {} }
+    if (!Object.keys(byArtistUsers).length) {
+      const allRows = (await env.DB.prepare(
+        "SELECT user_id, site, date, COUNT(*) AS cnt FROM schedule WHERE type='work' AND site<>'' GROUP BY user_id, site, date"
+      ).all()).results;
+      const byArtistUserTotals: Record<string, Record<string, number>> = {};
+      for (const r of allRows) {
+        const artist = extractArtistName(r.site);
+        const bucket = byArtistUserTotals[artist] ||= {};
+        bucket[r.user_id] = (bucket[r.user_id] || 0) + r.cnt;
+      }
+      for (const artist of Object.keys(byArtistUserTotals)) byArtistUsers[artist] = Object.values(byArtistUserTotals[artist]);
     }
-    const result = myArtistRows.map(a => ({ ...a, ...rankInfo(Object.values(byArtistUsers[a.artist] || { me: a.cnt }), a.cnt) }));
+    const result = myArtistRows.map(a => ({ ...a, ...rankInfo(byArtistUsers[a.artist] || [a.cnt], a.cnt) }));
     return J(result);
   }
 
@@ -4816,13 +4830,14 @@ async function api(req, env, url) {
     const emptyAll = { results: [] };
 
     const [
-      daichoLastRun, rankLastRun, notifyLastRun, schedSourcesRes,
+      daichoLastRun, rankLastRun, notifyLastRun, rankCacheLastRun, schedSourcesRes,
       selfReportsRes, nominationsRes, reportsRes,
       monthRowsRes, prevMonthRowsRes, usersRes, lockDays, trendRes,
     ] = await Promise.all([
       safe(getSetting(env, 'daicho_reload_last_run', ''), ''),
       safe(getSetting(env, 'rank_promotion_last_run', ''), ''),
       safe(getSetting(env, 'notify_last_run', ''), ''),
+      safe(getSetting(env, 'rank_cache_last_run', ''), ''),
       safe(env.DB.prepare("SELECT label, last_run, last_result, freq_type, interval_hours, hour FROM sched_sources WHERE enabled=1 ORDER BY last_run ASC").all(), emptyAll),
       safe(env.DB.prepare("SELECT created_at FROM self_reports WHERE status='pending'").all(), emptyAll),
       safe(env.DB.prepare("SELECT created_at FROM site_nominations WHERE status='pending'").all(), emptyAll),
@@ -4850,6 +4865,7 @@ async function api(req, env, url) {
       { key: 'schedSources', label: '予定表ソース取込', lastRun: oldestSource ? (oldestSource.last_run || '').slice(0, 10) : '', bad: !schedSourcesRes.results.length ? false : isStale((oldestSource.last_run || '').slice(0, 10)), detail: schedSourceDetail },
       { key: 'rankPromotion', label: 'ランク昇格の適用', lastRun: rankLastRun, bad: isStale(rankLastRun) },
       { key: 'notify', label: '新人報告リマインド', lastRun: notifyLastRun, bad: isStale(notifyLastRun) },
+      { key: 'rankCache', label: '会場/公演ランキングのキャッシュ更新', lastRun: rankCacheLastRun, bad: isStale(rankCacheLastRun) },
     ];
     const systemStatus = { jobs, hasIssue: jobs.some(j => j.bad) };
 
@@ -5918,6 +5934,38 @@ async function cronRankPromotion(env) {
   return { promoted };
 }
 
+// 「行った会場/公演」ランキング(全員が閲覧可能、GET /member-venues・/member-artists)の
+// 「対象の会場/公演を経験した全員の回数一覧」は、以前は毎リクエストごとにschedule全件を
+// 集計し直しており、この一覧が全メンバーに公開された直後(2026年8月)にD1の1日あたり行読み取り
+// 無料枠を使い切る事故が本番で実際に発生した。1時間おきに全員分をまとめて計算し直し、
+// settingsにJSONでキャッシュしておく方式に変更した(自分自身の回数・一覧は各リクエストで
+// 引き続きライブ計算するため、自分の最新の実績は即座に反映される。他人との順位比較だけが
+// 最大1時間程度遅れる)。
+async function cronRankCache(env) {
+  const venueRows = (await env.DB.prepare(
+    "SELECT venue, user_id, COUNT(*) AS cnt FROM schedule WHERE type='work' AND venue<>'' GROUP BY venue, user_id"
+  ).all()).results;
+  const byVenueUsers = {};
+  for (const r of venueRows) (byVenueUsers[r.venue] ||= []).push(r.cnt);
+
+  const artistRows = (await env.DB.prepare(
+    "SELECT user_id, site, date, COUNT(*) AS cnt FROM schedule WHERE type='work' AND site<>'' GROUP BY user_id, site, date"
+  ).all()).results;
+  const byArtistUserTotals = {};
+  for (const r of artistRows) {
+    const artist = extractArtistName(r.site);
+    const bucket = byArtistUserTotals[artist] ||= {};
+    bucket[r.user_id] = (bucket[r.user_id] || 0) + r.cnt;
+  }
+  const byArtistUsers = {};
+  for (const artist of Object.keys(byArtistUserTotals)) byArtistUsers[artist] = Object.values(byArtistUserTotals[artist]);
+
+  await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('venue_rank_cache',?)").bind(JSON.stringify(byVenueUsers)).run();
+  await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('artist_rank_cache',?)").bind(JSON.stringify(byArtistUsers)).run();
+  await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('rank_cache_last_run',?)").bind(jstDate()).run();
+  console.log('[cronRankCache] venues', Object.keys(byVenueUsers).length, 'artists', Object.keys(byArtistUsers).length);
+}
+
 async function cronNotify(env, opt: any = {}) {
   console.log('[cronNotify] start', JSON.stringify(opt));
   const enabled = await getSetting(env, 'notify_enabled', '1');
@@ -6110,6 +6158,7 @@ export default {
       else if (event.cron === '5 * * * *') await cronScheduleSources(env);
       else if (event.cron === '10 * * * *') await cronRankPromotion(env);
       else if (event.cron === '15 * * * *') await cronNotify(env);
+      else if (event.cron === '20 * * * *') await cronRankCache(env);
     } catch (e) { console.error(`[scheduled] cron=${event.cron} failed:`, e); }
     console.log(`[scheduled] end (cron=${event.cron}, started at ${startTs})`);
   }

@@ -2556,8 +2556,8 @@ async function pageDashboard(app){
     notify: has('wage_settings') ? '#/admin-settings' : null,
   };
   // wrangler.tomlのcron設定と対応する起動タイミング(毎時何分か)
-  const jobMin = { daicho: 0, schedSources: 5, rankPromotion: 10, notify: 15 };
-  const jobShort = { daicho: '台帳取込', schedSources: '予定表取込', rankPromotion: 'ランク昇格', notify: 'リマインド' };
+  const jobMin = { daicho: 0, schedSources: 5, rankPromotion: 10, notify: 15, rankCache: 20 };
+  const jobShort = { daicho: '台帳取込', schedSources: '予定表取込', rankPromotion: 'ランク昇格', notify: 'リマインド', rankCache: 'ランキング集計' };
 
   const trend = data.trend || [];
   const trendShort = trend.map(t => ({ ...t, short: Number(t.ym.slice(5)) + '月' }));
