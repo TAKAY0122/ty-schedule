@@ -101,7 +101,8 @@ const APP_STRUCTURE_CRON = [
 ];
 const APP_STRUCTURE_PAGES = [
   { hash: '#/home', name: 'ホーム', role: '全員', desc: 'ログイン後の最初の画面。今日から1週間分の予定をスワイプで確認でき、未読通知・承認待ち件数、権限に応じたメニューショートカットを表示する。' },
-  { hash: '#/chat', name: 'チャット', role: '全員', desc: '全体チャット(第1弾)。ポーリング方式で新着メッセージを取得する。将来、現場ごと・手配ごと・課ごとのグループチャット、個人チャット(DM)へ拡張予定。' },
+  { hash: '#/chat', name: 'チャット', role: '全員', desc: 'チャット一覧(全体・課・手配チーム・個人)と、選んだルームのメッセージ画面(#/chat/:id)。ポーリング方式で新着メッセージを取得する。現場ごとのチャットは現場詳細モーダルから、個人チャット(DM)は一覧の「新しいメッセージ」から開始する。チーフ以上は現場詳細モーダルから招待URL/QR(#/g/:token)を発行できる。' },
+  { hash: '#/g/:token', name: '現場チャットのゲスト招待ページ', role: '全員(未ログインでも可)', desc: '現場ごとのチャットへの招待URL/QRの遷移先。アプリのログイン状態に関わらず動く専用の入口画面(render()内でTOKEN有無チェックより前に振り分ける)。ログイン中なら通常のアカウントでそのままチャットへ、未ログインならログインするか、名前を入力してゲストとして参加できる。現場当日(JST)以外は利用不可。' },
   { hash: '#/dashboard', name: '管理者ダッシュボード', role: 'dashboard_view権限者', desc: '定期処理(台帳再取込・予定表ソース取込・ランク昇格適用・新人報告リマインド)の最終実行日時、予定表ソースのエラー詳細等、システム状態を一覧表示する。' },
   { hash: '#/schedule', name: 'マイスケジュール', role: '全員', desc: '月間カレンダーで自身(または閲覧権限のある他者)のスケジュールを表示する。日付タップで現場変更報告・休み希望の入力モーダルを開く。member_summary_view権限があれば画面末尾に個人の年間サマリーを表示。「行った会場」「行った公演」ボタン(全員の中での順位表示含む)は誰でも見られるが、そこから会場/公演詳細への遷移と、現場検索バーの利用はsites_view権限(チーフ以上)に限る。月見出しタップで年月を直接選択できる。' },
   { hash: '#/edit', name: 'スケジュール入力', role: '手配者(手配モード中)', desc: '現場へのメンバー一括登録、個人ごとの詳細編集(時刻・業務・休憩等)を行う。' },
@@ -207,7 +208,7 @@ const APP_STRUCTURE_API_GROUPS = [
     ['GET', '/artist-members', '指定した公演を経験したことのあるメンバー一覧(準備中、チーフ以上)。sortパラメータ対応'],
     ['GET', '/member-artists', '指定したメンバーが行ったことのある公演一覧(準備中、全員が閲覧可能)。/member-venuesと同様、その公演を経験した全員の中での順位(rank/total)・あと何回で1つ上の順位か(nextRank/gap)を付与。一覧のタップ先(公演詳細)はsites_view権限(チーフ以上)に限る'],
     ['GET', '/member-site-log', '指定したメンバーの現場ログ(1稼働=1行、日付降順。チーフ以上)。集計はせず生ログを返す'],
-    ['GET', '/name-site-log', '新人報告・ブラックリストの氏名(自由記述)と同じ名前のアプリ登録者を探し、その人の過去の現場ログを返す(blacklist_manage/report_check権限者)。同姓同名は全員分を返す'],
+    ['GET', '/name-site-log', '新人報告・ブラックリスト・新人リストの氏名と同じ名前の過去の現場ログを返す(手配者以上)。アプリ登録済みユーザーはschedule実績から、未登録者はrookie_candidatesから拾い、取込のたびに最新化される。同姓同名は全員分を返す'],
     ['POST', '/artists/bulk-rename', 'チェックした複数の公演名をまとめて統一名称に変更(準備中、手配者以上)。【セクション等】表記は維持'],
     ['POST', '/artists/find-replace', '公演名(本体部分)に含まれる文字列の一部だけを一括置換(準備中、手配者以上)。body.preview=trueでプレビューのみ。body.artistsで対象を絞り込み可(フォルダ内実行時の誤爆防止)'],
     ['GET/POST', '/artist-folders', '公演フォルダの一覧取得・新規作成(準備中)。GETはチーフ以上、POSTは手配者以上'],
@@ -267,10 +268,18 @@ const APP_STRUCTURE_API_GROUPS = [
     ['GET', '/app-structure', 'このアプリ自身の構造データ取得(管理者専用、#/app-structure用)'],
   ]},
   { title: 'チャット', rows: [
-    ['GET', '/chat/rooms', '参加中ルーム一覧(第1弾は全体チャット1件固定)と各ルームの未読件数を取得(全員可)'],
-    ['GET', '/chat/messages', '指定ルームのメッセージ取得。after_id指定でポーリング差分取得、無指定なら最新50件(全員可)'],
-    ['POST', '/chat/messages', 'メッセージ送信(全員可、2000字まで)'],
-    ['POST', '/chat/read', '既読位置(last_read_message_id)の更新(全員可)'],
+    ['GET', '/chat/user-search', '個人チャット(dm)の相手を検索(全員可)。/usersと違いmembers_view権限は不要で、氏名・登録番号のみ返す軽量版'],
+    ['GET', '/chat/rooms', '参加中ルーム一覧(全体・課・手配チーム・個人)と各ルームの未読件数を取得(全員可)。ensure=1で課・手配チームルームを未作成でも作成してから返す(#/chat表示時のみ使用。ポーリングでは既存ルームのみ返す軽量版)'],
+    ['POST', '/chat/rooms/open', '現場ごと(site)・個人(dm)のルームを開く(無ければ作成)。siteは当日その現場に配置されている本人または管理者のみ、dmは相手ユーザーを指定するだけで開ける'],
+    ['GET', '/chat/room', 'ルーム1件の情報(種別・表示名)を取得。アクセス権が無ければ404'],
+    ['GET', '/chat/messages', '指定ルームのメッセージ取得。after_id指定でポーリング差分取得、無指定なら最新50件(ルームへのアクセス権が必要)'],
+    ['POST', '/chat/messages', 'メッセージ送信(ルームへのアクセス権が必要、2000字まで)'],
+    ['POST', '/chat/read', '既読位置(last_read_message_id)の更新(ルームへのアクセス権が必要)'],
+    ['POST', '/chat/rooms/guest-link', '現場ごとのチャットに、アプリアカウントを持たない人が参加できる招待URL/QR用のトークンを発行(無ければ作成、あれば既存を返す)。チーフ以上かつそのルームへのアクセス権がある人のみ'],
+    ['GET', '/guest-chat/:token', '招待トークンからルーム情報(現場名・日付・当日かどうか)を取得(認証不要)'],
+    ['POST', '/guest-chat/:token/join', 'ゲストとして参加し、device_tokenを発行(認証不要)。現場当日(JST)以外は404/403'],
+    ['GET', '/guest-chat/:token/messages', 'ゲストとしてメッセージ取得。after_id指定でポーリング差分取得(認証不要、device_tokenで本人確認)'],
+    ['POST', '/guest-chat/:token/messages', 'ゲストとしてメッセージ送信(認証不要、device_tokenで本人確認、2000字まで)'],
   ]},
   { title: 'Googleカレンダー連携', rows: [
     ['GET/POST', '/calendar-token', 'カレンダー購読トークンの取得・発行'],
@@ -318,9 +327,10 @@ const APP_STRUCTURE_TABLE_COMMENTS = {
   site_group_members: 'site_groupsの所属メンバー(会場名/公演名)',
   artist_folders: '公演一覧限定のフォルダ機能(複数公演を1件に集約表示)',
   artist_folder_members: 'artist_foldersの所属公演',
-  chat_rooms: 'チャットルーム(第1弾は全体チャット1件のみ。typeで将来のルーム種別[site/manager/ka/dm]を区別)',
-  chat_messages: 'チャットメッセージ本体',
+  chat_rooms: 'チャットルーム。typeで種別(all=全体/manager=手配チーム/ka=課/site=現場ごと/dm=個人)を区別し、ref_keyで種別内の対象を特定する。site種別はguest_tokenを発行するとゲスト招待URL/QRの識別子になる',
+  chat_messages: 'チャットメッセージ本体。guest_idが設定されていればゲスト送信(sender_idはNULL)',
   chat_reads: 'ユーザーごとのルーム別既読位置(未読件数の算出に使用)',
+  chat_guests: '現場ごとのチャットにアプリアカウント無しで参加する人のゲスト識別子。device_tokenをブラウザに保存し、以後の閲覧・投稿を紐付ける',
 };
 // ファイル構成・依存関係(#/app-structureの「ファイル構成」タブ用。静的な説明文)
 const APP_STRUCTURE_FILES = [
@@ -419,6 +429,10 @@ const jstNow = () => new Date(Date.now() + 9 * 3600e3);
 const jstDate = () => jstNow().toISOString().slice(0, 10);
 const jstTs = () => jstNow().toISOString().slice(0, 19).replace('T', ' ');
 const rnd = () => crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
+// ゲスト招待リンク(#/g/:token)専用の短いトークン(32桁16進、128bit)。QRコードに収まる長さに保つため
+// rnd()(128桁)より短くしている。URLに載せて共有する用途のため、単独では推測困難な長さを確保しつつ
+// 短くする、というトレードオフ。
+const rndShort = () => crypto.randomUUID().replace(/-/g, '');
 
 async function pbkdf2(pw, salt) {
   const enc = new TextEncoder();
@@ -2491,6 +2505,64 @@ async function api(req, env, url) {
     });
   }
 
+  // ---- 現場ごとのチャットへの、アプリアカウントを持たない人向けゲスト参加(認証不要・招待URLのトークンで
+  //      本人確認する。/calendar/:token.icsと同じ「認証不要ブロックでの専用トークン確認」方式)。
+  //      現場の当日(JST)以外はguestTokenが有効でも参加・閲覧・投稿のいずれもできない
+  //      (ユーザーの明示的な指示。アプリアカウント保持者は通常のログイン経由でいつでも見返せる)。
+  let gcm;
+  if (method === 'GET' && (gcm = path.match(/^\/guest-chat\/([a-zA-Z0-9]+)$/))) {
+    const room = await env.DB.prepare("SELECT * FROM chat_rooms WHERE guest_token=? AND type='site'").bind(gcm[1]).first();
+    if (!room) return ERR('リンクが無効です', 404);
+    const sep = String(room.ref_key).indexOf('|');
+    const date = String(room.ref_key).slice(0, sep), site = String(room.ref_key).slice(sep + 1);
+    return J({ valid: date === jstDate(), date, site, roomId: room.id });
+  }
+  if (method === 'POST' && (gcm = path.match(/^\/guest-chat\/([a-zA-Z0-9]+)\/join$/))) {
+    const room = await env.DB.prepare("SELECT * FROM chat_rooms WHERE guest_token=? AND type='site'").bind(gcm[1]).first();
+    if (!room) return ERR('リンクが無効です', 404);
+    const sep = String(room.ref_key).indexOf('|');
+    const date = String(room.ref_key).slice(0, sep), site = String(room.ref_key).slice(sep + 1);
+    if (date !== jstDate()) return ERR('このリンクは現場当日のみご利用いただけます', 403);
+    const name = String(body.name || '').trim().slice(0, 40);
+    if (!name) return ERR('お名前を入力してください');
+    const deviceToken = rnd();
+    await env.DB.prepare('INSERT INTO chat_guests(room_id,name,device_token,created_at) VALUES(?,?,?,?)')
+      .bind(room.id, name, deviceToken, jstTs()).run();
+    return J({ deviceToken, name, roomId: room.id, date, site });
+  }
+  if ((gcm = path.match(/^\/guest-chat\/([a-zA-Z0-9]+)\/messages$/))) {
+    const room = await env.DB.prepare("SELECT * FROM chat_rooms WHERE guest_token=? AND type='site'").bind(gcm[1]).first();
+    if (!room) return ERR('リンクが無効です', 404);
+    const sep = String(room.ref_key).indexOf('|');
+    const date = String(room.ref_key).slice(0, sep);
+    if (date !== jstDate()) return ERR('このリンクは現場当日のみご利用いただけます', 403);
+    const deviceToken = method === 'GET' ? (url.searchParams.get('device_token') || '') : String(body.device_token || '');
+    const guest = deviceToken ? await env.DB.prepare('SELECT * FROM chat_guests WHERE device_token=? AND room_id=?').bind(deviceToken, room.id).first() : null;
+    if (!guest) return ERR('参加情報が確認できません。もう一度お名前の入力からやり直してください。', 403);
+    if (method === 'GET') {
+      const afterId = Number(url.searchParams.get('after_id')) || 0;
+      let rows;
+      if (afterId) {
+        rows = (await env.DB.prepare('SELECT * FROM chat_messages WHERE room_id=? AND id>? ORDER BY id ASC LIMIT 200').bind(room.id, afterId).all()).results;
+      } else {
+        const desc = (await env.DB.prepare('SELECT * FROM chat_messages WHERE room_id=? ORDER BY id DESC LIMIT 50').bind(room.id).all()).results;
+        rows = (desc as any[]).slice().reverse();
+      }
+      return J((rows as any[]).map(r => ({
+        id: r.id, senderName: r.sender_name, body: r.body, ts: r.ts,
+        isGuest: r.guest_id !== null, mine: r.guest_id === guest.id,
+      })));
+    }
+    if (method === 'POST') {
+      const text = String(body.body || '').trim().slice(0, 2000);
+      if (!text) return ERR('メッセージを入力してください');
+      const ins = await env.DB.prepare('INSERT INTO chat_messages(room_id,sender_id,sender_name,guest_id,body,ts) VALUES(?,NULL,?,?,?,?)')
+        .bind(room.id, guest.name, guest.id, text, jstTs()).run();
+      return J({ ok: 1, id: ins.meta && ins.meta.last_row_id });
+    }
+    return ERR('不正なリクエストです');
+  }
+
   // ---- スプレッドシート取り込み(GAS用・共有トークン認証)----
   // GAS から POST /api/import-schedule で呼び出す。セッション不要。
   if (method === 'POST' && path === '/import-schedule') {
@@ -4377,20 +4449,33 @@ async function api(req, env, url) {
   //      その人の過去の現場ログを返す(新人報告・ブラックリストの権限者向け)。氏名の一致判定は
   //      markAcquiredByName/matchRookieAndBlacklistと同じnormName()を使い、表記の扱いを揃える。
   //      同姓同名が複数いる場合は全員分をまとめて返す(誰の記録か取り違えるより、多めに見せる方が安全)。 ----
+  // 新人報告・ブラックリストの氏名一致検索、および新人リスト(rookie_candidates)の候補者名一致の
+  // 両方をまとめて「過去の現場」として返す。アプリ登録済みの人はschedule実績から、未登録の人は
+  // 台帳取込のたびに更新されるrookie_candidatesから拾うため、取込のたびに自動的に最新化される。
+  // 閲覧は手配者以上に限定(2026年9月、ユーザーの明示的な指示。report_check/blacklist_manage
+  // 権限者(チーフ以上)向けの他の操作より一段厳しい設定のため、あえて別のlv()判定にしている)。
   if (method === 'GET' && path === '/name-site-log') {
-    if (!has(me, 'blacklist_manage') && !has(me, 'report_check')) return ERR('ページが見つかりません', 404);
+    if (lv(me) < 2) return ERR('ページが見つかりません', 404);
     const name = (url.searchParams.get('name') || '').trim();
     if (!name) return ERR('name が必要です');
     const key = normName(name);
     const users = (await env.DB.prepare('SELECT id, name FROM users').all()).results;
-    const matchedUsers = users.filter(u => normName(u.name) === key);
-    if (!matchedUsers.length) return J({ matchedUsers: [], rows: [] });
-    const ids = matchedUsers.map(u => u.id);
-    const ph = ids.map(() => '?').join(',');
-    const rows = (await env.DB.prepare(
-      `SELECT date, site, venue, user_id FROM schedule WHERE type='work' AND user_id IN (${ph}) AND site<>'' ORDER BY date DESC LIMIT 200`
-    ).bind(...ids).all()).results;
-    return J({ matchedUsers: matchedUsers.map(u => ({ id: u.id, name: u.name })), rows });
+    const matchedUsers = (users as any[]).filter(u => normName(u.name) === key);
+    let rows: any[] = [];
+    if (matchedUsers.length) {
+      const ids = matchedUsers.map(u => u.id);
+      const ph = ids.map(() => '?').join(',');
+      rows = (await env.DB.prepare(
+        `SELECT date, site, venue FROM schedule WHERE type='work' AND user_id IN (${ph}) AND site<>'' ORDER BY date DESC LIMIT 200`
+      ).bind(...ids).all()).results;
+    }
+    const rookieRows = (await env.DB.prepare('SELECT name, date, site, venue FROM rookie_candidates').all()).results;
+    const rookieMatches = (rookieRows as any[]).filter(r => normName(r.name) === key);
+    const combined = [
+      ...rows.map((r: any) => ({ date: r.date, site: r.site, venue: r.venue, source: 'registered' })),
+      ...rookieMatches.map((r: any) => ({ date: r.date, site: r.site, venue: r.venue, source: 'rookie' })),
+    ].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 200);
+    return J({ matchedUsers: matchedUsers.map(u => ({ id: u.id, name: u.name })), rows: combined });
   }
 
   // ---- アーティスト一覧(準備中、chief以上)。現場名から「【セクション等】」を除いた本体名を
@@ -5775,24 +5860,166 @@ async function api(req, env, url) {
     return J({ ok: 1 });
   }
 
-  // ---- チャット(第1弾は全体チャットのみ。ポーリング方式。全員が利用可) ----
+  // ---- チャット(ポーリング方式) ----
+  // ルーム種別ごとのアクセス可否判定。'all'は全員、'ka'は同じ課、'manager'は本人+その手配担当の
+  // チーム(manager_id未設定者はka単位の仮想チーム'ka:<課>')、'dm'は当事者2名、'site'は当日その
+  // 現場に配置されている本人、またはsite_manage権限者・管理者(手配管理のため)。
+  async function chatRoomAuthorized(env, me, room) {
+    if (room.type === 'all') return true;
+    if (room.type === 'ka') return room.ref_key === (me.ka || '未設定');
+    if (room.type === 'manager') {
+      if (String(room.ref_key).startsWith('ka:')) return !me.manager_id && room.ref_key === 'ka:' + (me.ka || '未設定');
+      return String(me.id) === room.ref_key || String(me.manager_id || '') === room.ref_key;
+    }
+    if (room.type === 'dm') {
+      const [a, b] = String(room.ref_key).split('-');
+      return String(me.id) === a || String(me.id) === b;
+    }
+    if (room.type === 'site') {
+      // 現場チャットの閲覧は、現場に入っている本人と管理者のみに限定する(2026年9月、ユーザーの
+      // 明示的な指示。site_manage権限(手配者以上)であっても、その現場に自身が配置されていなければ
+      // 閲覧できない)。
+      if (me.role === 'admin') return true;
+      const sep = String(room.ref_key).indexOf('|');
+      const date = String(room.ref_key).slice(0, sep), site = String(room.ref_key).slice(sep + 1);
+      const row = await env.DB.prepare("SELECT 1 FROM schedule WHERE user_id=? AND date=? AND site=? AND type='work'").bind(me.id, date, site).first();
+      return !!row;
+    }
+    return false;
+  }
+  // ルームが無ければ作成し、既存ならそれを返す(type,ref_keyの複合UNIQUEにより二重作成しない)
+  async function getOrCreateChatRoom(env, type, refKey, name) {
+    let room = await env.DB.prepare('SELECT * FROM chat_rooms WHERE type=? AND ref_key=?').bind(type, refKey).first();
+    if (!room) {
+      await env.DB.prepare('INSERT INTO chat_rooms(type,ref_key,name,created) VALUES(?,?,?,?) ON CONFLICT(type,ref_key) DO NOTHING')
+        .bind(type, refKey, name, jstTs()).run();
+      room = await env.DB.prepare('SELECT * FROM chat_rooms WHERE type=? AND ref_key=?').bind(type, refKey).first();
+    }
+    return room;
+  }
+  // 本人が所属する「手配チーム」ルームの仕様一覧(通常1件。自身が手配グループを持つ場合は
+  // 自分が管理するチームも加わり2件になりうる)
+  async function myTeamRoomSpecs(env, me) {
+    const specs: any[] = [];
+    if (me.manager_id) {
+      const mgr = await env.DB.prepare('SELECT name FROM users WHERE id=?').bind(me.manager_id).first();
+      specs.push({ type: 'manager', refKey: String(me.manager_id), name: `${mgr ? mgr.name : ''}手配チーム` });
+    } else {
+      const ka = me.ka || '未設定';
+      specs.push({ type: 'manager', refKey: 'ka:' + ka, name: `チーフ手配(${ka})チーム` });
+    }
+    if (me.is_manager) {
+      const mine = String(me.id);
+      if (!specs.some(s => s.refKey === mine)) specs.push({ type: 'manager', refKey: mine, name: `${me.name}手配チーム` });
+    }
+    return specs;
+  }
+  // DMルームのref_keyから、閲覧者本人から見た相手の表示名を解決する
+  async function chatDmPeerName(env, me, refKey) {
+    const [a, b] = String(refKey).split('-').map(Number);
+    const otherId = a === me.id ? b : a;
+    const other = await env.DB.prepare('SELECT name FROM users WHERE id=?').bind(otherId).first();
+    return other ? other.name : '(退会済みユーザー)';
+  }
+
+  // 個人チャット(dm)の相手を選ぶための検索。/usersはmembers_view権限が必要だが、
+  // チャットは全員が使う機能のため、氏名・登録番号のみを返す専用の軽量エンドポイントを設ける。
+  if (method === 'GET' && path === '/chat/user-search') {
+    const q = String(url.searchParams.get('q') || '').trim();
+    if (!q) return J([]);
+    const rows = (await env.DB.prepare(
+      "SELECT id, name, regno FROM users WHERE suspended=0 AND id<>? AND (name LIKE ? OR regno LIKE ?) ORDER BY name LIMIT 20"
+    ).bind(me.id, `%${q}%`, `%${q}%`).all()).results;
+    return J(rows);
+  }
+
+  // 参加中ルーム一覧。ensure=1の時のみ「課チャット」「手配チーム」を未作成でも作成する
+  // (ポーリングでの未読確認は既存ルームのSELECTのみに留め、都度のINSERT試行を避けるため)
   if (method === 'GET' && path === '/chat/rooms') {
-    const rooms = (await env.DB.prepare('SELECT * FROM chat_rooms ORDER BY id').all()).results;
+    const ensure = url.searchParams.get('ensure') === '1';
+    const roomRows: any[] = [];
+    const allRoom = await env.DB.prepare("SELECT * FROM chat_rooms WHERE type='all'").first();
+    if (allRoom) roomRows.push(allRoom);
+    const kaKey = me.ka || '未設定';
+    if (ensure) roomRows.push(await getOrCreateChatRoom(env, 'ka', kaKey, `${kaKey}チャット`));
+    else { const r = await env.DB.prepare("SELECT * FROM chat_rooms WHERE type='ka' AND ref_key=?").bind(kaKey).first(); if (r) roomRows.push(r); }
+    for (const s of await myTeamRoomSpecs(env, me)) {
+      if (ensure) roomRows.push(await getOrCreateChatRoom(env, s.type, s.refKey, s.name));
+      else { const r = await env.DB.prepare('SELECT * FROM chat_rooms WHERE type=? AND ref_key=?').bind(s.type, s.refKey).first(); if (r) roomRows.push(r); }
+    }
+    const dmRows = (await env.DB.prepare(
+      "SELECT * FROM chat_rooms WHERE type='dm' AND (ref_key LIKE ? OR ref_key LIKE ?)"
+    ).bind(me.id + '-%', '%-' + me.id).all()).results;
+    for (const r of dmRows as any[]) roomRows.push(r);
+
     const reads = (await env.DB.prepare('SELECT room_id, last_read_message_id FROM chat_reads WHERE user_id=?').bind(me.id).all()).results;
     const lastReadByRoom: Record<number, number> = {}; for (const r of reads as any[]) lastReadByRoom[r.room_id] = r.last_read_message_id;
     const out = [];
-    for (const r of rooms as any[]) {
+    for (const r of roomRows) {
       const lastRead = lastReadByRoom[r.id] || 0;
       const unread = (await env.DB.prepare(
         'SELECT COUNT(*) AS c FROM chat_messages WHERE room_id=? AND id>? AND sender_id<>?'
       ).bind(r.id, lastRead, me.id).first()).c;
-      out.push({ id: r.id, type: r.type, name: r.name, unread });
+      const name = r.type === 'dm' ? await chatDmPeerName(env, me, r.ref_key) : r.name;
+      out.push({ id: r.id, type: r.type, name, unread });
     }
     return J(out);
+  }
+  // 現場ごと('site')・個人('dm')のルームは、一覧には出さずこのエンドポイントで都度開く。
+  // 現場は当日配置されている本人またはsite_manage権限者/管理者のみ、個人は相手を指定するだけで開ける。
+  if (method === 'POST' && path === '/chat/rooms/open') {
+    const type = String(body.type || '');
+    if (type === 'site') {
+      const date = String(body.date || '').trim();
+      const site = String(body.site || '').trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !site) return ERR('不正なリクエストです');
+      const refKey = `${date}|${site}`;
+      const authorized = me.role === 'admin'
+        || !!(await env.DB.prepare("SELECT 1 FROM schedule WHERE user_id=? AND date=? AND site=? AND type='work'").bind(me.id, date, site).first());
+      if (!authorized) return ERR('この現場のチャットには参加できません', 403);
+      const room = await getOrCreateChatRoom(env, 'site', refKey, `${site}(${date})`);
+      return J({ id: room.id, type: room.type, name: room.name });
+    }
+    if (type === 'dm') {
+      const targetId = Number(body.userId);
+      if (!targetId || targetId === me.id) return ERR('不正なリクエストです');
+      const target = await env.DB.prepare('SELECT id, name FROM users WHERE id=?').bind(targetId).first();
+      if (!target) return ERR('ユーザーが見つかりません', 404);
+      const [a, b] = [me.id, targetId].sort((x, y) => x - y);
+      const room = await getOrCreateChatRoom(env, 'dm', `${a}-${b}`, '');
+      return J({ id: room.id, type: room.type, name: target.name });
+    }
+    return ERR('不正なリクエストです');
+  }
+  // 現場チャットの招待URL/QR用トークンを発行(既に無ければ)。作成できるのはチーフ以上、かつ
+  // 元々その現場チャットを見られる人(=配置されている本人または管理者)に限る。
+  if (method === 'POST' && path === '/chat/rooms/guest-link') {
+    const roomId = Number(body.room_id);
+    if (!roomId) return ERR('不正なリクエストです');
+    const room = await env.DB.prepare('SELECT * FROM chat_rooms WHERE id=?').bind(roomId).first();
+    if (!room || room.type !== 'site') return ERR('この操作はできません');
+    if (lv(me) < 1 || !(await chatRoomAuthorized(env, me, room))) return ERR('権限がありません', 403);
+    let token = room.guest_token;
+    if (!token) {
+      token = rndShort();
+      await env.DB.prepare('UPDATE chat_rooms SET guest_token=? WHERE id=?').bind(token, roomId).run();
+    }
+    return J({ token, url: `${url.origin}/#/g/${token}` });
+  }
+  // ルーム1件の情報取得(直接のURL遷移・再読み込み時に、名前・種別を都度取得するため)
+  if (method === 'GET' && path === '/chat/room') {
+    const roomId = Number(url.searchParams.get('id'));
+    if (!roomId) return ERR('不正なリクエストです');
+    const room = await env.DB.prepare('SELECT * FROM chat_rooms WHERE id=?').bind(roomId).first();
+    if (!room || !(await chatRoomAuthorized(env, me, room))) return ERR('ページが見つかりません', 404);
+    const name = room.type === 'dm' ? await chatDmPeerName(env, me, room.ref_key) : room.name;
+    return J({ id: room.id, type: room.type, name });
   }
   if (method === 'GET' && path === '/chat/messages') {
     const roomId = Number(url.searchParams.get('room_id'));
     if (!roomId) return ERR('不正なリクエストです');
+    const room = await env.DB.prepare('SELECT * FROM chat_rooms WHERE id=?').bind(roomId).first();
+    if (!room || !(await chatRoomAuthorized(env, me, room))) return ERR('ページが見つかりません', 404);
     const afterId = Number(url.searchParams.get('after_id')) || 0;
     let rows;
     if (afterId) {
@@ -5801,14 +6028,14 @@ async function api(req, env, url) {
       const desc = (await env.DB.prepare('SELECT * FROM chat_messages WHERE room_id=? ORDER BY id DESC LIMIT 50').bind(roomId).all()).results;
       rows = (desc as any[]).slice().reverse();
     }
-    return J((rows as any[]).map(r => ({ id: r.id, senderId: r.sender_id, senderName: r.sender_name, body: r.body, ts: r.ts, mine: r.sender_id === me.id })));
+    return J((rows as any[]).map(r => ({ id: r.id, senderId: r.sender_id, senderName: r.sender_name, body: r.body, ts: r.ts, isGuest: r.guest_id !== null, mine: r.sender_id === me.id })));
   }
   if (method === 'POST' && path === '/chat/messages') {
     const roomId = Number(body.room_id);
     const text = String(body.body || '').trim().slice(0, 2000);
     if (!roomId || !text) return ERR('メッセージを入力してください');
-    const room = await env.DB.prepare('SELECT id FROM chat_rooms WHERE id=?').bind(roomId).first();
-    if (!room) return ERR('ルームが見つかりません', 404);
+    const room = await env.DB.prepare('SELECT * FROM chat_rooms WHERE id=?').bind(roomId).first();
+    if (!room || !(await chatRoomAuthorized(env, me, room))) return ERR('ページが見つかりません', 404);
     const ins = await env.DB.prepare('INSERT INTO chat_messages(room_id,sender_id,sender_name,body,ts) VALUES(?,?,?,?,?)')
       .bind(roomId, me.id, me.name, text, jstTs()).run();
     return J({ ok: 1, id: ins.meta && ins.meta.last_row_id });
@@ -5817,6 +6044,8 @@ async function api(req, env, url) {
     const roomId = Number(body.room_id);
     const lastId = Number(body.last_read_message_id) || 0;
     if (!roomId) return ERR('不正なリクエストです');
+    const room = await env.DB.prepare('SELECT * FROM chat_rooms WHERE id=?').bind(roomId).first();
+    if (!room || !(await chatRoomAuthorized(env, me, room))) return ERR('ページが見つかりません', 404);
     await env.DB.prepare(
       `INSERT INTO chat_reads(room_id,user_id,last_read_message_id) VALUES(?,?,?)
        ON CONFLICT(room_id,user_id) DO UPDATE SET last_read_message_id=MAX(last_read_message_id,excluded.last_read_message_id)`

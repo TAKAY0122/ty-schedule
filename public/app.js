@@ -1041,6 +1041,8 @@ async function openSiteModal(date, site){
   const members = list.filter(p => p.role === 'member');
   const kaTag = p => p.ka ? `<span class="ka-pill ka-${p.ka==='1課'?'1':'2'}">${p.ka}</span>` : '';
   const editable = canAdd; // 手配者モードなら個人編集可
+  const canChat = ME.role === 'admin' || list.some(p => p.uid === ME.id); // この現場のチャットに入れるか(手配者権限だけでは不可、配置本人か管理者のみ)
+  const canInvite = canChat && LV[ME.role] >= 1; // ゲスト招待リンク/QRを発行できるか(チャットに入れる人のうちチーフ以上)
   const nameHtml = p => canViewSched ? `<span class="name-link" data-goto-uid="${p.uid}">${h(p.name)}</span>` : h(p.name);
   const breakHtml = p => {
     const b = breakByUid[p.uid];
@@ -1101,8 +1103,10 @@ async function openSiteModal(date, site){
       <dt>日付</dt><dd>${h(date)}</dd>
       <dt>人数</dt><dd>チーフ・手配 ${chiefs.length}名 / メンツ ${members.length}名(計${list.length}名)</dd>
     </dl>
-    ${canRoster ? `<div class="row" style="gap:8px;margin:2px 0 10px">
-      <button type="button" class="btn ghost sm" id="site-roster-btn">${icon('layoutGrid',{size:'13px'})} 稼働表</button>
+    ${(canRoster || canChat) ? `<div class="row" style="gap:8px;margin:2px 0 10px">
+      ${canRoster ? `<button type="button" class="btn ghost sm" id="site-roster-btn">${icon('layoutGrid',{size:'13px'})} 稼働表</button>` : ''}
+      ${canChat ? `<button type="button" class="btn ghost sm" id="site-chat-btn">${icon('messageCircle',{size:'13px'})} チャット</button>` : ''}
+      ${canInvite ? `<button type="button" class="btn ghost sm" id="site-invite-btn">${icon('link',{size:'13px'})} 招待リンク</button>` : ''}
     </div>` : ''}
     ${list.length ? `
       <div class="section-label" style="margin-top:6px">チーフ・手配チーム</div>
@@ -1120,6 +1124,21 @@ async function openSiteModal(date, site){
     ${histSection('今後の同アーティストの公演', [], sameSiteFuture, 'site')}`);
   const rosterBtn = $('#site-roster-btn');
   if(rosterBtn) rosterBtn.onclick = () => openSiteRoster(date, site);
+  const chatBtn = $('#site-chat-btn');
+  if(chatBtn) chatBtn.onclick = () => withLoading(chatBtn, async () => {
+    try{
+      const room = await api('/chat/rooms/open', { method:'POST', body:{ type:'site', date, site } });
+      closeModal();
+      goTo('#/chat/'+room.id);
+    }catch(e){ popup(e.message, 'error'); }
+  });
+  const inviteBtn = $('#site-invite-btn');
+  if(inviteBtn) inviteBtn.onclick = () => withLoading(inviteBtn, async () => {
+    try{
+      const room = await api('/chat/rooms/open', { method:'POST', body:{ type:'site', date, site } });
+      openGuestInviteModal(room.id, site, date);
+    }catch(e){ popup(e.message, 'error'); }
+  });
   const venueLink = $('#modal-layer .venue-detail-link');
   if(venueLink) venueLink.onclick = () => { closeModal(); openVenueModal(venueLink.dataset.venue); };
   document.querySelectorAll('#modal-layer .site-hist-bulk-edit').forEach(btn => {
@@ -1163,6 +1182,195 @@ async function openSiteModal(date, site){
       };
     });
   }
+}
+
+// ---- QRコード生成(ISO/IEC 18004準拠、バイトモード固定・誤り訂正レベルL・バージョン1〜10のみ対応) ----
+// 外部ライブラリを使わない自前実装。現場チャットの招待URL(#/g/:token)をQR化する用途に絞っているため、
+// 対応範囲もこの用途で十分な範囲(最大271バイト)に限定している。マスクは0番固定(spec上は8種から
+// 最も読み取りやすいものを選ぶのが望ましいが、どのマスクでも正しくデコードできる点は変わらないため、
+// 実装・検証コストを抑えるために固定にしている)。
+const QR = (() => {
+  const EXP = new Array(512), LOG = new Array(256);
+  { let x = 1; for(let i=0;i<255;i++){ EXP[i]=x; LOG[x]=i; x <<= 1; if(x & 0x100) x ^= 0x11D; } for(let i=255;i<512;i++) EXP[i]=EXP[i-255]; }
+  const gmul = (a,b) => (a===0||b===0) ? 0 : EXP[LOG[a]+LOG[b]];
+  function rsGeneratorPoly(ecCount){
+    let poly = [1];
+    for(let i=0;i<ecCount;i++){
+      const next = new Array(poly.length+1).fill(0);
+      for(let j=0;j<poly.length;j++){ next[j] ^= poly[j]; next[j+1] ^= gmul(poly[j], EXP[i]); }
+      poly = next;
+    }
+    return poly;
+  }
+  function rsEncode(dataBytes, ecCount){
+    const gen = rsGeneratorPoly(ecCount);
+    const buf = dataBytes.concat(new Array(ecCount).fill(0));
+    for(let i=0;i<dataBytes.length;i++){
+      const coef = buf[i];
+      if(coef === 0) continue;
+      for(let j=0;j<gen.length;j++) buf[i+j] ^= gmul(gen[j], coef);
+    }
+    return buf.slice(dataBytes.length);
+  }
+  // バージョン1〜10・レベルL固定のブロック構成表: [総データ語数, ブロックあたりEC語数, [[ブロック数,ブロックあたりデータ語数],...]]
+  const VERSION_INFO = {
+    1:{data:19, ecc:7,  blocks:[[1,19]]},   2:{data:34, ecc:10, blocks:[[1,34]]},
+    3:{data:55, ecc:15, blocks:[[1,55]]},   4:{data:80, ecc:20, blocks:[[1,80]]},
+    5:{data:108,ecc:26, blocks:[[1,108]]},  6:{data:136,ecc:18, blocks:[[2,68]]},
+    7:{data:156,ecc:20, blocks:[[2,78]]},   8:{data:194,ecc:24, blocks:[[2,97]]},
+    9:{data:232,ecc:30, blocks:[[2,116]]},  10:{data:274,ecc:18, blocks:[[2,68],[2,69]]},
+  };
+  const ALIGN_POS = {1:[],2:[6,18],3:[6,22],4:[6,26],5:[6,30],6:[6,34],7:[6,22,38],8:[6,24,42],9:[6,26,46],10:[6,28,50]};
+
+  function bchFormat(fmt){
+    let d = fmt << 10;
+    for(let i=4;i>=0;i--){ if(d & (1<<(i+10))) d ^= (0x537 << i); }
+    return ((fmt<<10)|d) ^ 0x5412;
+  }
+  function bchVersion(v){
+    let d = v << 12;
+    for(let i=5;i>=0;i--){ if(d & (1<<(i+12))) d ^= (0x1F25 << i); }
+    return (v<<12)|d;
+  }
+  function bestVersionFor(byteLen){
+    for(let v=1;v<=10;v++){
+      const ccBits = v<=9?8:16;
+      if(byteLen*8 <= VERSION_INFO[v].data*8 - 4 - ccBits) return v;
+    }
+    return null;
+  }
+  function encodeByteMode(bytes, version){
+    const bits = [];
+    const pushBits = (val, len) => { for(let i=len-1;i>=0;i--) bits.push((val>>i)&1); };
+    pushBits(0b0100, 4);
+    pushBits(bytes.length, version<=9?8:16);
+    for(const b of bytes) pushBits(b, 8);
+    const totalDataBits = VERSION_INFO[version].data * 8;
+    for(let i=0;i<4 && bits.length<totalDataBits;i++) bits.push(0);
+    while(bits.length % 8 !== 0) bits.push(0);
+    const padBytes = [0xEC, 0x11]; let pi = 0;
+    while(bits.length < totalDataBits){ pushBits(padBytes[pi%2], 8); pi++; }
+    const dataBytes = [];
+    for(let i=0;i<bits.length;i+=8){ let b=0; for(let j=0;j<8;j++) b=(b<<1)|bits[i+j]; dataBytes.push(b); }
+    return dataBytes;
+  }
+  function buildMatrix(version, dataCodewords){
+    const size = version*4 + 17;
+    const matrix = Array.from({length:size}, () => new Array(size).fill(0));
+    const reserved = Array.from({length:size}, () => new Array(size).fill(false));
+    const setModule = (r,c,val) => { if(r<0||c<0||r>=size||c>=size) return; matrix[r][c]=val; reserved[r][c]=true; };
+    const placeFinder = (r,c) => {
+      for(let dr=-1;dr<=7;dr++) for(let dc=-1;dc<=7;dc++){
+        const rr=r+dr, cc=c+dc; if(rr<0||cc<0||rr>=size||cc>=size) continue;
+        const isBorder = dr===-1||dr===7||dc===-1||dc===7;
+        const inner = dr>=0&&dr<=6&&dc>=0&&dc<=6 && (dr===0||dr===6||dc===0||dc===6||(dr>=2&&dr<=4&&dc>=2&&dc<=4));
+        setModule(rr,cc, isBorder?0:(inner?1:0));
+      }
+    };
+    placeFinder(0,0); placeFinder(0,size-7); placeFinder(size-7,0);
+    for(let i=8;i<size-8;i++){ setModule(6,i, i%2===0?1:0); setModule(i,6, i%2===0?1:0); }
+    const aligns = ALIGN_POS[version];
+    for(const r of aligns) for(const c of aligns){
+      if((r<=8&&c<=8) || (r<=8&&c>=size-9) || (r>=size-9&&c<=8)) continue;
+      for(let dr=-2;dr<=2;dr++) for(let dc=-2;dc<=2;dc++){
+        setModule(r+dr, c+dc, (Math.max(Math.abs(dr),Math.abs(dc))%2===0) ? 1 : 0);
+      }
+    }
+    setModule(size-8, 8, 1);
+    for(let i=0;i<9;i++){ reserved[8][i]=true; reserved[i][8]=true; }
+    for(let i=0;i<8;i++){ reserved[8][size-1-i]=true; reserved[size-1-i][8]=true; }
+    if(version>=7) for(let r=0;r<6;r++) for(let c=0;c<3;c++){ reserved[r][size-11+c]=true; reserved[size-11+c][r]=true; }
+
+    const bits = [];
+    for(const byte of dataCodewords) for(let i=7;i>=0;i--) bits.push((byte>>i)&1);
+    let bitIndex = 0, dir = -1, col = size-1;
+    while(col>0){
+      if(col===6) col--;
+      for(let i=0;i<size;i++){
+        const row = dir===-1 ? size-1-i : i;
+        for(const c of [col, col-1]){
+          if(reserved[row][c]) continue;
+          matrix[row][c] = bitIndex < bits.length ? bits[bitIndex] : 0;
+          bitIndex++;
+        }
+      }
+      dir = -dir; col -= 2;
+    }
+    // マスク0番を適用(データ領域のみ、予約領域は対象外)
+    for(let r=0;r<size;r++) for(let c=0;c<size;c++){ if(!reserved[r][c] && (r+c)%2===0) matrix[r][c] ^= 1; }
+    // フォーマット情報(ECレベルL=01、マスク0番)
+    const fmtCode = bchFormat((0b01<<3)|0);
+    const fb = i => (fmtCode>>i)&1;
+    for(let i=0;i<=5;i++) matrix[8][i] = fb(i);
+    matrix[8][7]=fb(6); matrix[8][8]=fb(7); matrix[7][8]=fb(8);
+    for(let i=9;i<15;i++) matrix[14-i][8] = fb(i);
+    for(let i=0;i<8;i++) matrix[8][size-1-i] = fb(i);
+    for(let i=0;i<7;i++) matrix[size-1-i][8] = fb(14-i);
+    // バージョン情報(バージョン7以上)
+    if(version>=7){
+      const vCode = bchVersion(version);
+      for(let i=0;i<18;i++){
+        const bit = (vCode>>i)&1, row = Math.floor(i/3), c = i%3;
+        matrix[row][size-11+c] = bit; matrix[size-11+c][row] = bit;
+      }
+    }
+    return { size, matrix };
+  }
+  // テキスト(ASCII/URL想定)からモジュール行列(0/1の2次元配列)を生成する。長すぎて対応バージョンの
+  // 上限(v10)を超える場合はnullを返す。
+  function generate(text){
+    const bytes = Array.from(new TextEncoder().encode(text));
+    const version = bestVersionFor(bytes.length);
+    if(!version) return null;
+    const info = VERSION_INFO[version];
+    const dataCW = encodeByteMode(bytes, version);
+    const blocks = []; let offset = 0;
+    for(const [count, per] of info.blocks) for(let i=0;i<count;i++){
+      const d = dataCW.slice(offset, offset+per); offset += per;
+      blocks.push({ data:d, ecc: rsEncode(d, info.ecc) });
+    }
+    const maxData = Math.max(...blocks.map(b=>b.data.length));
+    const interleaved = [];
+    for(let i=0;i<maxData;i++) for(const b of blocks) if(i<b.data.length) interleaved.push(b.data[i]);
+    for(let i=0;i<info.ecc;i++) for(const b of blocks) interleaved.push(b.ecc[i]);
+    return buildMatrix(version, interleaved);
+  }
+  // モジュール行列を、4モジュール分のクワイエットゾーン(余白)付きのインラインSVG文字列にする
+  function toSvg(result, moduleSize=6){
+    if(!result) return '';
+    const { size, matrix } = result;
+    const quiet = 4;
+    const dim = (size + quiet*2) * moduleSize;
+    let rects = '';
+    for(let r=0;r<size;r++) for(let c=0;c<size;c++){
+      if(matrix[r][c]) rects += `<rect x="${(c+quiet)*moduleSize}" y="${(r+quiet)*moduleSize}" width="${moduleSize}" height="${moduleSize}"/>`;
+    }
+    return `<svg viewBox="0 0 ${dim} ${dim}" width="${dim}" height="${dim}" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges"><rect width="${dim}" height="${dim}" fill="#fff"/><g fill="#000">${rects}</g></svg>`;
+  }
+  return { generate, toSvg };
+})();
+
+// 現場チャットの招待URL/QRコードを発行して表示するモーダル(チーフ以上、その現場のチャットに
+// 入れる人のみ)。URLは現場の当日(JST)以外は使えない(バックエンド側で判定)。
+function openGuestInviteModal(roomId, site, date){
+  modal(`<h3>${icon('link',{size:'15px'})} 招待リンク</h3><div class="loading-box"><span class="spinner"></span>発行しています…</div>`);
+  (async () => {
+    let data;
+    try{ data = await api('/chat/rooms/guest-link', { method:'POST', body:{ room_id: roomId } }); }
+    catch(e){ modal(`<h3>招待リンク</h3><div class="msg err">${h(e.message)}</div>`); return; }
+    const qr = QR.generate(data.url);
+    modal(`<h3>${icon('link',{size:'15px'})} 招待リンク</h3>
+      <div class="muted" style="font-size:12.5px;margin-bottom:12px">${h(site)}(${h(date)})のチャットに、アプリのアカウントが無い人も参加できます。このリンク・QRコードは<b>${h(date)}当日のみ</b>有効です。</div>
+      ${qr ? `<div style="text-align:center;margin-bottom:12px">${QR.toSvg(qr)}</div>` : '<div class="msg err">QRコードの生成に失敗しました(URLが長すぎる可能性があります)。下のURLを直接共有してください。</div>'}
+      <div class="row" style="gap:6px">
+        <input id="gi-url" value="${h(data.url)}" readonly style="flex:1;font-size:12px" onclick="this.select()">
+        <button class="btn ghost sm" id="gi-copy">コピー</button>
+      </div>`);
+    $('#gi-copy').onclick = async () => {
+      try{ await navigator.clipboard.writeText(data.url); popup('コピーしました'); }
+      catch(e){ $('#gi-url').select(); popup('選択したのでCtrl+C(Cmd+C)でコピーしてください'); }
+    };
+  })();
 }
 
 // 複数日にわたる現場の稼働表。現場名(会場名一致を含む)から連続した日付の範囲を自動判定し、
@@ -1428,6 +1636,10 @@ function goTo(hash){
 
 async function render(){
   clearTimers(); closeModal();
+  // 現場チャットのゲスト招待リンク(#/g/:token)は、アプリのログイン状態に関わらず動く専用の
+  // 入口ページ。TOKEN(通常ログイン)の有無チェックより前に振り分ける。
+  const guestMatch = (location.hash || '').match(/^#\/g\/([a-zA-Z0-9]+)/);
+  if(guestMatch){ await renderGuestChatEntry(guestMatch[1]); return; }
   if(!TOKEN){ renderLogin(); return; }
   if(!ME){
     try{ ME = await api('/me'); } catch(e){ renderLogin(e.message); return; }
@@ -1485,7 +1697,7 @@ async function render(){
     else if(hash === '#/summary' || hash.startsWith('#/summary/')) await pageSummary(app, hash);
     else if(hash === '#/member-stats') await pageMemberStats(app);
     else if(hash === '#/training-status') await pageTrainingStatus(app);
-    else if(hash === '#/chat') await pageChat(app);
+    else if(hash.startsWith('#/chat')) await pageChat(app, hash);
     else if(hash === '#/edit') await pageEdit(app);
     else if(hash.startsWith('#/edit/')) await pageEdit(app, hash.slice('#/edit/'.length));
     else if(hash === '#/members/mine'){ const st0 = PAGE_STATE.members || (PAGE_STATE.members = { tab:'2課', q:'', mgr:'' }); st0.mgr = String(ME.id); await pageMembers(app); }
@@ -1589,6 +1801,169 @@ function renderForcedPassword(){
   $('#fp-btn').onclick = go;
   $('#fp-new2').onkeydown = e => { if(e.key==='Enter') go(); };
   $('#fp-logout').onclick = (e) => { e.preventDefault(); api('/logout',{method:'POST'}).catch(()=>{}); logoutLocal(); };
+}
+
+/* ===== 現場チャットのゲスト招待リンク(#/g/:token) =====
+   アプリのアカウントを持たない人でも、現場一覧から発行したURL/QRからこのページに来て、
+   名前を入力するだけでその現場のチャットに参加できる。現場の当日(JST)以外は参加・閲覧できない。
+   既にアプリにログイン中の場合は、通常のアカウント(配置されている本人/管理者)としてそのまま
+   本来のチャット画面(#/chat/:id)へ入る。 */
+async function renderGuestChatEntry(token){
+  clearTimers();
+  document.body.classList.remove('ops-page');
+  const root = document.getElementById('root');
+  root.innerHTML = `<div class="login-wrap"><div class="login-card" id="guest-card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div></div>`;
+  const cardEl = () => $('#guest-card');
+  let info;
+  try{
+    const res = await fetch('/api/guest-chat/'+token);
+    info = await res.json().catch(() => ({}));
+    if(!res.ok) throw new Error(info.error || 'リンクが無効です');
+  }catch(e){
+    cardEl().innerHTML = `<h1>リンクが無効です</h1><div class="sub">${h(e.message)}</div>`;
+    return;
+  }
+  if(!info.valid){
+    cardEl().innerHTML = `<h1>${h(info.site || '現場チャット')}</h1><div class="sub">${h(info.date || '')}</div>
+      <div class="msg" style="background:#fff6e5;border:1px solid #f0dca8;color:#8a5a00;padding:10px;border-radius:8px;margin-top:14px;font-size:13px">このリンクは現場当日のみご利用いただけます。</div>`;
+    return;
+  }
+  // 既にログイン中なら、通常のアカウントでそのまま本来のチャットへ(権限が無ければエラー表示)
+  if(TOKEN){
+    try{
+      if(!ME) ME = await api('/me');
+      const room = await api('/chat/rooms/open', { method:'POST', body:{ type:'site', date: info.date, site: info.site } });
+      goTo('#/chat/'+room.id);
+    }catch(e){
+      cardEl().innerHTML = `<h1>${h(info.site || '現場チャット')}</h1><div class="sub">${h(info.date || '')}</div>
+        <div class="msg err" style="margin-top:14px">${h(e.message || 'この現場のチャットには参加できません')}</div>`;
+    }
+    return;
+  }
+  // 未ログイン。この端末で参加済みなら保存済みのdevice_tokenでそのままゲストチャットへ
+  const savedToken = localStorage.getItem('guestDeviceToken:'+token);
+  if(savedToken){ await renderGuestChatRoom(token, savedToken, info); return; }
+
+  cardEl().innerHTML = `
+    <h1>${h(info.site || '現場チャット')}</h1>
+    <div class="sub" style="margin-bottom:14px">${h(info.date || '')}</div>
+    <div class="hint" style="margin-bottom:10px">アプリのアカウントをお持ちの方はログインしてください。</div>
+    <input id="g-regno" placeholder="登録番号" autocomplete="username">
+    <input id="g-pw" type="password" placeholder="パスワード" autocomplete="current-password">
+    <button class="btn gold" id="g-login-btn">ログインして参加</button>
+    <div id="g-login-err"></div>
+    <div class="drawer-sep" style="margin:20px 0"></div>
+    <div class="hint" style="margin-bottom:10px">アカウントをお持ちでない方は、お名前を入力して参加できます。</div>
+    <input id="g-name" placeholder="お名前" autocomplete="off">
+    <button class="btn ghost" id="g-join-btn">名前で参加する</button>
+    <div id="g-join-err"></div>
+  `;
+  $('#g-login-btn').onclick = async () => {
+    await withLoading($('#g-login-btn'), async () => {
+      try{
+        const d = await api('/login', { method:'POST', body:{ regno: $('#g-regno').value.trim(), password: $('#g-pw').value } });
+        TOKEN = d.token; localStorage.setItem('tk', TOKEN); ME = d.user; applyPermBaseLv(ME.permBaseLv);
+        const room = await api('/chat/rooms/open', { method:'POST', body:{ type:'site', date: info.date, site: info.site } });
+        goTo('#/chat/'+room.id);
+      }catch(e){ $('#g-login-err').innerHTML = `<div class="msg err">${h(e.message)}</div>`; }
+    });
+  };
+  $('#g-pw').onkeydown = e => { if(e.key==='Enter') $('#g-login-btn').click(); };
+  $('#g-join-btn').onclick = async () => {
+    const name = $('#g-name').value.trim();
+    if(!name){ $('#g-join-err').innerHTML = `<div class="msg err">お名前を入力してください</div>`; return; }
+    await withLoading($('#g-join-btn'), async () => {
+      try{
+        const res = await fetch('/api/guest-chat/'+token+'/join', { method:'POST', headers:{ 'content-type':'application/json' }, body: JSON.stringify({ name }) });
+        const d = await res.json().catch(() => ({}));
+        if(!res.ok) throw new Error(d.error || '参加できませんでした');
+        localStorage.setItem('guestDeviceToken:'+token, d.deviceToken);
+        await renderGuestChatRoom(token, d.deviceToken, info);
+      }catch(e){ $('#g-join-err').innerHTML = `<div class="msg err">${h(e.message)}</div>`; }
+    });
+  };
+  $('#g-name').onkeydown = e => { if(e.key==='Enter') $('#g-join-btn').click(); };
+}
+
+// ゲストとして参加した後のチャット画面。通常のアプリ画面(ヘッダー・ドロワー等)は使わず、
+// この現場のやり取りだけに絞った最小限の画面にする。
+async function renderGuestChatRoom(token, deviceToken, info){
+  clearTimers();
+  const root = document.getElementById('root');
+  root.innerHTML = `
+  <header><div class="cur-page">${h(info.site || '現場チャット')}</div></header>
+  <main id="app" style="padding:12px;max-width:720px;margin:0 auto"></main>`;
+  const app = $('#app');
+  app.innerHTML = `
+  <div class="card">
+    <div class="muted" style="font-size:12px;margin-bottom:8px">${h(info.date || '')} ${h(info.site || '')}<span style="margin-left:6px">(ゲスト参加中)</span></div>
+    <div class="chat-log" id="chat-log"><div class="chat-empty">読み込み中…</div></div>
+    <div class="chat-input-row">
+      <textarea id="chat-input" placeholder="メッセージを入力" rows="1" title="Enterで送信・Shift+Enterで改行"></textarea>
+      <button class="btn gold" id="chat-send">${icon('arrowRight',{size:'14px'})}</button>
+    </div>
+  </div>`;
+
+  const call = async (suffix, opt={}) => {
+    const res = await fetch('/api/guest-chat/'+token+suffix, {
+      method: opt.method || 'GET',
+      headers: { 'content-type':'application/json' },
+      body: opt.body ? JSON.stringify(opt.body) : undefined,
+    });
+    const d = await res.json().catch(() => ({}));
+    if(!res.ok) throw new Error(d.error || 'エラーが発生しました');
+    return d;
+  };
+
+  const logEl = $('#chat-log');
+  let lastId = 0;
+  const nearBottom = () => logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 60;
+  const fmtTime = ts => String(ts||'').slice(5,16);
+  const appendMessages = (msgs, opts={}) => {
+    if(!msgs.length) return;
+    const empty = logEl.querySelector('.chat-empty'); if(empty) empty.remove();
+    const wasNear = nearBottom();
+    for(const m of msgs){
+      const row = document.createElement('div');
+      row.className = 'chat-row' + (m.mine ? ' mine' : '');
+      row.innerHTML = `<div class="chat-bubble">${m.mine?'':`<div class="chat-sender">${h(m.senderName)}${m.isGuest?' <span class="muted">(ゲスト)</span>':''}</div>`}<div class="chat-body"></div><div class="chat-time">${h(fmtTime(m.ts))}</div></div>`;
+      row.querySelector('.chat-body').textContent = m.body;
+      logEl.appendChild(row);
+      lastId = Math.max(lastId, m.id);
+    }
+    if(opts.initial || wasNear) logEl.scrollTop = logEl.scrollHeight;
+  };
+
+  try{
+    const initial = await call(`/messages?device_token=${encodeURIComponent(deviceToken)}`);
+    if(initial.length) appendMessages(initial, { initial:true });
+    else logEl.innerHTML = '<div class="chat-empty">まだメッセージはありません。最初のメッセージを送ってみましょう。</div>';
+  }catch(e){ logEl.innerHTML = `<div class="msg err">${h(e.message)}</div>`; }
+
+  const poll = async () => {
+    try{
+      const fresh = await call(`/messages?device_token=${encodeURIComponent(deviceToken)}&after_id=${lastId}`);
+      if(fresh.length) appendMessages(fresh);
+    }catch(_){}
+  };
+  timers.push(setInterval(poll, 6000));
+
+  const input = $('#chat-input');
+  const autoGrow = () => { input.style.height = 'auto'; input.style.height = input.scrollHeight + 'px'; };
+  input.oninput = autoGrow;
+  const send = async () => {
+    const text = input.value.trim();
+    if(!text) return;
+    input.disabled = true;
+    try{
+      await call('/messages', { method:'POST', body:{ device_token: deviceToken, body: text } });
+      input.value = ''; autoGrow();
+      await poll();
+    }catch(e){ popup(e.message, 'error'); }
+    input.disabled = false; input.focus();
+  };
+  $('#chat-send').onclick = send;
+  input.onkeydown = (e) => { if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); } };
 }
 
 /* ===== シェル(ヘッダー)===== */
@@ -1836,16 +2211,87 @@ async function pollBell(){
 }
 
 /* ===== チャット(第1弾は全体チャットのみ、ポーリング方式) ===== */
-async function pageChat(app){
-  app.innerHTML = `<div class="muted">読み込み中…</div>`;
+// #/chat(一覧)と#/chat/:id(個別ルーム)を振り分ける
+async function pageChat(app, hash){
+  const m = (hash||'').match(/^#\/chat\/(\d+)/);
+  if(m) await pageChatRoom(app, Number(m[1]));
+  else await pageChatList(app);
+}
+
+// チャット一覧: 全体・課・手配チーム・個人メッセージをグループ表示。現場ごとのチャットは
+// 一覧には出さず、現場詳細モーダルから直接開く(#/sites参照)。
+async function pageChatList(app){
+  app.innerHTML = `<h2>${icon('messageCircle')} チャット</h2><div class="muted">読み込み中…</div>`;
   let rooms;
-  try{ rooms = await api('/chat/rooms'); }
-  catch(e){ app.innerHTML = `<div class="msg err">${h(e.message)}</div>`; return; }
-  const room = rooms[0];
-  if(!room){ app.innerHTML = '<div class="msg err">チャットルームが見つかりません</div>'; return; }
+  try{ rooms = await api('/chat/rooms?ensure=1'); }
+  catch(e){ app.innerHTML += `<div class="msg err">${h(e.message)}</div>`; return; }
+
+  const groupLabel = { all:'全体', ka:'課', manager:'手配チーム', dm:'個人メッセージ' };
+  const order = ['all','ka','manager','dm'];
+  const byType = {};
+  for(const r of rooms) (byType[r.type] ||= []).push(r);
 
   app.innerHTML = `
-  <h2>${icon('messageCircle')} ${h(room.name || 'チャット')}</h2>
+  <h2>${icon('messageCircle')} チャット</h2>
+  <div class="card">
+    <div class="row" style="margin-bottom:14px">
+      <button class="btn gold sm" id="chat-new-dm">${icon('plus',{size:'12px'})} 新しいメッセージ</button>
+    </div>
+    ${order.filter(t=>byType[t]&&byType[t].length).map(t=>`
+      <div class="section-label">${h(groupLabel[t])}</div>
+      <div style="margin-bottom:14px">
+        ${byType[t].map(r=>`<div class="dcard clickable chat-room-row" data-id="${r.id}" style="margin-bottom:8px">
+          <div class="dcard-head"><span class="dcard-title">${h(r.name)}</span>${r.unread?`<span class="nav-badge">${r.unread}</span>`:''}</div>
+        </div>`).join('')}
+      </div>`).join('') || '<div class="muted" style="padding:20px 0;text-align:center">参加中のチャットはありません</div>'}
+  </div>`;
+
+  app.querySelectorAll('.chat-room-row').forEach(b => b.onclick = () => goTo('#/chat/'+b.dataset.id));
+  $('#chat-new-dm').onclick = () => openNewChatPicker(async (user) => {
+    try{
+      const room = await api('/chat/rooms/open', { method:'POST', body:{ type:'dm', userId:user.id } });
+      goTo('#/chat/'+room.id);
+    }catch(e){ popup(e.message,'error'); }
+  });
+}
+
+// 氏名・登録番号でユーザーを検索して選ぶモーダル(個人チャットの相手選び用)
+function openNewChatPicker(onPick){
+  modal(`<h3>新しいメッセージ</h3>
+    <input id="ncp-q" placeholder="氏名または登録番号で検索" autocomplete="off">
+    <div id="ncp-list" class="muted" style="margin-top:10px;padding:10px 0;text-align:center">氏名または登録番号を入力してください</div>`);
+  const listEl = $('#ncp-list');
+  const search = debounce(async () => {
+    const q = $('#ncp-q').value.trim();
+    if(!q){ listEl.innerHTML = '<div class="muted" style="padding:10px 0;text-align:center">氏名または登録番号を入力してください</div>'; return; }
+    let users;
+    try{ users = await api(`/chat/user-search?q=${encodeURIComponent(q)}`); }
+    catch(e){ listEl.innerHTML = `<div class="msg err">${h(e.message)}</div>`; return; }
+    listEl.innerHTML = users.length ? users.map(u=>`<button type="button" class="drawer-link ncp-pick" data-id="${u.id}" style="border-radius:8px;margin-bottom:2px">
+      <span class="drawer-label">${h(u.name)} <span class="muted" style="font-size:11.5px">${h(u.regno)}</span></span>
+    </button>`).join('') : '<div class="muted" style="padding:10px 0;text-align:center">該当する人がいません</div>';
+    listEl.querySelectorAll('.ncp-pick').forEach(b => b.onclick = () => {
+      const u = users.find(x=>String(x.id)===b.dataset.id);
+      closeModal();
+      onPick(u);
+    });
+  }, 300);
+  $('#ncp-q').oninput = search;
+  $('#ncp-q').focus();
+}
+
+// 個別ルームのメッセージ画面
+async function pageChatRoom(app, roomId){
+  app.innerHTML = `<div class="muted">読み込み中…</div>`;
+  let room;
+  try{ room = await api(`/chat/room?id=${roomId}`); }
+  catch(e){ app.innerHTML = `<div class="msg err">${h(e.message)}</div>`; return; }
+
+  app.innerHTML = `
+  <div class="row" style="align-items:center;gap:8px;margin-bottom:4px">
+    <button class="btn ghost sm" id="chat-back">${icon('arrowLeft',{size:'12px'})}</button>
+    <h2 style="margin:0">${icon('messageCircle')} ${h(room.name || 'チャット')}</h2>
+  </div>
   <div class="card">
     <div class="chat-log" id="chat-log"><div class="chat-empty">読み込み中…</div></div>
     <div class="chat-input-row">
@@ -1853,6 +2299,7 @@ async function pageChat(app){
       <button class="btn gold" id="chat-send">${icon('arrowRight',{size:'14px'})}</button>
     </div>
   </div>`;
+  $('#chat-back').onclick = () => goTo('#/chat');
 
   const logEl = $('#chat-log');
   let lastId = 0;
@@ -1866,7 +2313,7 @@ async function pageChat(app){
     for(const m of msgs){
       const row = document.createElement('div');
       row.className = 'chat-row' + (m.mine ? ' mine' : '');
-      row.innerHTML = `<div class="chat-bubble">${m.mine?'':`<div class="chat-sender">${h(m.senderName)}</div>`}<div class="chat-body"></div><div class="chat-time">${h(fmtTime(m.ts))}</div></div>`;
+      row.innerHTML = `<div class="chat-bubble">${m.mine?'':`<div class="chat-sender">${h(m.senderName)}${m.isGuest?' <span class="muted">(ゲスト)</span>':''}</div>`}<div class="chat-body"></div><div class="chat-time">${h(fmtTime(m.ts))}</div></div>`;
       row.querySelector('.chat-body').textContent = m.body; // 改行はCSSのwhite-space:pre-wrapで表現するためtextContentで挿入
       logEl.appendChild(row);
       lastId = Math.max(lastId, m.id);
@@ -3808,12 +4255,14 @@ async function renderRookieListTab(app, stSites, tabsHtml){
     ${cands.length ? cands.map(c=>{
       const latestEval = c.evals[0]; // ORDER BY id DESC(バックエンド側)なので先頭が最新
       const reported = c.evals.some(e=>e.report_id);
+      const lastSite = c.sites[c.sites.length-1] || {};
       return `<div class="dcard">
         <div class="dcard-head"><span class="dcard-title">${h(c.name || ('登録番号:'+c.regno))}</span>${reported?'<span class="tag acquired">新人報告済み</span>':''}</div>
         <div class="drow"><span class="dk">登録番号</span><span class="dv">${h(c.regno)}</span></div>
-        <div class="drow"><span class="dk">現場</span><span class="dv">${c.sites.map(s=>`${h(s.date.slice(5))} ${h(s.site)}`).join('、')}</span></div>
+        <div class="drow"><span class="dk">直近の現場</span><span class="dv">${h((lastSite.date||'').slice(5))} ${h(lastSite.site||'')}<span class="muted">(計${c.sites.length}件)</span></span></div>
         ${latestEval ? `<div class="drow"><span class="dk">評価</span><span class="dv">やる気${latestEval.s_motivation||'—'}/受答${latestEval.s_response||'—'}/総合${latestEval.s_total||'—'}${latestEval.note?'「'+h(latestEval.note)+'」':''}</span></div>` : ''}
         <div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap">
+          ${(LV[ME.role]>=2 && c.name) ? `<button class="btn ghost sm rk-sitelog-btn" data-name="${h(c.name)}">${icon('stadium',{size:'12px'})} 過去の現場を見る</button>` : ''}
           <button class="btn ghost sm rk-eval-btn" data-regno="${h(c.regno)}">${icon('star',{size:'12px'})} 評価する</button>
           ${latestEval && !reported ? `<button class="btn gold sm rk-report-btn" data-regno="${h(c.regno)}">${icon('fileText',{size:'12px'})} 新人報告する</button>` : ''}
         </div>
@@ -3826,6 +4275,7 @@ async function renderRookieListTab(app, stSites, tabsHtml){
   $('#rk-next').onclick = () => { stSites.month = shiftMonth(month, 1); pageSites(app); };
   const jumpBtn = $('#rk-jump-month');
   if(jumpBtn) jumpBtn.onclick = () => openMonthJumpModal(month, (ym) => { stSites.month = ym; pageSites(app); });
+  app.querySelectorAll('.rk-sitelog-btn').forEach(b => b.onclick = () => openNameSiteLog(b.dataset.name));
   app.querySelectorAll('.rk-eval-btn').forEach(b => b.onclick = () => {
     const c = cands.find(x=>x.regno===b.dataset.regno);
     openRookieEvalModal(c, () => pageSites(app));
@@ -6564,7 +7014,7 @@ function openReport(r){
   const canCheck = has('report_check'); // 2次チェックの記入・修正
   const canBlacklist = has('blacklist_manage'); // ブラックリスト登録
   const canDelete = has('site_manage'); // 削除(手配者以上)
-  const canSiteLog = has('report_check') || has('blacklist_manage'); // 過去の現場を見る(名前一致検索)
+  const canSiteLog = LV[ME.role] >= 2; // 過去の現場を見る(名前一致検索)は手配者以上
   modal(`<h3>新人報告 #${r.id} ${pending?'<span class="tag pending">2次未チェック</span>':'<span class="tag checked">チェック済</span>'}</h3>
   <dl class="kv">
     <dt>タイムスタンプ</dt><dd>${h(r.ts)}</dd>
@@ -6650,20 +7100,16 @@ async function openNameSiteLog(name){
   try{ data = await api(`/name-site-log?name=${encodeURIComponent(name)}`); }
   catch(e){ modal(`<h3>${h(name)} さんの過去の現場</h3><div class="msg err">${h(e.message)}</div>`); return; }
   const matchedUsers = data.matchedUsers || [], rows = data.rows || [];
-  if(!matchedUsers.length){
-    modal(`<h3>${icon('stadium',{size:'15px'})} ${h(name)} さんの過去の現場</h3>
-      <div class="muted" style="padding:16px 0;text-align:center">この名前でアプリに登録されているメンバーは見つかりませんでした。</div>`);
-    return;
-  }
   const multi = matchedUsers.length > 1;
   modal(`<h3>${icon('stadium',{size:'15px'})} ${h(name)} さんの過去の現場${rows.length?` <span class="muted" style="font-size:12px;font-weight:400">(${rows.length}件)</span>`:''}</h3>
     ${multi?`<div class="muted" style="font-size:12px;margin-bottom:10px">同姓同名が${matchedUsers.length}名見つかったため、まとめて表示しています。</div>`:''}
+    ${!matchedUsers.length && rows.length ? `<div class="muted" style="font-size:12px;margin-bottom:10px">この名前でアプリに登録されているメンバーは見つかりませんでしたが、台帳の記録から現場歴が見つかりました。</div>` : ''}
     ${rows.length ? `<div style="max-height:50vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px">
       ${rows.map(r=>`<div style="font-size:12.5px;padding:6px 8px;background:#faf9f6;border:1px solid var(--line);border-radius:6px">
-        <b style="color:var(--ink)">${h(r.date)}</b> ${h(r.site)}${r.venue?` <span class="muted">(${h(r.venue)})</span>`:''}
+        <b style="color:var(--ink)">${h(r.date)}</b> ${h(r.site)}${r.venue?` <span class="muted">(${h(r.venue)})</span>`:''}${r.source==='rookie'?` <span class="muted">(未登録・台帳より)</span>`:''}
       </div>`).join('')}
-    </div>` : `<div class="muted" style="padding:16px 0;text-align:center">アプリへの登録はありますが、現場の実績はまだありません。</div>`}
-    ${!multi?`<div class="row" style="margin-top:14px"><a href="#/schedule/${matchedUsers[0].id}" class="btn ghost sm" id="nsl-goto">${icon('calendar',{size:'12px'})} このメンバーのスケジュールを見る</a></div>`:''}`);
+    </div>` : `<div class="muted" style="padding:16px 0;text-align:center">${matchedUsers.length?'アプリへの登録はありますが、':''}現場の実績はまだ見つかりませんでした。</div>`}
+    ${(matchedUsers.length===1)?`<div class="row" style="margin-top:14px"><a href="#/schedule/${matchedUsers[0].id}" class="btn ghost sm" id="nsl-goto">${icon('calendar',{size:'12px'})} このメンバーのスケジュールを見る</a></div>`:''}`);
   const goto = $('#nsl-goto');
   if(goto) goto.onclick = () => closeModal();
 }
@@ -6694,6 +7140,7 @@ async function pageDraft(app){
 /* ===== ブラックリスト ===== */
 async function pageBlacklist(app, hash){
   if(!has('blacklist_manage')){ notFound(app); return; }
+  const canSiteLog = LV[ME.role] >= 2; // 過去の現場を見る(名前一致検索)は手配者以上
   const rows = await api('/blacklist');
   const sc = id => `<select id="${id}" style="width:64px"><option value="">-</option>${[1,2,3,4,5].map(n=>`<option>${n}</option>`).join('')}</select>`;
   const scTh = ['会話','服装','身なり','遅刻','業務'];
@@ -6721,7 +7168,7 @@ async function pageBlacklist(app, hash){
       <td>${h(r.ts)}</td><td>${h(r.date)}</td><td>${h(r.reporter)}</td><td><b>${h(r.name)}</b></td>
       <td class="c">${r.s_talk??''}</td><td class="c">${r.s_dress??''}</td><td class="c">${r.s_groom??''}</td><td class="c">${r.s_late??''}</td><td class="c">${r.s_work??''}</td>
       <td>${h(r.reason)}</td><td>${h(r.added_by)}</td><td>${matchedBadge(r.matched_ka)}</td>
-      <td><button class="btn ghost sm icon-btn bl-sitelog" data-name="${h(r.name)}" title="過去の現場を見る">${icon('stadium')}</button></td></tr>`).join('') || '<tr><td colspan="13" class="muted">登録はありません</td></tr>'}
+      <td>${canSiteLog?`<button class="btn ghost sm icon-btn bl-sitelog" data-name="${h(r.name)}" title="過去の現場を見る">${icon('stadium')}</button>`:''}</td></tr>`).join('') || '<tr><td colspan="13" class="muted">登録はありません</td></tr>'}
     </table></div>
     <div class="cards sp-only">
     ${rows.map(r=>{
@@ -6733,7 +7180,7 @@ async function pageBlacklist(app, hash){
       ${sc2.length?`<div class="drow"><span class="dk">評価</span><span class="dv"><div class="dscore">${sc2.map(x=>`<span>${x[0]} ${x[1]}</span>`).join('')}</div></span></div>`:''}
       ${r.reason?`<div class="drow"><span class="dk">理由</span><span class="dv">${h(r.reason)}</span></div>`:''}
       <div class="drow"><span class="dk">登録者</span><span class="dv dcard-sub">${h(r.added_by)} / ${h(r.ts)}</span></div>
-      <div class="dcard-actions"><button class="btn ghost sm bl-sitelog" data-name="${h(r.name)}">${icon('stadium',{size:'12px'})} 過去の現場を見る</button></div>
+      ${canSiteLog?`<div class="dcard-actions"><button class="btn ghost sm bl-sitelog" data-name="${h(r.name)}">${icon('stadium',{size:'12px'})} 過去の現場を見る</button></div>`:''}
     </div>`;}).join('') || '<div class="muted">登録はありません</div>'}
     </div>
   </div>`;
@@ -6766,7 +7213,9 @@ async function pageBlacklist(app, hash){
 }
 
 // ブラックリスト1件の詳細モーダル。現場一覧の要注意バッジ(#/blacklist?open=ID)から遷移した時にも使う。
-function openBlacklistEntry(r){
+// canSiteLog省略時はLV[ME.role]>=2(手配者以上)から自前で判定する(呼び出し元を経由しない単独呼び出し向け)。
+function openBlacklistEntry(r, canSiteLog){
+  if(canSiteLog === undefined) canSiteLog = LV[ME.role] >= 2;
   const sc2 = [['会話',r.s_talk],['服装',r.s_dress],['身なり',r.s_groom],['遅刻',r.s_late],['業務',r.s_work]].filter(x=>x[1]!=null);
   modal(`<h3>${icon('ban',{size:'15px'})} ブラックリスト #${r.id} ${matchedBadge(r.matched_ka)}</h3>
   <dl class="kv">
@@ -6778,10 +7227,11 @@ function openBlacklistEntry(r){
     <dt>理由</dt><dd>${h(r.reason)||'—'}</dd>
     <dt>登録者</dt><dd>${h(r.added_by)}</dd>
   </dl>
-  <div class="row" style="margin-top:14px">
+  ${canSiteLog?`<div class="row" style="margin-top:14px">
     <button class="btn ghost sm" id="ble-sitelog">${icon('stadium',{size:'12px'})} 過去の現場を見る</button>
-  </div>`);
-  $('#ble-sitelog').onclick = () => openNameSiteLog(r.name);
+  </div>`:''}`);
+  const sitelogBtn = $('#ble-sitelog');
+  if(sitelogBtn) sitelogBtn.onclick = () => openNameSiteLog(r.name);
 }
 
 /* ===== 新人報告・ブラックリストのスプレッドシート貼り付け用エクスポート(管理者専用) ===== */

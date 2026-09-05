@@ -529,27 +529,43 @@ CREATE TABLE IF NOT EXISTS artist_folder_members(
 );
 CREATE INDEX IF NOT EXISTS idx_artist_folder_members_folder ON artist_folder_members(folder_id);
 
--- チャット(第1弾は全体チャットのみ)。typeで将来のルーム種別を区別できるようにしておく
--- (現場ごと='site'/手配ごと='manager'/課ごと='ka'/個人='dm'。実装はフェーズ2以降)。
--- 'all'ルームは全員が暗黙的に参加できるため、参加者を管理するテーブルは今回作らない
--- (フェーズ2で参加者が限定されるルーム種別を追加する際にchat_room_membersを追加する)。
+-- チャット。typeでルーム種別を区別する('all'=全体/'manager'=手配チーム/'ka'=課/'site'=現場ごと/'dm'=個人)。
+-- ref_keyは種別内で対象を特定するキー('all'は空文字、'manager'は手配担当者のuser_id
+-- (未設定者は課の仮想チーム'ka:<課>')、'ka'は課名、'site'は'日付|現場名'、'dm'は
+-- '小さいuser_id-大きいuser_id')。'all'・'ka'・'manager'は参加者が動的に決まる(usersテーブルの
+-- ka/manager_idを見て判定)ため、参加者を管理するテーブルは持たない。'site'・'dm'も同様に
+-- scheduleテーブル・ref_key自体から動的にアクセス可否を判定する(chatRoomAuthorized())。
 CREATE TABLE IF NOT EXISTS chat_rooms(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   type TEXT NOT NULL,
   ref_key TEXT DEFAULT '',
   name TEXT DEFAULT '',
   created TEXT DEFAULT (datetime('now')),
+  guest_token TEXT DEFAULT NULL, -- 現場ごと('site')ルーム限定。発行するとゲスト用URL/QRの識別子になる(未発行はNULL)
   UNIQUE(type, ref_key)
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_rooms_guest_token ON chat_rooms(guest_token);
 CREATE TABLE IF NOT EXISTS chat_messages(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   room_id INTEGER NOT NULL,
-  sender_id INTEGER NOT NULL,
+  sender_id INTEGER,              -- アプリアカウントの送信者(ゲスト送信時はNULL、代わりにguest_idを見る)
   sender_name TEXT DEFAULT '',   -- 送信時点の氏名を保持(退職等で後から参照不能にならないよう、member_notesと同じ方針)
+  guest_id INTEGER DEFAULT NULL, -- ゲスト送信時のchat_guests.id(アプリアカウント送信時はNULL)
   body TEXT NOT NULL,
   ts TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_chat_messages_room_ts ON chat_messages(room_id, ts);
+-- 現場ごとのチャットに、アプリアカウントを持たない人が名前だけで参加するためのゲスト識別子。
+-- device_tokenは参加時にブラウザ側へ発行し、以後はそのブラウザからの送信・閲覧をこの行に紐付ける
+-- (アプリの正式なアカウント登録とは無関係の、チャット専用の軽い「ログイン」)。
+CREATE TABLE IF NOT EXISTS chat_guests(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  room_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  device_token TEXT NOT NULL UNIQUE,
+  created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_chat_guests_room ON chat_guests(room_id);
 CREATE TABLE IF NOT EXISTS chat_reads(
   room_id INTEGER NOT NULL,
   user_id INTEGER NOT NULL,
