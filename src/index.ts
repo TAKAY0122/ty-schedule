@@ -4154,7 +4154,9 @@ async function api(req, env, url) {
       ).bind(month + '%').all()).results;
     }
     const excluded = new Set((await getRookieExcluded(env)).map((x: any) => x.regno));
-    cands = cands.filter((c: any) => !excluded.has(c.regno));
+    // 6桁チェックは取込時(upsertRookieCandidates)で行っているが、過去の不具合で紛れ込んだ
+    // 5桁データ等が残っていても一覧に出さないよう、表示側でも念のため防御的に絞り込む
+    cands = cands.filter((c: any) => !excluded.has(c.regno) && /^3\d{5}$/.test(c.regno));
     const regnos = [...new Set(cands.map((c: any) => c.regno))];
     let evals: any[] = [];
     if (regnos.length) {
