@@ -184,9 +184,12 @@ const APP_STRUCTURE_API_GROUPS = [
   ]},
   { title: '現場・記録・サマリー', rows: [
     ['GET', '/sites', '月間の現場一覧(新人共有・要注意共有マーク付き。実績が無く手動登録のみの現場も未配置として合わせて返す)'],
-    ['GET', '/rookie-candidates', '台帳(実績)取込で見つかった未登録の新人(新人リスト)を月指定で取得(sites_view権限)。regnoごとに登場現場・評価履歴をまとめる'],
+    ['GET', '/rookie-candidates', '台帳(実績)取込で見つかった未登録の新人(新人リスト)を取得(sites_view権限)。現場詳細の「新人」ボタンから使うdate+site指定、ダッシュボードの「未評価」から使うpending=1指定、指定が無ければ月単位(既定は当月)の3通り。regnoごとに登場現場・評価履歴をまとめ、除外設定(rookie_excluded)に含まれる人は常に除く'],
     ['POST', '/rookie-candidates/eval', '新人リストの候補者への軽い評価を登録(sites_view権限)。新人報告(POST /reports)への引き上げ前の下書き的な位置づけ'],
     ['POST', '/rookie-candidates/backfill', '保管済みの過去の台帳ファイルをすべて読み直し、新人リストへ反映するバックフィル処理(管理者専用)。scheduleへは書き込まない。body.cursorを使い、done:trueになるまでループ呼び出しする'],
+    ['GET', '/rookie-excluded', '新人リストの除外設定(登録番号の一覧)を取得(システム設定、wage_settings権限)'],
+    ['POST', '/rookie-excluded', '新人リストの除外設定に登録番号を追加(wage_settings権限)。以後の台帳取込・一覧表示から除外される'],
+    ['DELETE', '/rookie-excluded/:regno', '新人リストの除外設定から登録番号を1件解除(wage_settings権限)'],
     ['GET', '/site-members', '指定現場・日のメンバー一覧({list,venue}形式。実績0件の場合はvenueに手動登録側の会場を返す)'],
     ['GET/PUT', '/site-record', '個人の現場記録(配置・休憩・自由記入)の取得・保存'],
     ['GET', '/site-record-breaks', '指定現場・日の全員分の休憩合計(チーフ以上)'],
@@ -551,13 +554,15 @@ async function processTrainingPromotions(env, rows){
     if (s.includes('ステージアップ研修') || s.includes('SU')) return 'su';
     return null;
   };
-  const byRegno = {};
+  const byRegno: Record<string, any> = {}; // regno -> { manner?: date, team2?: date, su?: date }(同一取込内では最新日を残す)
   for (const r of rows) {
     const training = detectTraining(r.site);
     if (!training) continue;
     const regno = normRegno(r.regno);
     if (!regno) continue;
-    (byRegno[regno] ||= new Set()).add(training);
+    const date = String(r.date || '').trim();
+    const g = byRegno[regno] ||= {};
+    if (date && (!g[training] || date > g[training])) g[training] = date;
   }
   const regnos = Object.keys(byRegno);
   if (!regnos.length) return;
@@ -572,26 +577,27 @@ async function processTrainingPromotions(env, rows){
   const tomorrow = (() => { const d = new Date(Date.now() + 9 * 3600e3); d.setUTCDate(d.getUTCDate() + 1); return d.toISOString().slice(0, 10); })();
   const nextMonth1st = (() => { const d = new Date(Date.now() + 9 * 3600e3); d.setUTCMonth(d.getUTCMonth() + 1, 1); return d.toISOString().slice(0, 10); })();
 
-  for (const u of users) {
+  for (const u of users as any[]) {
     const trainings = byRegno[normRegno(u.regno)];
     if (!trainings) continue;
     const R = rankLetter(u.rank);
     // マナー研修: Eランクの人のみ対象。受講したら、翌日からDランクへ昇格予約
-    if (trainings.has('manner') && !u.manner_done && R === 'E') {
-      await env.DB.prepare('UPDATE users SET manner_done=1, promotion_pending_date=?, promotion_pending_rank=? WHERE id=?')
-        .bind(tomorrow, 'D', u.id).run();
+    if (trainings.manner && !u.manner_done && R === 'E') {
+      await env.DB.prepare('UPDATE users SET manner_done=1, manner_date=?, promotion_pending_date=?, promotion_pending_rank=? WHERE id=?')
+        .bind(trainings.manner, tomorrow, 'D', u.id).run();
       continue; // マナー研修とチーム研修/SUは対象ランクが異なるため、同時該当は通常ない
     }
     // チーム研修(2部)・ステージアップ研修(SU): Dランクの人のみ対象。両方受講したら、翌月1日にCランクへ昇格予約
     if (R === 'D') {
-      const team2Done = trainings.has('team2') ? 1 : u.team2_done;
-      const suDone = trainings.has('su') ? 1 : u.su_done;
+      const team2Done = trainings.team2 ? 1 : u.team2_done;
+      const suDone = trainings.su ? 1 : u.su_done;
       if (team2Done !== u.team2_done || suDone !== u.su_done) {
         if (team2Done && suDone) {
-          await env.DB.prepare('UPDATE users SET team2_done=?, su_done=?, promotion_pending_date=?, promotion_pending_rank=? WHERE id=?')
-            .bind(team2Done, suDone, nextMonth1st, 'C', u.id).run();
+          await env.DB.prepare('UPDATE users SET team2_done=?, su_done=?, team2_date=COALESCE(?,team2_date), su_date=COALESCE(?,su_date), promotion_pending_date=?, promotion_pending_rank=? WHERE id=?')
+            .bind(team2Done, suDone, trainings.team2 || null, trainings.su || null, nextMonth1st, 'C', u.id).run();
         } else {
-          await env.DB.prepare('UPDATE users SET team2_done=?, su_done=? WHERE id=?').bind(team2Done, suDone, u.id).run();
+          await env.DB.prepare('UPDATE users SET team2_done=?, su_done=?, team2_date=COALESCE(?,team2_date), su_date=COALESCE(?,su_date) WHERE id=?')
+            .bind(team2Done, suDone, trainings.team2 || null, trainings.su || null, u.id).run();
         }
       }
     }
@@ -1152,17 +1158,24 @@ async function clearAbsentSiteRegistry(env, rows) {
   return { clearedRegistrations: toDelete.length };
 }
 
-// 台帳(実績)取込時、登録番号が3から始まる(RB管轄)のに users に存在しない=まだアプリ未登録の
+// 新人リストから除外する登録番号の一覧(誤検知の恒久的な除外用、settingsテーブルに保存)。
+// 台帳に載っているが実際は新人ではない人(表記の都合等)を、管理者がシステム設定から個別に除外できる。
+async function getRookieExcluded(env) {
+  return JSON.parse(await getSetting(env, 'rookie_excluded', '[]') || '[]');
+}
+
+// 台帳(実績)取込時、登録番号が3から始まる6桁(RB管轄)のに users に存在しない=まだアプリ未登録の
 // 新人が現場に入っていた行を rookie_candidates へ拾い上げる(applyImportRows は本来この行を
-// 未登録エラーとして捨てるだけだった)。現場一覧の「新人リスト」タブ(GET /rookie-candidates)用。
+// 未登録エラーとして捨てるだけだった)。現場詳細の「新人」ボタン(GET /rookie-candidates)用。
 async function upsertRookieCandidates(env, rows, userByRegno) {
+  const excluded = new Set((await getRookieExcluded(env)).map((x: any) => x.regno));
   const seen = {}; // (regno,date,site) 単位で1回だけ処理すれば十分
   const ts = jstTs();
   const batch = [];
   for (const r of rows) {
     const regno = normRegno(r.regno);
     const date = String(r.date || '').trim();
-    if (!regno || !date || !regno.startsWith('3')) continue;
+    if (!regno || !date || !/^3\d{5}$/.test(regno) || excluded.has(regno)) continue;
     if (r.org !== undefined && r.org !== '' && !/^RB/i.test(r.org)) continue;
     if (userByRegno[regno]) continue; // 既にアプリ登録済みなら対象外
     const site = String(r.site || '').trim();
@@ -2702,7 +2715,7 @@ async function api(req, env, url) {
     'admin', 'admin-settings', 'role-permissions', 'perm-matrix', 'handler-status',
     'import', 'sched-sources', 'daicho', 'member-summary',
     'venues', 'venue-manual', 'legacy-import', 'artists', 'app-structure', 'system',
-    'training-status', 'chat',
+    'training-status', 'chat', 'rookie-list',
   ];
   if (method === 'GET' && path === '/settings/feature-status') {
     const status = {};
@@ -4114,13 +4127,34 @@ async function api(req, env, url) {
   }
 
   // ---- 新人リスト: 台帳(実績)取込で見つかった未登録の新人一覧(sites_view権限、チーフ以上)。
-  //      regnoごとにグループ化し、登場した現場・評価履歴をまとめて返す。
+  //      現場詳細の「新人」ボタンから、その日・その現場に絞って取得する(date+site指定)のが基本。
+  //      pending=1なら、ダッシュボードの「対応が必要」から、まだ誰も評価していない人だけを
+  //      日付を問わず横断的に返す(現場ごとに開いて回らなくても一箇所で確認・評価できるようにするため)。
+  //      どちらの指定も無ければ月単位(既定は当月)で全件返す。regnoごとにグループ化し、登場した現場・
+  //      評価履歴をまとめて返す。除外設定(rookie_excluded)に含まれるregnoは常に除く。
   if (method === 'GET' && path === '/rookie-candidates') {
     if (!has(me, 'sites_view')) return ERR('ページが見つかりません', 404);
-    const month = url.searchParams.get('month') || jstDate().slice(0, 7);
-    const cands = (await env.DB.prepare(
-      'SELECT * FROM rookie_candidates WHERE date LIKE ? ORDER BY regno, date'
-    ).bind(month + '%').all()).results;
+    const dateParam = url.searchParams.get('date');
+    const siteParam = url.searchParams.get('site');
+    let cands;
+    if (dateParam && siteParam) {
+      cands = (await env.DB.prepare(
+        'SELECT * FROM rookie_candidates WHERE date=? AND site=? ORDER BY regno'
+      ).bind(dateParam, siteParam).all()).results;
+    } else if (url.searchParams.get('pending') === '1') {
+      cands = (await env.DB.prepare(
+        `SELECT rc.* FROM rookie_candidates rc
+         WHERE NOT EXISTS (SELECT 1 FROM rookie_quick_evals e WHERE e.regno = rc.regno)
+         ORDER BY rc.regno, rc.date`
+      ).all()).results;
+    } else {
+      const month = url.searchParams.get('month') || jstDate().slice(0, 7);
+      cands = (await env.DB.prepare(
+        'SELECT * FROM rookie_candidates WHERE date LIKE ? ORDER BY regno, date'
+      ).bind(month + '%').all()).results;
+    }
+    const excluded = new Set((await getRookieExcluded(env)).map((x: any) => x.regno));
+    cands = cands.filter((c: any) => !excluded.has(c.regno));
     const regnos = [...new Set(cands.map((c: any) => c.regno))];
     let evals: any[] = [];
     if (regnos.length) {
@@ -4153,6 +4187,32 @@ async function api(req, env, url) {
       Number(body.s_motivation) || null, Number(body.s_response) || null, Number(body.s_total) || null,
       String(body.note || ''), jstTs()).run();
     return J({ ok: 1, id: ins.meta && ins.meta.last_row_id });
+  }
+
+  // ---- 新人リストの除外設定(システム設定、wage_settings権限)。台帳に載っているが実際は
+  //      新人ではない人(登録番号の帯だけ一致してしまう等)を、今後の取込・一覧表示の両方から除く。
+  if (method === 'GET' && path === '/rookie-excluded') {
+    if (!has(me, 'wage_settings')) return ERR('ページが見つかりません', 404);
+    return J(await getRookieExcluded(env));
+  }
+  if (method === 'POST' && path === '/rookie-excluded') {
+    if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
+    const regno = normRegno(body.regno);
+    if (!regno) return ERR('登録番号を入力してください');
+    const list = await getRookieExcluded(env);
+    if (!list.some((x: any) => x.regno === regno)) {
+      list.push({ regno, name: String(body.name || '').trim(), addedAt: jstTs() });
+      await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('rookie_excluded',?)").bind(JSON.stringify(list)).run();
+    }
+    return J({ ok: 1 });
+  }
+  let rkxm;
+  if (method === 'DELETE' && (rkxm = path.match(/^\/rookie-excluded\/([^/]+)$/))) {
+    if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
+    const regno = normRegno(decodeURIComponent(rkxm[1]));
+    const list = (await getRookieExcluded(env)).filter((x: any) => x.regno !== regno);
+    await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('rookie_excluded',?)").bind(JSON.stringify(list)).run();
+    return J({ ok: 1 });
   }
   // 保管済みの過去の台帳ファイル(daicho_archive、R2)をすべて読み直し、rookie_candidatesへ
   // 反映するバックフィル処理。新人リスト機能の追加より前に取り込まれたファイルは対象外だったため、
@@ -5084,19 +5144,30 @@ async function api(req, env, url) {
   if (method === 'GET' && path === '/training-status') {
     if (!has(me, 'member_stats_view')) return ERR('ページが見つかりません', 404);
     const rows = (await env.DB.prepare(
-      "SELECT id, name, rank, ka, han, manager_id, suspended, created, manner_done, team2_done, su_done FROM users ORDER BY rank, created"
+      "SELECT id, name, rank, ka, han, manager_id, suspended, manner_done, team2_done, su_done, manner_date, team2_date, su_date FROM users ORDER BY rank, id"
     ).all()).results;
     const managers = (await env.DB.prepare("SELECT id, name FROM users WHERE COALESCE(is_manager,0)=1").all()).results;
     const mgrName: Record<string, string> = {}; for (const m of managers as any[]) mgrName[m.id] = m.name;
+    // ランクが既にD以上/C以上なら、過去の昇格実績自体が受講済みの証拠になるため、
+    // 何らかの理由でフラグがfalseのまま残っていても表示上は受講済みとみなす(防御的措置。
+    // 既存データはmigrate-training-dates.sqlで補正済みだが、手動のランク変更等で今後も
+    // フラグとランクがずれた場合に、見た目だけでも矛盾しないようにする)。
+    const RANK_LV: Record<string, number> = { E: 0, D: 1, C: 2, B: 3, A: 4 };
+    const lv = (r: any) => RANK_LV[rankLetter(r.rank)] ?? -1;
+    const effManner = (r: any) => !!r.manner_done || lv(r) >= RANK_LV.D;
+    const effTeam2 = (r: any) => !!r.team2_done || lv(r) >= RANK_LV.C;
+    const effSu = (r: any) => !!r.su_done || lv(r) >= RANK_LV.C;
+    const lastTrainingDate = (r: any) => [r.manner_date, r.team2_date, r.su_date].filter(Boolean).sort().pop() || '';
     const pubRow = (r: any) => ({
-      id: r.id, name: r.name, rank: r.rank, ka: r.ka, han: r.han, created: r.created,
+      id: r.id, name: r.name, rank: r.rank, ka: r.ka, han: r.han,
+      lastTrainingDate: lastTrainingDate(r),
       suspended: r.suspended ? 1 : 0,
       managerName: r.manager_id ? (mgrName[r.manager_id] || '') : (r.ka === '1課' ? 'チーフ手配(1課)' : r.ka === '2課' ? 'チーフ手配(2課)' : 'チーフ手配'),
     });
     return J({
-      manner: (rows as any[]).filter(r => !r.manner_done).map(pubRow),
-      team2: (rows as any[]).filter(r => !r.team2_done).map(pubRow),
-      su: (rows as any[]).filter(r => !r.su_done).map(pubRow),
+      manner: (rows as any[]).filter(r => !effManner(r)).map(pubRow),
+      team2: (rows as any[]).filter(r => !effTeam2(r)).map(pubRow),
+      su: (rows as any[]).filter(r => !effSu(r)).map(pubRow),
     });
   }
 
@@ -5132,7 +5203,7 @@ async function api(req, env, url) {
       safe(env.DB.prepare("SELECT created_at FROM site_nominations WHERE status='pending'").all(), emptyAll),
       safe(env.DB.prepare("SELECT id FROM reports WHERE status='pending'").all(), emptyAll),
       safe(env.DB.prepare(
-        `SELECT MIN(rc.first_seen_ts) AS created_at FROM rookie_candidates rc
+        `SELECT rc.regno, MIN(rc.first_seen_ts) AS created_at FROM rookie_candidates rc
          WHERE NOT EXISTS (SELECT 1 FROM rookie_quick_evals e WHERE e.regno = rc.regno)
          GROUP BY rc.regno`
       ).all(), emptyAll),
@@ -5166,11 +5237,13 @@ async function api(req, env, url) {
     // ② 対応が必要(滞留日数も一緒に返す)
     const daysSince = (ts) => { if (!ts) return 0; const d = Math.floor((Date.now() - Date.parse(ts.replace(' ', 'T') + '+09:00')) / 86400000); return Math.max(0, d); };
     const maxDays = (rows) => rows.reduce((m, r) => Math.max(m, daysSince(r.created_at)), 0);
+    const rookieExcludedSet = new Set((await getRookieExcluded(env)).map((x: any) => x.regno));
+    const rookieUnevaluatedRows = (rookieUnevaluatedRes.results as any[]).filter(r => !rookieExcludedSet.has(r.regno));
     const todo = {
       selfReports: { count: selfReportsRes.results.length, maxDays: maxDays(selfReportsRes.results) },
       nominations: { count: nominationsRes.results.length, maxDays: maxDays(nominationsRes.results) },
       reportChecks: { count: reportsRes.results.length },
-      rookieUnevaluated: { count: rookieUnevaluatedRes.results.length, maxDays: maxDays(rookieUnevaluatedRes.results) },
+      rookieUnevaluated: { count: rookieUnevaluatedRows.length, maxDays: maxDays(rookieUnevaluatedRows) },
     };
 
     // ③ 今月の状況 + 前月比

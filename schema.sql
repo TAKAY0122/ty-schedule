@@ -24,6 +24,9 @@ CREATE TABLE IF NOT EXISTS users(
   manner_done INTEGER DEFAULT 0,         -- マナー研修 受講済み(E→D自動昇格の条件)
   team2_done INTEGER DEFAULT 0,          -- チーム研修(2部) 受講済み(D→C自動昇格の条件の一つ)
   su_done INTEGER DEFAULT 0,             -- ステージアップ研修(SU) 受講済み(D→C自動昇格の条件の一つ)
+  manner_date TEXT DEFAULT NULL,         -- マナー研修を受講した現場の日付(台帳取込で検出した実日付)
+  team2_date TEXT DEFAULT NULL,          -- チーム研修(2部)を受講した現場の日付
+  su_date TEXT DEFAULT NULL,             -- ステージアップ研修(SU)を受講した現場の日付
   promotion_pending_date TEXT DEFAULT NULL, -- D→C自動昇格の適用予定日(2部+SU完了の翌月1日)
   promotion_pending_rank TEXT DEFAULT NULL, -- 上記の適用予定日に、実際に切り替える先のランク(D または C)
   graduate_flag INTEGER DEFAULT 0,       -- 卒業予定

@@ -225,7 +225,7 @@ const UPDATE_ITEMS = [
   { v:12, icon:'settings', title:'システム管理メニューを1クリックで開けるように', desc:'これまで「システム管理」を開いてから個別の画面を選ぶ2段階の操作が必要でしたが、ドロワーメニューからその場で開く一覧に変わり、1クリックで各画面へ移動できるようになりました。', show: () => ME.role === 'admin' },
   { v:12, icon:'gauge', title:'ダッシュボードの「気になる人」から直接絞り込めるように', desc:'ダッシュボードの「気になる人」カードをタップすると、稼働サマリーの該当する絞り込み条件が最初から適用された状態で開くようになりました。', show: () => ME.role === 'admin' },
   { v:13, icon:'messageCircle', title:'チャットを追加', desc:'メニューの「チャット」から、全員が参加する全体チャットでやり取りできるようになりました。未読があるとメニューに件数が表示されます。現場ごと・手配ごと・課ごとのグループチャットや個人チャットは今後追加予定です。', show: () => true },
-  { v:13, icon:'sparkles', title:'現場一覧に「新人リスト」タブを追加', desc:'台帳の取り込みで見つかった、まだアプリに登録されていない新人を一覧できるようになりました。「評価する」で軽い評価を記録すると、「新人報告する」ボタンから候補者名・所感・点数を入力済みの状態で新人報告フォームを開けます。', show: () => has('sites_view') },
+  { v:13, icon:'sparkles', title:'現場詳細に「新人」ボタンを追加', desc:'現場一覧で現場を開くと出てくる「新人」ボタンから、その現場の台帳の取り込みで見つかった、まだアプリに登録されていない新人を確認できるようになりました。「評価する」で軽い評価を記録すると、「新人報告する」ボタンから候補者名・所感・点数を入力済みの状態で新人報告フォームを開けます。', show: () => has('sites_view') },
   { v:13, icon:'badge', title:'研修未受講リストを追加', desc:'マナー研修・チーム研修(2部)・ステージアップ研修(SU)ごとに、まだ受講していない人を一覧で確認できるようになりました(メニューの「メンバー」から)。', show: () => has('member_stats_view') },
 ];
 // 機能公開設定の対象画面。バックエンドのFEATURE_KEYSと必ず一致させる。
@@ -265,6 +265,7 @@ const FEATURE_LABELS = {
   'legacy-import': { icon:'inbox', label:'過去データ取込確認' },
   'artists': { icon:'megaphone', label:'公演一覧' },
   'app-structure': { icon:'sitemap', label:'アプリ構造ビューア' },
+  'rookie-list': { icon:'sparkles', label:'新人リスト(現場詳細)' },
 };
 const FEATURE_KEYS = Object.keys(FEATURE_LABELS);
 // 給与計算区分コード → 表示用の日本語ラベル(業務名対応表の表示に使う)
@@ -864,6 +865,7 @@ function renderHomeMenuItems(menuItems, homeEditing){
   const btn = ([hash,iconName,label,,role]) => `<a href="${homeEditing?'javascript:void(0)':hash}" class="home-menu-btn ${homeEditing?'editing':''}" data-hash="${hash}">
         ${homeEditing?`<button class="home-menu-remove" data-hash="${hash}" type="button">${icon('x',{size:'12px'})}</button>`:''}
         ${role?`<span class="role-dots" style="position:absolute;top:8px;right:8px">${roleDots(role)}</span>`:''}
+        ${hash==='#/chat'?`<span class="nav-badge chat-nav-badge" style="position:absolute;top:8px;right:8px;margin-left:0;display:none"></span>`:''}
         <span class="home-menu-icon">${icon(iconName,{size:'22px'})}</span><span>${h(label)}</span>
       </a>`;
   if(homeEditing) return menuItems.map(btn).join('');
@@ -1025,11 +1027,14 @@ async function openSiteModal(date, site){
   const canViewSched = LV[ME.role] >= 1; // 名前タップでスケジュールへ遷移できるか(チーフ以上)
   const canRoster = has('sites_view'); // 稼働表・過去公演を見られるか(このモーダル自体を開ける権限と同じ)
   const canRename = has('site_manage'); // 同会場・同アーティストの公演をまとめて編集できるか(手配者以上)
-  const [siteData, breaksArr, history] = await Promise.all([
+  const [siteData, breaksArr, history, featureStatus] = await Promise.all([
     api(`/site-members?date=${date}&site=${encodeURIComponent(site)}`),
     canViewSched ? api(`/site-record-breaks?date=${date}&site=${encodeURIComponent(site)}`).catch(()=>[]) : Promise.resolve([]),
     canRoster ? api(`/site-history?date=${date}&site=${encodeURIComponent(site)}`).catch(()=>null) : Promise.resolve(null),
+    canRoster ? getFeatureStatus() : Promise.resolve({}),
   ]);
+  // 「新人」ボタン(このモーダル内の新人リスト)自体の機能公開設定。管理者は常に見られる
+  const canRookie = canRoster && (ME.role === 'admin' || !['hidden','maintenance'].includes(featureStatus['rookie-list']));
   const list = siteData.list;
   // 休憩時間の合計(チーフ以上に公開。6h超45分/8h超60分の目安に届いていない場合だけ軽く表示)
   const breakByUid = {}; breaksArr.forEach(b => breakByUid[b.uid] = b);
@@ -1107,6 +1112,7 @@ async function openSiteModal(date, site){
       ${canRoster ? `<button type="button" class="btn ghost sm" id="site-roster-btn">${icon('layoutGrid',{size:'13px'})} 稼働表</button>` : ''}
       ${canChat ? `<button type="button" class="btn ghost sm" id="site-chat-btn">${icon('messageCircle',{size:'13px'})} チャット</button>` : ''}
       ${canInvite ? `<button type="button" class="btn ghost sm" id="site-invite-btn">${icon('link',{size:'13px'})} 招待リンク</button>` : ''}
+      ${canRookie ? `<button type="button" class="btn ghost sm" id="site-rookie-btn">${icon('sparkles',{size:'13px'})} 新人</button>` : ''}
     </div>` : ''}
     ${list.length ? `
       <div class="section-label" style="margin-top:6px">チーフ・手配チーム</div>
@@ -1139,6 +1145,8 @@ async function openSiteModal(date, site){
       openGuestInviteModal(room.id, site, date);
     }catch(e){ popup(e.message, 'error'); }
   });
+  const rookieBtn = $('#site-rookie-btn');
+  if(rookieBtn) rookieBtn.onclick = () => openSiteRookieModal(date, site);
   const venueLink = $('#modal-layer .venue-detail-link');
   if(venueLink) venueLink.onclick = () => { closeModal(); openVenueModal(venueLink.dataset.venue); };
   document.querySelectorAll('#modal-layer .site-hist-bulk-edit').forEach(btn => {
@@ -2141,7 +2149,7 @@ function renderShell(hash){
         ${nav.map((item,i) => {
           if(item.section) return `<div class="drawer-section">${h(item.section)}</div>`;
           if(!item.children){
-            const badge = item.path==='#/chat' ? '<span class="nav-badge" id="chat-nav-badge" style="display:none"></span>' : '';
+            const badge = item.path==='#/chat' ? '<span class="nav-badge chat-nav-badge" style="display:none"></span>' : '';
             return `<button type="button" class="drawer-link ${item.role?'role-'+item.role:''} ${hashIs(hash, item.path)?'active':''}" data-go="${item.path}"><span class="drawer-label">${icon(item.icon)} ${h(item.label)}</span>${badge}<span class="role-dots">${roleDots(item.role)}</span></button>`;
           }
           const isOpen = !!stMenu.open[i];
@@ -2355,14 +2363,16 @@ async function pageChatRoom(app, roomId){
   input.onkeydown = (e) => { if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); } };
 }
 
-// ドロワーメニューの「チャット」項目に未読件数バッジを出す(通知とは別の未読管理)
+// ドロワーメニュー・ホーム画面の「チャット」項目に未読件数バッジを出す(通知とは別の未読管理)。
+// 同時に複数箇所(ドロワー・ホーム)に存在しうるため、classで全て一括更新する
 async function pollChatBadge(){
   const upd = async () => {
     try{
       const rooms = await api('/chat/rooms');
       const total = rooms.reduce((s,r)=>s+(r.unread||0), 0);
-      const b = $('#chat-nav-badge'); if(!b) return;
-      b.style.display = total ? '' : 'none'; b.textContent = total;
+      document.querySelectorAll('.chat-nav-badge').forEach(b => {
+        b.style.display = total ? '' : 'none'; b.textContent = total;
+      });
     }catch(_){}
   };
   upd();
@@ -3142,7 +3152,7 @@ async function pageDashboard(app){
   if(data.todo.selfReports.count) todoRows.push({ icon: 'mail', label: '現場変更報告の承認', sub: `最長${data.todo.selfReports.maxDays}日待ち`, n: data.todo.selfReports.count, href: '#/self-reports', urgent: data.todo.selfReports.maxDays >= 3 });
   if(data.todo.nominations.count) todoRows.push({ icon: 'user', label: 'メンバー指名の承認', sub: `最長${data.todo.nominations.maxDays}日待ち`, n: data.todo.nominations.count, href: '#/nominations', urgent: data.todo.nominations.maxDays >= 3 });
   if(data.todo.reportChecks.count) todoRows.push({ icon: 'fileText', label: '新人報告の2次チェック', sub: '未チェック', n: data.todo.reportChecks.count, href: '#/reports', urgent: false });
-  if(data.todo.rookieUnevaluated.count) todoRows.push({ icon: 'sparkles', label: '新人リストの未評価', sub: `最長${data.todo.rookieUnevaluated.maxDays}日待ち`, n: data.todo.rookieUnevaluated.count, href: '#/sites', urgent: data.todo.rookieUnevaluated.maxDays >= 7 });
+  if(data.todo.rookieUnevaluated.count) todoRows.push({ key: 'rookie-pending', icon: 'sparkles', label: '新人リストの未評価', sub: `最長${data.todo.rookieUnevaluated.maxDays}日待ち`, n: data.todo.rookieUnevaluated.count, href: '#/sites', urgent: data.todo.rookieUnevaluated.maxDays >= 7 });
 
   const issueRows = [
     { label: 'ランク未設定', value: data.dataIssues.noRank, href: '#/members', icon: 'user' },
@@ -3213,7 +3223,7 @@ async function pageDashboard(app){
     ${todoRows.length ? `<div class="ops-card ops-todo-card">
       <div class="ops-card-h"><b>${icon('inbox', { size: '15px' })} 対応が必要</b><span class="ops-badge">${todoRows.reduce((s, r) => s + r.n, 0)}件</span></div>
       <div class="ops-todo">
-        ${todoRows.map((r, i) => `<a href="${r.href}" class="ops-todo-row ${r.urgent ? 'urgent' : ''}" style="animation-delay:${i * 80}ms">
+        ${todoRows.map((r, i) => `<a href="${r.href}" data-key="${r.key||''}" class="ops-todo-row ${r.urgent ? 'urgent' : ''}" style="animation-delay:${i * 80}ms">
           <span class="ops-todo-ic">${icon(r.icon, { size: '15px' })}</span>
           <span class="ops-todo-l"><b>${h(r.label)}</b><em>${h(r.sub)}</em></span>
           <span class="ops-todo-n" data-count="${r.n}">0</span>
@@ -3313,6 +3323,11 @@ async function pageDashboard(app){
 
   animateCounts(app);
 
+  // 「新人リストの未評価」は現場一覧へ飛ばず、その場で全現場横断の未評価一覧を開く
+  // (どの現場に未評価がいるか探し回らずに済むようにするため)
+  const rookiePendingRow = app.querySelector('.ops-todo-row[data-key="rookie-pending"]');
+  if(rookiePendingRow) rookiePendingRow.onclick = (e) => { e.preventDefault(); openPendingRookieModal(); };
+
   // --- 毎秒の時計 + cron針。要素が画面から消えたら自動的に止める(ページ遷移時のタイマー残りを防ぐ) ---
   const tick = () => {
     const clock = document.getElementById('ops-clock');
@@ -3367,6 +3382,7 @@ async function pageHome(app){
   // 6番目の要素はホーム画面でのグルーピング用カテゴリ(通常表示時のみ、この単位で見出しを挟む)。
   const allMenuItems = [
     ['#/schedule','calendar','マイスケジュール', true, null, '個人'],
+    ['#/chat','messageCircle','チャット', true, null, '個人'],
     ['#/availability','handRaise','休み希望', true, null, '個人'],
     ['#/report','fileText','新人報告', true, null, '個人'],
     ['#/reports','clipboardList','報告一覧', true, null, '個人'],
@@ -3386,6 +3402,7 @@ async function pageHome(app){
     ['#/summary','barChart','稼働サマリー', has('summary_view'), 'chief', '一覧・分析'],
     ['#/member-summary/search','barChart','個人の年間\nサマリー', has('member_summary_view'), 'handler', '一覧・分析'],
     ['#/member-stats','trendingUp','メンバー分析', has('member_stats_view'), 'chief', '一覧・分析'],
+    ['#/training-status','badge','研修未受講\nリスト', has('member_stats_view'), 'chief', '一覧・分析'],
     ['#/day-schedule','layoutGrid','スケジュール一覧', has('day_schedule_view'), 'chief', '一覧・分析'],
 
     ['#/dashboard','gauge','ダッシュボード', has('dashboard_view'), 'admin', '管理者'],
@@ -4105,15 +4122,9 @@ async function openMemberDayEdit(uid, u, date){
 /* ===== 現場一覧(チーフ以上)===== */
 async function pageSites(app){
   if(!has('sites_view')){ notFound(app); return; }
-  const stSites = PAGE_STATE.sites || (PAGE_STATE.sites = { month: MONTH, openDates: new Set(), selected: new Set(), tab:'sites' });
+  const stSites = PAGE_STATE.sites || (PAGE_STATE.sites = { month: MONTH, openDates: new Set(), selected: new Set() });
   if(!stSites.openDates) stSites.openDates = new Set(); // 古い保存状態との互換
   if(!stSites.selected) stSites.selected = new Set();
-  if(!stSites.tab) stSites.tab = 'sites';
-  const tabsHtml = `<div class="ka-tabs sticky-filters" style="margin-bottom:10px">
-    <button class="ka-tab ${stSites.tab==='sites'?'on':''}" id="st-tab-sites">${icon('stadium',{size:'12px'})} 現場一覧</button>
-    <button class="ka-tab ${stSites.tab==='rookies'?'on':''}" id="st-tab-rookies">${icon('sparkles',{size:'12px'})} 新人リスト</button>
-  </div>`;
-  if(stSites.tab === 'rookies'){ await renderRookieListTab(app, stSites, tabsHtml); return; }
   const canRename = has('site_manage'); // 現場名・会場名の一括変更(手配者以上)
   const canRegister = ME.handler===1 && has('site_manage'); // 現場情報の手動登録(手配者以上・手配モード中のみ)
   const month = stSites.month;
@@ -4130,7 +4141,6 @@ async function pageSites(app){
   for(const k of [...stSites.selected]) if(!visibleKeys.has(k)) stSites.selected.delete(k);
   app.innerHTML = `
   <h2>現場一覧</h2>
-  ${tabsHtml}
   <div class="card">
     <div class="sticky-filters">
       <div class="row" style="margin-bottom:12px;align-items:center;flex-wrap:wrap;gap:8px">
@@ -4223,34 +4233,17 @@ async function pageSites(app){
       openSiteBulkRename(targets, () => { stSites.selected = new Set(); pageSites(app); });
     };
   }
-  $('#st-tab-sites').onclick = () => { stSites.tab = 'sites'; pageSites(app); };
-  $('#st-tab-rookies').onclick = () => { stSites.tab = 'rookies'; pageSites(app); };
 }
 
-// ===== 現場一覧「新人リスト」タブ: 台帳(実績)取込で見つかった、まだアプリ未登録の新人一覧 =====
-async function renderRookieListTab(app, stSites, tabsHtml){
-  const month = stSites.month;
-  const [y,mo] = month.split('-').map(Number);
-  const wireTabs = () => {
-    $('#st-tab-sites').onclick = () => { stSites.tab = 'sites'; pageSites(app); };
-    const rt = $('#st-tab-rookies'); if(rt) rt.onclick = () => { pageSites(app); };
-  };
-  app.innerHTML = `<h2>現場一覧</h2>${tabsHtml}<div class="muted">読み込み中…</div>`;
-  wireTabs();
+// ===== 新人リストのモーダル共通描画。現場詳細の「新人」ボタン(その日・その現場に絞る)と、
+//      ダッシュボードの「新人リストの未評価」(全現場横断で未評価の人だけ)の両方から使う =====
+async function renderRookieListModal(fetchUrl, desc, reopen){
+  modal(`<h3>${icon('sparkles',{size:'15px'})} 新人リスト</h3><div class="muted">読み込み中…</div>`);
   let cands;
-  try{ cands = await api(`/rookie-candidates?month=${month}`); }
-  catch(e){ app.innerHTML += `<div class="msg err">${h(e.message)}</div>`; return; }
-
-  app.innerHTML = `
-  <h2>現場一覧</h2>
-  ${tabsHtml}
-  <div class="card">
-    <div class="row" style="margin-bottom:10px;align-items:center;gap:8px">
-      <button class="btn ghost sm" id="rk-prev">◀</button>
-      <b id="rk-jump-month" title="タップして年月を選択" style="min-width:110px;text-align:center;cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px">${y}年 ${mo}月</b>
-      <button class="btn ghost sm" id="rk-next">▶</button>
-    </div>
-    <div class="muted" style="font-size:12.5px;margin-bottom:12px">台帳(実績)取込で見つかった、まだアプリに登録されていない新人の一覧です。評価すると「新人報告する」ボタンが出て、正式な新人報告に引き上げられます。本人がアプリに登録されると、以降この一覧には出てこなくなります。</div>
+  try{ cands = await api(fetchUrl); }
+  catch(e){ modal(`<h3>${icon('sparkles',{size:'15px'})} 新人リスト</h3><div class="msg err">${h(e.message)}</div>`); return; }
+  modal(`<h3>${icon('sparkles',{size:'15px'})} 新人リスト</h3>
+    <div class="muted" style="font-size:12.5px;margin-bottom:12px">${desc}</div>
     <div class="cards" style="display:flex">
     ${cands.length ? cands.map(c=>{
       const latestEval = c.evals[0]; // ORDER BY id DESC(バックエンド側)なので先頭が最新
@@ -4267,20 +4260,14 @@ async function renderRookieListTab(app, stSites, tabsHtml){
           ${latestEval && !reported ? `<button class="btn gold sm rk-report-btn" data-regno="${h(c.regno)}">${icon('fileText',{size:'12px'})} 新人報告する</button>` : ''}
         </div>
       </div>`;
-    }).join('') : '<div class="muted" style="padding:20px 0;text-align:center">この月は未登録の新人が見つかっていません</div>'}
-    </div>
-  </div>`;
-  wireTabs();
-  $('#rk-prev').onclick = () => { stSites.month = shiftMonth(month,-1); pageSites(app); };
-  $('#rk-next').onclick = () => { stSites.month = shiftMonth(month, 1); pageSites(app); };
-  const jumpBtn = $('#rk-jump-month');
-  if(jumpBtn) jumpBtn.onclick = () => openMonthJumpModal(month, (ym) => { stSites.month = ym; pageSites(app); });
-  app.querySelectorAll('.rk-sitelog-btn').forEach(b => b.onclick = () => openNameSiteLog(b.dataset.name));
-  app.querySelectorAll('.rk-eval-btn').forEach(b => b.onclick = () => {
+    }).join('') : '<div class="muted" style="padding:20px 0;text-align:center">未登録の新人は見つかっていません</div>'}
+    </div>`);
+  document.querySelectorAll('#modal-layer .rk-sitelog-btn').forEach(b => b.onclick = () => openNameSiteLog(b.dataset.name));
+  document.querySelectorAll('#modal-layer .rk-eval-btn').forEach(b => b.onclick = () => {
     const c = cands.find(x=>x.regno===b.dataset.regno);
-    openRookieEvalModal(c, () => pageSites(app));
+    openRookieEvalModal(c, reopen);
   });
-  app.querySelectorAll('.rk-report-btn').forEach(b => b.onclick = () => {
+  document.querySelectorAll('#modal-layer .rk-report-btn').forEach(b => b.onclick = () => {
     const c = cands.find(x=>x.regno===b.dataset.regno);
     const ev = c.evals[0];
     const lastSite = c.sites[c.sites.length-1] || {};
@@ -4294,6 +4281,21 @@ async function renderRookieListTab(app, stSites, tabsHtml){
     };
     goTo('#/report');
   });
+}
+function openSiteRookieModal(date, site){
+  return renderRookieListModal(
+    `/rookie-candidates?date=${date}&site=${encodeURIComponent(site)}`,
+    `${h(date)} ${h(site)} の台帳(実績)で見つかった、まだアプリに登録されていない新人の一覧です。評価すると「新人報告する」ボタンが出て、正式な新人報告に引き上げられます。本人がアプリに登録されると、以降この一覧には出てこなくなります。`,
+    () => openSiteRookieModal(date, site)
+  );
+}
+// ダッシュボードの「新人リストの未評価」から、まだ誰も評価していない人だけを現場・日付を問わず横断表示する
+function openPendingRookieModal(){
+  return renderRookieListModal(
+    '/rookie-candidates?pending=1',
+    'まだ評価していない新人を、現場・日付を問わずまとめて表示しています。評価すると「新人報告する」ボタンが出て、正式な新人報告に引き上げられます。',
+    openPendingRookieModal
+  );
 }
 
 // 新人リストの候補者への軽い評価(新人報告の2次チェックと同じ尺度)。保存後、新人報告への引き上げ導線が出る。
@@ -6220,11 +6222,13 @@ async function pageTrainingStatus(app){
     { key:'team2', title:'チーム研修(2部) 未受講', hint:'ステージアップ研修(SU)と両方完了した翌月1日からDランク→Cランクへ自動昇格' },
     { key:'su', title:'ステージアップ研修(SU) 未受講', hint:'チーム研修(2部)と両方完了した翌月1日からDランク→Cランクへ自動昇格' },
   ];
-  const dayssince = created => {
-    if(!created) return '';
-    const d = Math.floor((Date.now() - new Date(created.replace(' ','T')+'Z').getTime()) / 86400000);
-    return d >= 0 ? `(${d}日前)` : '';
+  const dayssince = (d) => {
+    if(!d) return '';
+    const iso = d.includes(' ') ? d.replace(' ','T')+'Z' : d+'T00:00:00Z';
+    const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+    return days >= 0 ? `(${days}日前)` : '';
   };
+  const lastTraining = m => m.lastTrainingDate ? `${h(m.lastTrainingDate.slice(0,10))} <span class="muted">${dayssince(m.lastTrainingDate)}</span>` : '<span class="muted">—</span>';
 
   app.innerHTML = `
   <h2>${icon('badge')} 研修未受講リスト</h2>
@@ -6234,11 +6238,11 @@ async function pageTrainingStatus(app){
       <h3 style="margin-bottom:2px">${h(g.title)} <span class="muted" style="font-weight:400;font-size:12px">(${list.length}人)</span></h3>
       <div class="muted" style="font-size:12px;margin-bottom:10px">${h(g.hint)}</div>
       <table class="list pc-only">
-      <tr><th>氏名</th><th>ランク</th><th>課/班</th><th>担当手配</th><th>入社日</th></tr>
+      <tr><th>氏名</th><th>ランク</th><th>課/班</th><th>担当手配</th><th>前回の研修日</th></tr>
       ${list.map(m=>`<tr class="${m.suspended?'is-suspended':''}">
         <td><span class="name-link" data-goto-uid="${m.id}" style="cursor:pointer;text-decoration:underline dotted">${h(m.name)}</span>${m.suspended?' <span class="muted" style="font-size:11px">(停止中)</span>':''}</td>
         <td>${h(m.rank)||'—'}</td><td>${h(m.ka)}${m.han?'/'+h(m.han):''}</td><td>${h(m.managerName)}</td>
-        <td>${h((m.created||'').slice(0,10))} <span class="muted">${dayssince(m.created)}</span></td>
+        <td>${lastTraining(m)}</td>
       </tr>`).join('') || `<tr><td colspan="5" class="muted">未受講者はいません</td></tr>`}
       </table>
       <div class="cards sp-only">
@@ -6247,7 +6251,7 @@ async function pageTrainingStatus(app){
         <div class="drow"><span class="dk">ランク</span><span class="dv">${h(m.rank)||'—'}</span></div>
         <div class="drow"><span class="dk">課/班</span><span class="dv">${h(m.ka)}${m.han?'/'+h(m.han):''}</span></div>
         <div class="drow"><span class="dk">担当手配</span><span class="dv">${h(m.managerName)}</span></div>
-        <div class="drow"><span class="dk">入社日</span><span class="dv">${h((m.created||'').slice(0,10))} ${dayssince(m.created)}</span></div>
+        <div class="drow"><span class="dk">前回の研修日</span><span class="dv">${lastTraining(m)}</span></div>
       </div>`).join('') || '<div class="muted">未受講者はいません</div>'}
       </div>
     </div>`;
@@ -6259,6 +6263,8 @@ async function pageMembers(app){
   if(!has('members_view')){ notFound(app); return; }
   const users = await getUsers(true);
   const managers = await api('/managers');
+  const featureStatus = await getFeatureStatus();
+  const canChatFeature = ME.role === 'admin' || !['hidden','maintenance'].includes(featureStatus['chat']);
   const st = PAGE_STATE.members || (PAGE_STATE.members = { tab:'2課', q:'', mgr:'', sort:'regno' }); // 既定は2課(主に2課が使うため)
   const kaOf = u => u.ka || '未設定';
   const cnt2 = users.filter(u=>kaOf(u)==='2課').length;
@@ -6272,6 +6278,7 @@ async function pageMembers(app){
     : `<button class="btn ghost sm icon-btn" data-skill="${u.id}" title="できること編集">${icon('star')}</button>`;
   const schedBtn = (u,cls='gold') => `<button class="btn ${cls} sm icon-btn go-sched" data-uid="${u.id}" title="スケジュール">${icon('calendar')}</button>`;
   const goEditBtn = u => isHandler ? `<button class="btn ghost sm icon-btn go-edit" data-uid="${u.id}" title="現場入力">${icon('edit')}</button>` : '';
+  const chatBtn = u => (canChatFeature && u.id !== ME.id) ? `<button class="btn ghost sm icon-btn go-chat" data-uid="${u.id}" title="チャット">${icon('messageCircle')}</button>` : '';
   const canMemberSummary = has('member_summary_view');
   const goSummaryBtn = u => canMemberSummary ? `<button class="btn ghost sm icon-btn go-year-summary" data-uid="${u.id}" title="年間サマリー">${icon('barChart')}</button>` : '';
 
@@ -6321,7 +6328,7 @@ async function pageMembers(app){
         <td style="text-align:left"><b class="name-link" data-goto-uid="${u.id}">${h(u.name)}</b></td><td>${h(u.regno)}${baseFromRegno(u.regno)?` <span class="muted" style="font-size:11px">(${baseFromRegno(u.regno)})</span>`:''}</td>
         <td>${h(u.rank)}</td><td>${h(u.han)}</td><td>${h(managerName(u,users))}</td><td>${h(u.station)}</td>
         <td class="wrapcell">${h(u.skills)}</td>
-        <td>${editBtn(u)} ${schedBtn(u,'ghost')} ${goEditBtn(u)} ${goSummaryBtn(u)}</td>
+        <td>${editBtn(u)} ${schedBtn(u,'ghost')} ${goEditBtn(u)} ${goSummaryBtn(u)} ${chatBtn(u)}</td>
       </tr>`).join('') || `<tr><td colspan="${isHandler?8:7}" class="muted" style="text-align:center;padding:16px">該当するメンバーはいません</td></tr>`}
       </table>
       </div>
@@ -6338,6 +6345,7 @@ async function pageMembers(app){
           ${schedBtn(u)}
           ${goEditBtn(u)}
           ${goSummaryBtn(u)}
+          ${chatBtn(u)}
         </div>
       </div>`).join('') || '<div class="muted" style="text-align:center;padding:16px">該当するメンバーはいません</div>'}
       </div>
@@ -6346,6 +6354,12 @@ async function pageMembers(app){
     const sortSel = $('#m-sort'); if(sortSel) sortSel.onchange = (e) => { st.sort = e.target.value; renderList(); };
     area.querySelectorAll('.go-sched').forEach(b=>b.onclick=()=>{ location.hash='#/schedule/'+b.dataset.uid; });
     area.querySelectorAll('.go-year-summary').forEach(b=>b.onclick=()=>{ location.hash='#/member-summary/'+b.dataset.uid; });
+    area.querySelectorAll('.go-chat').forEach(b=>b.onclick=()=>withLoading(b, async () => {
+      try{
+        const room = await api('/chat/rooms/open', { method:'POST', body:{ type:'dm', userId:Number(b.dataset.uid) } });
+        goTo('#/chat/'+room.id);
+      }catch(e){ popup(e.message,'error'); }
+    }));
     area.querySelectorAll('.go-edit').forEach(b=>b.onclick=()=>{
       const uid = b.dataset.uid;
       const proceed = () => goTo('#/edit/' + uid);
@@ -10153,13 +10167,14 @@ async function pageAdminSettings(app){
   const rtoList = await api('/report-type-options').catch(()=>[]);
   const maintenance = await api('/settings/maintenance').catch(()=>({enabled:false}));
   const featureStatus = await api('/settings/feature-status').catch(()=>({}));
+  const rookieExcluded = await api('/rookie-excluded').catch(()=>[]);
   const stAs = PAGE_STATE.adminSettings || (PAGE_STATE.adminSettings = { open:{ pin:true } });
   const openSet = stAs.open;
   const sec = (id,title,body)=>`<details class="adm-sec" id="asec-${id}" data-sec="${id}" ${openSet[id]?'open':''}><summary><span class="adm-sec-title">${title}</span></summary><div class="adm-body">${body}</div></details>`;
   app.innerHTML = `
   <h2 style="margin-bottom:8px">${icon('wrench')} システム設定</h2>
   <div class="adm-nav sticky-filters">
-    ${[['pin',`${icon('key')} PIN`],['link',`${icon('link')} 連携`],['features',`${icon('flask')} 機能公開`],['notify',`${icon('bell')} 通知`],['wage',`${icon('yen')} 時給`],['report-type',`${icon('fileText')} 報告選択肢`],['maintenance',`${icon('construction')} メンテナンス`]].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
+    ${[['pin',`${icon('key')} PIN`],['link',`${icon('link')} 連携`],['features',`${icon('flask')} 機能公開`],['notify',`${icon('bell')} 通知`],['wage',`${icon('yen')} 時給`],['report-type',`${icon('fileText')} 報告選択肢`],['rookie-excl',`${icon('ban')} 新人リスト除外`],['maintenance',`${icon('construction')} メンテナンス`]].map(s=>`<button class="adm-chip" data-jump="${s[0]}">${s[1]}</button>`).join('')}
   </div>
 
   ${sec('pin',`${icon('key')} 手配者専用パスワード(PIN)`, `
@@ -10285,6 +10300,15 @@ async function pageAdminSettings(app){
       }).join('')}
     </div>
     <div class="muted" id="feat-empty" style="display:none;padding:12px 0;text-align:center">一致する画面がありません</div>`)}
+
+  ${sec('rookie-excl',`${icon('ban')} 新人リスト除外設定`, `
+    <div class="muted" style="margin-bottom:10px">登録番号の帯だけ新人と一致してしまう等、実際は新人ではない人を登録番号で除外します。除外した人は、今後の台帳取込で新人リストに拾われなくなり、現場詳細の「新人」ボタンの一覧にも表示されなくなります(過去に取り込んだデータ自体は削除しません)。</div>
+    <div id="rkx-list"></div>
+    <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap;align-items:center">
+      <input id="rkx-regno" placeholder="登録番号" style="width:150px">
+      <input id="rkx-name" placeholder="氏名(任意、目印用)" style="width:160px">
+      <button class="btn gold sm" id="rkx-add">除外に追加</button>
+    </div>`)}
 
   ${sec('maintenance',`${icon('construction')} メンテナンスモード`, `
     <div class="muted" style="margin-bottom:10px">有効にすると、<b>管理者以外の全員が即座に強制ログアウト</b>され、メンテナンスを終了するまで管理者以外はログインできなくなります(ログイン画面に「現在メンテナンス中です」と表示されます)。管理者は引き続きログイン・操作できます。</div>
@@ -10511,6 +10535,36 @@ async function pageAdminSettings(app){
       popup('変更しました');
     }catch(e){ popup(e.message,'error'); }
   });
+
+  const renderRookieExcluded = (list) => {
+    const el = $('#rkx-list'); if(!el) return;
+    el.innerHTML = list.length ? list.map(x=>`<div class="rto-row">
+      <span class="rto-type-badge">${h(x.regno)}</span>
+      <span style="flex:1">${h(x.name || '')}</span>
+      <button class="btn ghost xs rkx-del" data-regno="${h(x.regno)}">削除</button>
+    </div>`).join('') : '<div class="muted" style="padding:8px 0">除外中の登録番号はありません</div>';
+    el.querySelectorAll('.rkx-del').forEach(b => b.onclick = async () => {
+      if(!confirm(`登録番号「${b.dataset.regno}」を除外解除しますか?`)) return;
+      await withLoading(b, async () => {
+        try{ await api(`/rookie-excluded/${encodeURIComponent(b.dataset.regno)}`,{method:'DELETE'}); const d=await api('/rookie-excluded'); renderRookieExcluded(d); }
+        catch(e){ popup(e.message,'error'); }
+      });
+    });
+  };
+  renderRookieExcluded(rookieExcluded);
+  { const rxa = $('#rkx-add'); if(rxa) rxa.onclick = async () => {
+      const regno = $('#rkx-regno').value.trim();
+      const name = $('#rkx-name').value.trim();
+      if(!regno){ popup('登録番号を入力してください','error'); return; }
+      await withLoading(rxa, async () => {
+        try{
+          await api('/rookie-excluded',{method:'POST',body:{regno,name}});
+          $('#rkx-regno').value=''; $('#rkx-name').value='';
+          const d = await api('/rookie-excluded'); renderRookieExcluded(d);
+          popup('除外に追加しました');
+        }catch(e){ popup(e.message,'error'); }
+      });
+  }; }
   $('#maint-toggle').onclick = async () => {
     const nextEnable = !maintenance.enabled;
     const msg = nextEnable
