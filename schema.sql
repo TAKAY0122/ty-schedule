@@ -356,6 +356,42 @@ CREATE TABLE IF NOT EXISTS rookie_site_matches(
   UNIQUE(kind, matched_name, date, site)
 );
 
+-- 台帳(実績)取込時、登録番号が3から始まる(RB管轄)のに users に存在しない=まだアプリに
+-- 登録されていない新人が現場に入っていた記録。applyImportRows が本来は捨てていたこの行を拾い上げ、
+-- 現場一覧の「新人リスト」タブに表示する(GET /rookie-candidates)。本人が正式にアカウント登録
+-- されれば、以降の取込では対象外になり自然と増えなくなる(過去の行は履歴として残す)。
+CREATE TABLE IF NOT EXISTS rookie_candidates(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  regno TEXT NOT NULL,
+  name TEXT DEFAULT '',        -- 台帳記載の氏名。取込のたび最新値で上書き
+  date TEXT NOT NULL,
+  site TEXT DEFAULT '',
+  venue TEXT DEFAULT '',
+  first_seen_ts TEXT,
+  last_seen_ts TEXT,
+  UNIQUE(regno, date, site)
+);
+CREATE INDEX IF NOT EXISTS idx_rookie_candidates_regno ON rookie_candidates(regno);
+
+-- 新人リストの候補者に対する軽い評価(新人報告の2次チェックと同じ尺度)。
+-- 「新人報告する」で本採用の新人報告(reports)へ引き上げた場合、report_idに紐付ける。
+CREATE TABLE IF NOT EXISTS rookie_quick_evals(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  regno TEXT NOT NULL,
+  candidate_name TEXT DEFAULT '',
+  date TEXT DEFAULT '',
+  site TEXT DEFAULT '',
+  evaluator_id INTEGER,
+  evaluator_name TEXT DEFAULT '',
+  s_motivation INTEGER,        -- やる気・表情(1-5)
+  s_response INTEGER,          -- 受け答え(1-5)
+  s_total INTEGER,             -- 総合点(1-10)
+  note TEXT DEFAULT '',
+  report_id INTEGER DEFAULT NULL,
+  ts TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_rookie_quick_evals_regno ON rookie_quick_evals(regno);
+
 -- 現場一覧は基本的にscheduleの実績から抽出するが、まだ誰も配置されていない現場も
 -- 事前に一覧へ表示できるよう、手配者以上が手配モード中に手動登録できる(GET /sites参照)。
 -- 同じ(date,site)にscheduleの実績ができた時点で、一覧側の表示はそちらに切り替わる。
@@ -492,4 +528,33 @@ CREATE TABLE IF NOT EXISTS artist_folder_members(
   UNIQUE(folder_id, artist)
 );
 CREATE INDEX IF NOT EXISTS idx_artist_folder_members_folder ON artist_folder_members(folder_id);
+
+-- チャット(第1弾は全体チャットのみ)。typeで将来のルーム種別を区別できるようにしておく
+-- (現場ごと='site'/手配ごと='manager'/課ごと='ka'/個人='dm'。実装はフェーズ2以降)。
+-- 'all'ルームは全員が暗黙的に参加できるため、参加者を管理するテーブルは今回作らない
+-- (フェーズ2で参加者が限定されるルーム種別を追加する際にchat_room_membersを追加する)。
+CREATE TABLE IF NOT EXISTS chat_rooms(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  type TEXT NOT NULL,
+  ref_key TEXT DEFAULT '',
+  name TEXT DEFAULT '',
+  created TEXT DEFAULT (datetime('now')),
+  UNIQUE(type, ref_key)
+);
+CREATE TABLE IF NOT EXISTS chat_messages(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  room_id INTEGER NOT NULL,
+  sender_id INTEGER NOT NULL,
+  sender_name TEXT DEFAULT '',   -- 送信時点の氏名を保持(退職等で後から参照不能にならないよう、member_notesと同じ方針)
+  body TEXT NOT NULL,
+  ts TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_room_ts ON chat_messages(room_id, ts);
+CREATE TABLE IF NOT EXISTS chat_reads(
+  room_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  last_read_message_id INTEGER DEFAULT 0,
+  PRIMARY KEY(room_id, user_id)
+);
+INSERT OR IGNORE INTO chat_rooms(type, ref_key, name) VALUES ('all', '', '全体チャット');
 

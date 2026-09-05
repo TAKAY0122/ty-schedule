@@ -101,6 +101,7 @@ const APP_STRUCTURE_CRON = [
 ];
 const APP_STRUCTURE_PAGES = [
   { hash: '#/home', name: 'ホーム', role: '全員', desc: 'ログイン後の最初の画面。今日から1週間分の予定をスワイプで確認でき、未読通知・承認待ち件数、権限に応じたメニューショートカットを表示する。' },
+  { hash: '#/chat', name: 'チャット', role: '全員', desc: '全体チャット(第1弾)。ポーリング方式で新着メッセージを取得する。将来、現場ごと・手配ごと・課ごとのグループチャット、個人チャット(DM)へ拡張予定。' },
   { hash: '#/dashboard', name: '管理者ダッシュボード', role: 'dashboard_view権限者', desc: '定期処理(台帳再取込・予定表ソース取込・ランク昇格適用・新人報告リマインド)の最終実行日時、予定表ソースのエラー詳細等、システム状態を一覧表示する。' },
   { hash: '#/schedule', name: 'マイスケジュール', role: '全員', desc: '月間カレンダーで自身(または閲覧権限のある他者)のスケジュールを表示する。日付タップで現場変更報告・休み希望の入力モーダルを開く。member_summary_view権限があれば画面末尾に個人の年間サマリーを表示。「行った会場」「行った公演」ボタン(全員の中での順位表示含む)は誰でも見られるが、そこから会場/公演詳細への遷移と、現場検索バーの利用はsites_view権限(チーフ以上)に限る。月見出しタップで年月を直接選択できる。' },
   { hash: '#/edit', name: 'スケジュール入力', role: '手配者(手配モード中)', desc: '現場へのメンバー一括登録、個人ごとの詳細編集(時刻・業務・休憩等)を行う。' },
@@ -109,13 +110,14 @@ const APP_STRUCTURE_PAGES = [
   { hash: '#/availability-team', name: 'チームの希望一覧', role: 'handler以上', desc: '担当メンバー(管理者は全員)の休み希望・稼働時間の提出状況を日付ごとに確認する。' },
   { hash: '#/nominate', name: 'メンバーを希望する', role: 'chief以上', desc: '自身の現場に、希望するメンバーを選んで指名を送信する。' },
   { hash: '#/nominations', name: 'メンバー指名の承認', role: 'handler以上', desc: '受け取った指名を確認し、承認(スケジュールへ自動追加)・見送りを行う。複数選択して一括処理可能。' },
-  { hash: '#/sites', name: '現場一覧', role: 'chief以上', desc: '月間の現場を日付ごとに一覧表示。新人共有🔰・要注意共有⚠️のマークを表示。現場詳細モーダルから、複数日にわたる現場の稼働表、同会場・同アーティストの過去/今後の公演参照を開ける。site_manage権限(手配者以上)があれば現場名・会場の一括改名、まだ配置されていない現場の手動登録・削除ができる(手配モード中)。過去/今後の公演一覧には本人の訪問済みマーカーが付く。' },
+  { hash: '#/sites', name: '現場一覧', role: 'chief以上', desc: '月間の現場を日付ごとに一覧表示。新人共有🔰・要注意共有⚠️のマークを表示。現場詳細モーダルから、複数日にわたる現場の稼働表、同会場・同アーティストの過去/今後の公演参照を開ける。site_manage権限(手配者以上)があれば現場名・会場の一括改名、まだ配置されていない現場の手動登録・削除ができる(手配モード中)。過去/今後の公演一覧には本人の訪問済みマーカーが付く。「新人リスト」タブでは、台帳取込で見つかった未登録の新人(regnoは3始まりだがusers未登録)を一覧表示し、軽い評価→新人報告への引き上げができる。' },
   { hash: '#/venues', name: '会場一覧', role: 'chief以上', desc: '会場名で検索できる一覧。会場をタップするとその会場の過去/今後の現場を確認でき、現場をタップすると現場詳細が開く。「会場マニュアル」ボタンから#/venue-manualへ遷移する(機能公開設定は既定で準備中のため、通常は管理者のみ到達できる)。site_manage権限があれば会場名の一括改名、マニュアル有無フラグの設定、メンバーリスト(経験者一覧、並び替え対応)の閲覧、グループ分けによる絞り込みができる。' },
   { hash: '#/venue-manual/:venue', name: '会場マニュアル', role: 'sites_view権限者(チーフ以上)', desc: '会場ごとのマニュアルを、テキスト/写真/動画のブロックを自由な位置・サイズで配置して作成する自由配置キャンバス方式の画面。基準幅1000pxの仮想キャンバスに絶対座標で保存し、画面幅に応じてtransform:scale()で一括拡大縮小することでPC/スマホ双方に対応する。追加・移動・リサイズ・削除・保存はsites_view権限者なら誰でも可能(site_manage等の追加権限は不要)。保存操作ごとに、実際に変化したブロックだけ更新履歴(誰が・いつ・何を)に記録される。機能公開設定は既定で「準備中」のため、通常ユーザーには表示されず管理者のみプレビュー・編集できる(2026年8月時点、内容は試作段階)。' },
   { hash: '#/artists', name: '公演一覧(準備中)', role: 'chief以上', desc: '会場一覧と同じ操作感で、現場名から本体名を集計する一覧。フリーワード検索・並び替え、過去/今後の公演参照、メンバーリストに対応。site_manage権限があれば公演名の一括改名・部分置換、グループ分け、フォルダ(複数公演を1件に集約表示)の作成ができる。実運用未確定のため機能公開設定で準備中。' },
   { hash: '#/members', name: 'メンバー一覧', role: 'chief以上', desc: '課・班・手配担当で絞り込んだメンバー一覧。役割・担当手配者等をインライン編集できる。' },
   { hash: '#/summary', name: '稼働サマリー', role: 'chief以上', desc: '出勤日数・連勤・時間の集計。働きすぎ・機会少・同じ現場ばかり等の統計カードをタップしてフィルタできる。' },
   { hash: '#/member-stats', name: 'メンバー分析', role: 'member_stats_view権限者', desc: '拠点・課・班・ランクの構成を、全体・課ごとにリアルタイムで確認する。手配担当ごとの内訳も表示。' },
+  { hash: '#/training-status', name: '研修未受講リスト', role: 'member_stats_view権限者', desc: 'マナー研修/チーム研修(2部)/ステージアップ研修(SU)ごとに、まだ受講済みフラグが立っていない人を一覧表示する。停止中アカウントも育成対象として含む(表示上は薄く区別)。' },
   { hash: '#/day-schedule', name: 'スケジュール一覧', role: 'day_schedule_view権限者', desc: '全メンバーの1週間分の予定を、日付×人のマトリックス表(チーフ予定表のような形式)で確認する。' },
   { hash: '#/member-summary/search', name: '個人の年間サマリー(検索)', role: 'member_summary_view権限者(手配者以上)', desc: 'メンバー一覧・氏名/登録番号検索から、年間サマリーを見たい対象を選ぶ入口画面。' },
   { hash: '#/member-summary/:uid', name: '個人の年間サマリー', role: 'member_summary_view権限者(手配者以上)', desc: '対象メンバーの、年度単位(12月始まり〜翌年11月)の月別勤務日数・勤務時間・残業時間・給料(site_pay権限がある場合のみ)の推移とランク進捗を表示。自由記述の備考欄を時系列で確認・追記できる。' },
@@ -181,6 +183,8 @@ const APP_STRUCTURE_API_GROUPS = [
   ]},
   { title: '現場・記録・サマリー', rows: [
     ['GET', '/sites', '月間の現場一覧(新人共有・要注意共有マーク付き。実績が無く手動登録のみの現場も未配置として合わせて返す)'],
+    ['GET', '/rookie-candidates', '台帳(実績)取込で見つかった未登録の新人(新人リスト)を月指定で取得(sites_view権限)。regnoごとに登場現場・評価履歴をまとめる'],
+    ['POST', '/rookie-candidates/eval', '新人リストの候補者への軽い評価を登録(sites_view権限)。新人報告(POST /reports)への引き上げ前の下書き的な位置づけ'],
     ['GET', '/site-members', '指定現場・日のメンバー一覧({list,venue}形式。実績0件の場合はvenueに手動登録側の会場を返す)'],
     ['GET/PUT', '/site-record', '個人の現場記録(配置・休憩・自由記入)の取得・保存'],
     ['GET', '/site-record-breaks', '指定現場・日の全員分の休憩合計(チーフ以上)'],
@@ -215,6 +219,7 @@ const APP_STRUCTURE_API_GROUPS = [
     ['GET', '/member-year-summary', '個人の年間稼働サマリー(12月始まり〜翌年11月、月別勤務日数・時間・給料。member_summary_view権限)'],
     ['GET/POST', '/member-notes', '個人の備考欄の取得・追加(自由記述、時系列。member_summary_view権限)'],
     ['DELETE', '/member-notes/:id', '備考欄1件の削除(記入者本人または管理者のみ)'],
+    ['GET', '/training-status', '研修(マナー研修/チーム研修(2部)/ステージアップ研修)ごとの未受講者一覧(member_stats_view権限)。停止中アカウントも含む'],
   ]},
   { title: 'データ連携', rows: [
     ['POST', '/import-from-url', '台帳スプレッドシートの手動取込。新人報告/ブラックリストとの氏名照合も実行'],
@@ -229,13 +234,13 @@ const APP_STRUCTURE_API_GROUPS = [
     ['POST', '/daicho/reimport-from-archive', '台帳保管に保存済みのファイルから再取込(再アップロード不要。常に手動実行)'],
   ]},
   { title: '新人報告・ブラックリスト', rows: [
-    ['POST/GET', '/reports', '新人報告の提出・一覧取得(acquired_ka含む)'],
+    ['POST/GET', '/reports', '新人報告の提出・一覧取得(acquired_ka含む)。POST時にrookie_eval_idを渡すと、新人リストの評価(rookie_quick_evals)にreport_idを紐付ける'],
     ['PATCH', '/reports/:id', '2次チェックの記入'],
     ['DELETE', '/reports/:id', '新人報告の削除(手配者以上)'],
     ['GET/POST', '/blacklist', 'ブラックリストの取得・登録(matched_ka含む)'],
   ]},
   { title: 'システム設定・通知', rows: [
-    ['GET', '/dashboard', '管理者ダッシュボード(#/dashboard)の全データ。cron4種の最終実行日、承認待ち件数、当月実績と前月比、直近6ヶ月の推移、当月の日別配置人数、ランク構成、気になる人、データの不備、給与確定状況をまとめて返す'],
+    ['GET', '/dashboard', '管理者ダッシュボード(#/dashboard)の全データ。cron4種の最終実行日、承認待ち件数(新人リストの未評価件数を含む)、当月実績と前月比、直近6ヶ月の推移、当月の日別配置人数、ランク構成、気になる人、データの不備、給与確定状況をまとめて返す'],
     ['GET/PUT', '/wage-rates', '時給テーブルの取得・更新(PUTは新しいeffective_fromの追加も可)'],
     ['POST', '/wage-rates/delete', '時給改定(effective_from)をまるごと削除'],
     ['GET/PUT', '/notify-settings', '新人報告リマインドの設定'],
@@ -260,6 +265,12 @@ const APP_STRUCTURE_API_GROUPS = [
     ['GET/POST/PUT/DELETE', '/report-type-options', '現場変更報告の選択肢の取得・追加・変更・削除'],
     ['POST', '/update-notice/seen', 'アップデートのお知らせを既読にする'],
     ['GET', '/app-structure', 'このアプリ自身の構造データ取得(管理者専用、#/app-structure用)'],
+  ]},
+  { title: 'チャット', rows: [
+    ['GET', '/chat/rooms', '参加中ルーム一覧(第1弾は全体チャット1件固定)と各ルームの未読件数を取得(全員可)'],
+    ['GET', '/chat/messages', '指定ルームのメッセージ取得。after_id指定でポーリング差分取得、無指定なら最新50件(全員可)'],
+    ['POST', '/chat/messages', 'メッセージ送信(全員可、2000字まで)'],
+    ['POST', '/chat/read', '既読位置(last_read_message_id)の更新(全員可)'],
   ]},
   { title: 'Googleカレンダー連携', rows: [
     ['GET/POST', '/calendar-token', 'カレンダー購読トークンの取得・発行'],
@@ -294,6 +305,8 @@ const APP_STRUCTURE_TABLE_COMMENTS = {
   availability_requests: '休み希望・稼働可能時間の提出',
   site_nominations: 'チーフ以上による現場メンバー指名',
   rookie_site_matches: '台帳取込時、新人報告/ブラックリスト対象者と同姓同名が現場に入っていた検知記録',
+  rookie_candidates: '新人リスト。台帳(実績)取込時、登録番号は3始まり(RB管轄)なのにusersに存在しない未登録の新人を拾い上げたもの',
+  rookie_quick_evals: '新人リストの候補者への軽い評価(新人報告の2次チェックと同じ尺度)。新人報告へ引き上げた場合report_idを記録',
   site_registry: '現場一覧に未配置のまま表示するための現場情報の手動登録',
   venue_manuals: '会場マニュアルの有無フラグ(会場一覧のバッジ表示用。実際の本文はvenue_manual_blocksが持つ数から自動同期される)',
   venue_manual_blocks: '会場マニュアル本文の各ブロック(テキスト/写真/動画/図形/表)。x/y/w/hは基準幅1000pxの仮想キャンバスに対する絶対座標・サイズで自由配置レイアウトを表現。styleに文字装飾・図形の塗り/線・表の色等をJSONで保持',
@@ -305,6 +318,9 @@ const APP_STRUCTURE_TABLE_COMMENTS = {
   site_group_members: 'site_groupsの所属メンバー(会場名/公演名)',
   artist_folders: '公演一覧限定のフォルダ機能(複数公演を1件に集約表示)',
   artist_folder_members: 'artist_foldersの所属公演',
+  chat_rooms: 'チャットルーム(第1弾は全体チャット1件のみ。typeで将来のルーム種別[site/manager/ka/dm]を区別)',
+  chat_messages: 'チャットメッセージ本体',
+  chat_reads: 'ユーザーごとのルーム別既読位置(未読件数の算出に使用)',
 };
 // ファイル構成・依存関係(#/app-structureの「ファイル構成」タブ用。静的な説明文)
 const APP_STRUCTURE_FILES = [
@@ -1121,6 +1137,36 @@ async function clearAbsentSiteRegistry(env, rows) {
   return { clearedRegistrations: toDelete.length };
 }
 
+// 台帳(実績)取込時、登録番号が3から始まる(RB管轄)のに users に存在しない=まだアプリ未登録の
+// 新人が現場に入っていた行を rookie_candidates へ拾い上げる(applyImportRows は本来この行を
+// 未登録エラーとして捨てるだけだった)。現場一覧の「新人リスト」タブ(GET /rookie-candidates)用。
+async function upsertRookieCandidates(env, rows, userByRegno) {
+  const seen = {}; // (regno,date,site) 単位で1回だけ処理すれば十分
+  const ts = jstTs();
+  const batch = [];
+  for (const r of rows) {
+    const regno = normRegno(r.regno);
+    const date = String(r.date || '').trim();
+    if (!regno || !date || !regno.startsWith('3')) continue;
+    if (r.org !== undefined && r.org !== '' && !/^RB/i.test(r.org)) continue;
+    if (userByRegno[regno]) continue; // 既にアプリ登録済みなら対象外
+    const site = String(r.site || '').trim();
+    const key = regno + '|' + date + '|' + site;
+    if (seen[key]) continue; seen[key] = 1;
+    // r.name(parseFormatD)/r.personName(parseFormatC)のどちらかに氏名が入る。parseFormatAB(手配管理表)は
+    // 登録番号列しか持たないため、その場合は空文字のまま(評価・新人報告画面で手入力してもらう)。
+    const personName = String(r.name || r.personName || '').trim();
+    batch.push(env.DB.prepare(
+      `INSERT INTO rookie_candidates(regno,name,date,site,venue,first_seen_ts,last_seen_ts) VALUES(?,?,?,?,?,?,?)
+       ON CONFLICT(regno,date,site) DO UPDATE SET name=COALESCE(NULLIF(excluded.name,''),name), venue=excluded.venue, last_seen_ts=excluded.last_seen_ts`
+    ).bind(regno, personName, date, site, String(r.venue || '').trim(), ts, ts));
+  }
+  if (batch.length) {
+    const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
+    for (const part of chunk(batch, 200)) await env.DB.batch(part);
+  }
+}
+
 async function applyImportRows(env, rows, editorId, mode = 'replace-person-day', srcLabel = 'spreadsheet', isDaicho = false, opt: any = {}) {
   const ts = jstTs();
   const resolve = await loadWageResolver(env);
@@ -1296,6 +1342,8 @@ async function applyImportRows(env, rows, editorId, mode = 'replace-person-day',
   // 台帳(実績)取込の場合のみ、研修受講(マナー/2部/SU)の自動判定を行う。
   // 予定表ソース等、まだ確定していない予定の取込では判定しない。
   if (isDaicho) { try { await processTrainingPromotions(env, rows); } catch (e) { errors.push('研修判定でエラー: ' + e.message); } }
+  // 台帳(実績)取込の場合のみ、未登録の新人を新人リストへ拾い上げる(予定表ソース取込では対象外)。
+  if (isDaicho) { try { await upsertRookieCandidates(env, rows, userByRegno); } catch (e) { errors.push('新人リストの更新でエラー: ' + e.message); } }
   return { applied, skipped, skippedUnregistered, skippedUnchanged, skippedInvalid, skippedOtherOrg, skippedUnassigned, errors, changes, ts };
 }
 
@@ -2104,9 +2152,9 @@ function parseFormatD(grid, ym, keywordMap, fromDate = null) {
       const site = normalizeSiteName(cell(r, b.siteCol));
       if (!site) continue;
       const kw = keywordMap[site];
-      if (kw) { if (kw !== 'ignore') out.push({ regno: b.regno, date, type: kw, site: '', venue: '', note: '' }); continue; }
+      if (kw) { if (kw !== 'ignore') out.push({ regno: b.regno, date, type: kw, site: '', venue: '', note: '', name: b.name }); continue; }
       const venue = b.venueCol >= 0 ? cell(r, b.venueCol) : '';
-      out.push({ regno: b.regno, date, type: 'work', site, venue, note: '' });
+      out.push({ regno: b.regno, date, type: 'work', site, venue, note: '', name: b.name });
     }
   }
   return { rows: out };
@@ -2565,6 +2613,7 @@ async function api(req, env, url) {
     'admin', 'admin-settings', 'role-permissions', 'perm-matrix', 'handler-status',
     'import', 'sched-sources', 'daicho', 'member-summary',
     'venues', 'venue-manual', 'legacy-import', 'artists', 'app-structure', 'system',
+    'training-status', 'chat',
   ];
   if (method === 'GET' && path === '/settings/feature-status') {
     const status = {};
@@ -3975,6 +4024,48 @@ async function api(req, env, url) {
     return J(rows);
   }
 
+  // ---- 新人リスト: 台帳(実績)取込で見つかった未登録の新人一覧(sites_view権限、チーフ以上)。
+  //      regnoごとにグループ化し、登場した現場・評価履歴をまとめて返す。
+  if (method === 'GET' && path === '/rookie-candidates') {
+    if (!has(me, 'sites_view')) return ERR('ページが見つかりません', 404);
+    const month = url.searchParams.get('month') || jstDate().slice(0, 7);
+    const cands = (await env.DB.prepare(
+      'SELECT * FROM rookie_candidates WHERE date LIKE ? ORDER BY regno, date'
+    ).bind(month + '%').all()).results;
+    const regnos = [...new Set(cands.map((c: any) => c.regno))];
+    let evals: any[] = [];
+    if (regnos.length) {
+      const ph = regnos.map(() => '?').join(',');
+      evals = (await env.DB.prepare(`SELECT * FROM rookie_quick_evals WHERE regno IN (${ph}) ORDER BY id DESC`).bind(...regnos).all()).results;
+    }
+    const byRegno: Record<string, any> = {};
+    for (const c of cands as any[]) {
+      const g = byRegno[c.regno] ||= { regno: c.regno, name: c.name, sites: [], evals: [] };
+      if (c.name) g.name = c.name; // 最新の氏名を優先(取込順=id昇順のため後勝ちでよい)
+      g.sites.push({ date: c.date, site: c.site, venue: c.venue });
+    }
+    for (const ev of evals as any[]) {
+      const g = byRegno[ev.regno];
+      if (g) g.evals.push(ev);
+    }
+    const lastDate = (g: any) => g.sites.length ? g.sites[g.sites.length - 1].date : '';
+    return J(Object.values(byRegno).sort((a: any, b: any) => lastDate(b).localeCompare(lastDate(a))));
+  }
+
+  // ---- 新人リスト: 軽い評価の登録(sites_view権限、チーフ以上)。新人報告への引き上げ前段階。
+  if (method === 'POST' && path === '/rookie-candidates/eval') {
+    if (!has(me, 'sites_view')) return ERR('ページが見つかりません', 404);
+    const regno = normRegno(body.regno);
+    if (!regno) return ERR('不正なリクエストです');
+    const ins = await env.DB.prepare(
+      `INSERT INTO rookie_quick_evals(regno,candidate_name,date,site,evaluator_id,evaluator_name,s_motivation,s_response,s_total,note,ts)
+       VALUES(?,?,?,?,?,?,?,?,?,?,?)`
+    ).bind(regno, String(body.candidate_name || '').trim(), body.date || '', body.site || '', me.id, me.name,
+      Number(body.s_motivation) || null, Number(body.s_response) || null, Number(body.s_total) || null,
+      String(body.note || ''), jstTs()).run();
+    return J({ ok: 1, id: ins.meta && ins.meta.last_row_id });
+  }
+
   // ---- 現場一覧: 現場情報の手動登録(手配者以上・手配モード中のみ)。
   //      まだ誰もメンバーが配置されていない現場を、先に現場一覧へ表示させておくための機能。
   //      同じ(date,site)に実績(schedule)ができた時点で、そちらの表示に切り替わる(GET /sites参照)。
@@ -4843,6 +4934,27 @@ async function api(req, env, url) {
     return J({ total: members.length, byBase, byKa, byHan, byRank, byHanKa, byRankKa, byManager, members: memberList });
   }
 
+  // ---- 研修ごとの未受講者リスト(マナー研修/チーム研修(2部)/ステージアップ研修)。
+  //      停止中アカウントも育成対象として含める(scheduling-domain.mdの原則どおりsuspendedで絞らない)。
+  if (method === 'GET' && path === '/training-status') {
+    if (!has(me, 'member_stats_view')) return ERR('ページが見つかりません', 404);
+    const rows = (await env.DB.prepare(
+      "SELECT id, name, rank, ka, han, manager_id, suspended, created, manner_done, team2_done, su_done FROM users ORDER BY rank, created"
+    ).all()).results;
+    const managers = (await env.DB.prepare("SELECT id, name FROM users WHERE COALESCE(is_manager,0)=1").all()).results;
+    const mgrName: Record<string, string> = {}; for (const m of managers as any[]) mgrName[m.id] = m.name;
+    const pubRow = (r: any) => ({
+      id: r.id, name: r.name, rank: r.rank, ka: r.ka, han: r.han, created: r.created,
+      suspended: r.suspended ? 1 : 0,
+      managerName: r.manager_id ? (mgrName[r.manager_id] || '') : (r.ka === '1課' ? 'チーフ手配(1課)' : r.ka === '2課' ? 'チーフ手配(2課)' : 'チーフ手配'),
+    });
+    return J({
+      manner: (rows as any[]).filter(r => !r.manner_done).map(pubRow),
+      team2: (rows as any[]).filter(r => !r.team2_done).map(pubRow),
+      su: (rows as any[]).filter(r => !r.su_done).map(pubRow),
+    });
+  }
+
   // ---- 管理者ダッシュボード。複数の集計を1画面にまとめて返す ----
   if (method === 'GET' && path === '/dashboard') {
     if (!has(me, 'dashboard_view')) return ERR('ページが見つかりません', 404);
@@ -4863,7 +4975,7 @@ async function api(req, env, url) {
 
     const [
       daichoLastRun, rankLastRun, notifyLastRun, rankCacheLastRun, schedSourcesRes,
-      selfReportsRes, nominationsRes, reportsRes,
+      selfReportsRes, nominationsRes, reportsRes, rookieUnevaluatedRes,
       monthRowsRes, prevMonthRowsRes, usersRes, lockDays, trendRes,
     ] = await Promise.all([
       safe(getSetting(env, 'daicho_reload_last_run', ''), ''),
@@ -4874,6 +4986,11 @@ async function api(req, env, url) {
       safe(env.DB.prepare("SELECT created_at FROM self_reports WHERE status='pending'").all(), emptyAll),
       safe(env.DB.prepare("SELECT created_at FROM site_nominations WHERE status='pending'").all(), emptyAll),
       safe(env.DB.prepare("SELECT id FROM reports WHERE status='pending'").all(), emptyAll),
+      safe(env.DB.prepare(
+        `SELECT MIN(rc.first_seen_ts) AS created_at FROM rookie_candidates rc
+         WHERE NOT EXISTS (SELECT 1 FROM rookie_quick_evals e WHERE e.regno = rc.regno)
+         GROUP BY rc.regno`
+      ).all(), emptyAll),
       safe(env.DB.prepare("SELECT user_id, site, hours, overtime, pay FROM schedule WHERE type='work' AND site<>'' AND date LIKE ?").bind(month + '%').all(), emptyAll),
       safe(env.DB.prepare("SELECT hours, overtime, pay FROM schedule WHERE type='work' AND site<>'' AND date LIKE ?").bind(prevMonth + '%').all(), emptyAll),
       safe(env.DB.prepare("SELECT id, name, regno, rank, manager_id, suspended, manner_done, team2_done, su_done, promotion_pending_date, promotion_pending_rank FROM users").all(), emptyAll),
@@ -4908,6 +5025,7 @@ async function api(req, env, url) {
       selfReports: { count: selfReportsRes.results.length, maxDays: maxDays(selfReportsRes.results) },
       nominations: { count: nominationsRes.results.length, maxDays: maxDays(nominationsRes.results) },
       reportChecks: { count: reportsRes.results.length },
+      rookieUnevaluated: { count: rookieUnevaluatedRes.results.length, maxDays: maxDays(rookieUnevaluatedRes.results) },
     };
 
     // ③ 今月の状況 + 前月比
@@ -5430,6 +5548,10 @@ async function api(req, env, url) {
       'INSERT INTO reports(ts,reporter_id,reporter_name,candidate_name,candidate_grade,first_chief,first_note,s_motivation,s_response,s_total,draft,plan,checker,next_site,next_date,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'
     ).bind(r.ts, r.reporter_id, r.reporter_name, r.candidate_name, r.candidate_grade, r.first_chief, r.first_note, r.s_motivation, r.s_response, r.s_total, r.draft, r.plan, r.checker, r.next_site, r.next_date, r.status).run();
     const newReportId = ins.meta && ins.meta.last_row_id;
+    // 新人リストの軽い評価から引き上げた場合、その評価にreport_idを紐付ける(遡り確認用)
+    if (body.rookie_eval_id && newReportId) {
+      await env.DB.prepare('UPDATE rookie_quick_evals SET report_id=? WHERE id=?').bind(newReportId, Number(body.rookie_eval_id)).run();
+    }
     await notifyChiefs(env, 'report', `📝 新人報告:${r.candidate_name}(報告者:${me.name})${r.status === 'pending' ? ' — 2次チェックをお願いします' : ''}`, newReportId ? `#/reports?open=${newReportId}` : '');
     await rookieNotify(env, r);
     try { await matchNameAgainstFullHistory(env, r.candidate_name); } catch (e) {}
@@ -5650,6 +5772,55 @@ async function api(req, env, url) {
   let nrm;
   if (method === 'POST' && (nrm = path.match(/^\/notifications\/(\d+)\/read$/))) {
     await env.DB.prepare('UPDATE notifications SET read=1 WHERE id=? AND user_id=?').bind(Number(nrm[1]), me.id).run();
+    return J({ ok: 1 });
+  }
+
+  // ---- チャット(第1弾は全体チャットのみ。ポーリング方式。全員が利用可) ----
+  if (method === 'GET' && path === '/chat/rooms') {
+    const rooms = (await env.DB.prepare('SELECT * FROM chat_rooms ORDER BY id').all()).results;
+    const reads = (await env.DB.prepare('SELECT room_id, last_read_message_id FROM chat_reads WHERE user_id=?').bind(me.id).all()).results;
+    const lastReadByRoom: Record<number, number> = {}; for (const r of reads as any[]) lastReadByRoom[r.room_id] = r.last_read_message_id;
+    const out = [];
+    for (const r of rooms as any[]) {
+      const lastRead = lastReadByRoom[r.id] || 0;
+      const unread = (await env.DB.prepare(
+        'SELECT COUNT(*) AS c FROM chat_messages WHERE room_id=? AND id>? AND sender_id<>?'
+      ).bind(r.id, lastRead, me.id).first()).c;
+      out.push({ id: r.id, type: r.type, name: r.name, unread });
+    }
+    return J(out);
+  }
+  if (method === 'GET' && path === '/chat/messages') {
+    const roomId = Number(url.searchParams.get('room_id'));
+    if (!roomId) return ERR('不正なリクエストです');
+    const afterId = Number(url.searchParams.get('after_id')) || 0;
+    let rows;
+    if (afterId) {
+      rows = (await env.DB.prepare('SELECT * FROM chat_messages WHERE room_id=? AND id>? ORDER BY id ASC LIMIT 200').bind(roomId, afterId).all()).results;
+    } else {
+      const desc = (await env.DB.prepare('SELECT * FROM chat_messages WHERE room_id=? ORDER BY id DESC LIMIT 50').bind(roomId).all()).results;
+      rows = (desc as any[]).slice().reverse();
+    }
+    return J((rows as any[]).map(r => ({ id: r.id, senderId: r.sender_id, senderName: r.sender_name, body: r.body, ts: r.ts, mine: r.sender_id === me.id })));
+  }
+  if (method === 'POST' && path === '/chat/messages') {
+    const roomId = Number(body.room_id);
+    const text = String(body.body || '').trim().slice(0, 2000);
+    if (!roomId || !text) return ERR('メッセージを入力してください');
+    const room = await env.DB.prepare('SELECT id FROM chat_rooms WHERE id=?').bind(roomId).first();
+    if (!room) return ERR('ルームが見つかりません', 404);
+    const ins = await env.DB.prepare('INSERT INTO chat_messages(room_id,sender_id,sender_name,body,ts) VALUES(?,?,?,?,?)')
+      .bind(roomId, me.id, me.name, text, jstTs()).run();
+    return J({ ok: 1, id: ins.meta && ins.meta.last_row_id });
+  }
+  if (method === 'POST' && path === '/chat/read') {
+    const roomId = Number(body.room_id);
+    const lastId = Number(body.last_read_message_id) || 0;
+    if (!roomId) return ERR('不正なリクエストです');
+    await env.DB.prepare(
+      `INSERT INTO chat_reads(room_id,user_id,last_read_message_id) VALUES(?,?,?)
+       ON CONFLICT(room_id,user_id) DO UPDATE SET last_read_message_id=MAX(last_read_message_id,excluded.last_read_message_id)`
+    ).bind(roomId, me.id, lastId).run();
     return J({ ok: 1 });
   }
 

@@ -230,6 +230,7 @@ const UPDATE_ITEMS = [
 const FEATURE_LABELS = {
   'system': { icon:'settings', label:'システム管理(管理系の入口)' },
   'dashboard': { icon:'gauge', label:'ダッシュボード' },
+  'chat': { icon:'messageCircle', label:'チャット' },
   'edit': { icon:'edit', label:'スケジュール入力' },
   'self-reports': { icon:'mail', label:'現場変更報告の承認' },
   'availability': { icon:'handRaise', label:'休み希望・稼働時間の提出' },
@@ -240,6 +241,7 @@ const FEATURE_LABELS = {
   'members': { icon:'users', label:'メンバー一覧' },
   'summary': { icon:'barChart', label:'稼働サマリー' },
   'member-stats': { icon:'trendingUp', label:'メンバー分析' },
+  'training-status': { icon:'badge', label:'研修未受講リスト' },
   'day-schedule': { icon:'layoutGrid', label:'スケジュール一覧' },
   'report': { icon:'fileText', label:'新人報告' },
   'reports': { icon:'clipboardList', label:'報告一覧' },
@@ -1479,6 +1481,8 @@ async function render(){
     else if(hash === '#/day-schedule') await pageDaySchedule(app);
     else if(hash === '#/summary' || hash.startsWith('#/summary/')) await pageSummary(app, hash);
     else if(hash === '#/member-stats') await pageMemberStats(app);
+    else if(hash === '#/training-status') await pageTrainingStatus(app);
+    else if(hash === '#/chat') await pageChat(app);
     else if(hash === '#/edit') await pageEdit(app);
     else if(hash.startsWith('#/edit/')) await pageEdit(app, hash.slice('#/edit/'.length));
     else if(hash === '#/members/mine'){ const st0 = PAGE_STATE.members || (PAGE_STATE.members = { tab:'2課', q:'', mgr:'' }); st0.mgr = String(ME.id); await pageMembers(app); }
@@ -1512,6 +1516,7 @@ async function render(){
     el.onclick = (e) => { e.stopPropagation(); location.hash = '#/schedule/' + el.dataset.gotoUid; };
   });
   pollBell();
+  pollChatBadge();
   // アップデートのお知らせ(1セッション中に一度だけ、パスワード変更済みの人にのみ表示)
   if(ME.needsUpdateNotice && !UPDATE_NOTICE_SHOWN){
     UPDATE_NOTICE_SHOWN = true;
@@ -1622,6 +1627,7 @@ function renderShell(hash){
   const nav = [
     { section:'自分の業務' },
     { path:'#/home', icon:'home', label:'ホーム', show:true },
+    { path:'#/chat', icon:'messageCircle', label:'チャット', show:true },
     { icon:'calendar', label:'スケジュール', show:true, children:[
       { path:'#/schedule', icon:'calendar', label:'マイスケジュール' },
       ...(canEdit ? [{ path:'#/edit', icon:'edit', label:'スケジュール入力', role:'handler' }] : []),
@@ -1651,6 +1657,7 @@ function renderShell(hash){
       ...(canMembersView ? [{ path:'#/members', icon:'users', label:'メンバー一覧', role:'chief' }] : []),
       ...(canSummaryView ? [{ path:'#/summary', icon:'barChart', label:'稼働サマリー', role:'chief' }] : []),
       ...(canMemberStatsView ? [{ path:'#/member-stats', icon:'trendingUp', label:'メンバー分析', role:'chief' }] : []),
+      ...(canMemberStatsView ? [{ path:'#/training-status', icon:'badge', label:'研修未受講リスト', role:'chief' }] : []),
       ...(canDayScheduleView ? [{ path:'#/day-schedule', icon:'layoutGrid', label:'スケジュール一覧', role:'chief' }] : []),
       ...(canMemberSummaryNav ? [{ path:'#/member-summary/search', icon:'barChart', label:'個人の年間サマリー', role:'handler' }] : []),
     ]},
@@ -1756,7 +1763,8 @@ function renderShell(hash){
         ${nav.map((item,i) => {
           if(item.section) return `<div class="drawer-section">${h(item.section)}</div>`;
           if(!item.children){
-            return `<button type="button" class="drawer-link ${item.role?'role-'+item.role:''} ${hashIs(hash, item.path)?'active':''}" data-go="${item.path}"><span class="drawer-label">${icon(item.icon)} ${h(item.label)}</span><span class="role-dots">${roleDots(item.role)}</span></button>`;
+            const badge = item.path==='#/chat' ? '<span class="nav-badge" id="chat-nav-badge" style="display:none"></span>' : '';
+            return `<button type="button" class="drawer-link ${item.role?'role-'+item.role:''} ${hashIs(hash, item.path)?'active':''}" data-go="${item.path}"><span class="drawer-label">${icon(item.icon)} ${h(item.label)}</span>${badge}<span class="role-dots">${roleDots(item.role)}</span></button>`;
           }
           const isOpen = !!stMenu.open[i];
           return `<button type="button" class="drawer-link drawer-group" data-toggle="${i}"><span class="drawer-label">${icon(item.icon)} ${h(item.label)}</span><span class="drawer-arrow ${isOpen?'open':''}">›</span></button>
@@ -1818,6 +1826,93 @@ async function pollBell(){
     try{ const d = await api('/notifications'); const b = $('#bcount');
       if(!b) return;
       b.style.display = d.unread ? '' : 'none'; b.textContent = d.unread;
+    }catch(_){}
+  };
+  upd();
+  timers.push(setInterval(upd, 45000));
+}
+
+/* ===== チャット(第1弾は全体チャットのみ、ポーリング方式) ===== */
+async function pageChat(app){
+  app.innerHTML = `<div class="muted">読み込み中…</div>`;
+  let rooms;
+  try{ rooms = await api('/chat/rooms'); }
+  catch(e){ app.innerHTML = `<div class="msg err">${h(e.message)}</div>`; return; }
+  const room = rooms[0];
+  if(!room){ app.innerHTML = '<div class="msg err">チャットルームが見つかりません</div>'; return; }
+
+  app.innerHTML = `
+  <h2>${icon('messageCircle')} ${h(room.name || 'チャット')}</h2>
+  <div class="card">
+    <div class="chat-log" id="chat-log"><div class="chat-empty">読み込み中…</div></div>
+    <div class="chat-input-row">
+      <textarea id="chat-input" placeholder="メッセージを入力" rows="1" title="Enterで送信・Shift+Enterで改行"></textarea>
+      <button class="btn gold" id="chat-send">${icon('arrowRight',{size:'14px'})}</button>
+    </div>
+  </div>`;
+
+  const logEl = $('#chat-log');
+  let lastId = 0;
+  const nearBottom = () => logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 60;
+  const fmtTime = ts => String(ts||'').slice(5,16); // jstTs()は"YYYY-MM-DD HH:MM:SS"形式 → "MM-DD HH:MM"
+
+  const appendMessages = (msgs, opts={}) => {
+    if(!msgs.length) return;
+    const empty = logEl.querySelector('.chat-empty'); if(empty) empty.remove();
+    const wasNear = nearBottom();
+    for(const m of msgs){
+      const row = document.createElement('div');
+      row.className = 'chat-row' + (m.mine ? ' mine' : '');
+      row.innerHTML = `<div class="chat-bubble">${m.mine?'':`<div class="chat-sender">${h(m.senderName)}</div>`}<div class="chat-body"></div><div class="chat-time">${h(fmtTime(m.ts))}</div></div>`;
+      row.querySelector('.chat-body').textContent = m.body; // 改行はCSSのwhite-space:pre-wrapで表現するためtextContentで挿入
+      logEl.appendChild(row);
+      lastId = Math.max(lastId, m.id);
+    }
+    if(opts.initial || wasNear) logEl.scrollTop = logEl.scrollHeight;
+  };
+  const markRead = () => { if(lastId) api('/chat/read', { method:'POST', body:{ room_id: room.id, last_read_message_id: lastId } }).catch(()=>{}); };
+
+  try{
+    const initial = await api(`/chat/messages?room_id=${room.id}`);
+    if(initial.length){ appendMessages(initial, { initial:true }); markRead(); }
+    else logEl.innerHTML = '<div class="chat-empty">まだメッセージはありません。最初のメッセージを送ってみましょう。</div>';
+  }catch(e){ logEl.innerHTML = `<div class="msg err">${h(e.message)}</div>`; }
+
+  const poll = async () => {
+    try{
+      const fresh = await api(`/chat/messages?room_id=${room.id}&after_id=${lastId}`);
+      if(fresh.length){ appendMessages(fresh); markRead(); }
+    }catch(_){}
+  };
+  timers.push(setInterval(poll, 6000));
+
+  const input = $('#chat-input');
+  // Shift+Enterでの複数行入力時、CSSのmax-height(120px)まではテキスト量に応じて自動で高さを伸ばす
+  const autoGrow = () => { input.style.height = 'auto'; input.style.height = input.scrollHeight + 'px'; };
+  input.oninput = autoGrow;
+  const send = async () => {
+    const text = input.value.trim();
+    if(!text) return;
+    input.disabled = true;
+    try{
+      await api('/chat/messages', { method:'POST', body:{ room_id: room.id, body: text } });
+      input.value = ''; autoGrow();
+      await poll();
+    }catch(e){ popup(e.message, 'error'); }
+    input.disabled = false; input.focus();
+  };
+  $('#chat-send').onclick = send;
+  input.onkeydown = (e) => { if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); } };
+}
+
+// ドロワーメニューの「チャット」項目に未読件数バッジを出す(通知とは別の未読管理)
+async function pollChatBadge(){
+  const upd = async () => {
+    try{
+      const rooms = await api('/chat/rooms');
+      const total = rooms.reduce((s,r)=>s+(r.unread||0), 0);
+      const b = $('#chat-nav-badge'); if(!b) return;
+      b.style.display = total ? '' : 'none'; b.textContent = total;
     }catch(_){}
   };
   upd();
@@ -2474,6 +2569,8 @@ function systemHubSections(){
         desc:'今ログインしている人と閲覧中の画面、スケジュール編集の履歴と取り消し。' },
       { path:'#/app-structure', icon:'sitemap', label:'アプリ構造ビューア', role:'admin', show:ME.role==='admin',
         desc:'画面・API・DB・権限の全体構造を確認する開発者向けの診断画面。' },
+      { path:'#/training-status', icon:'badge', label:'研修未受講リスト', role:'chief', show:has('member_stats_view'),
+        desc:'マナー研修・チーム研修(2部)・ステージアップ研修ごとに、まだ受講していない人を一覧で確認する。' },
     ]},
     { title:'データの取り込み・保管', icon:'download', desc:'台帳・予定表をアプリに取り込む', items:[
       { path:'#/import', icon:'download', label:'手動取り込み', role:'handler', show:has('import_data'),
@@ -2595,6 +2692,7 @@ async function pageDashboard(app){
   if(data.todo.selfReports.count) todoRows.push({ icon: 'mail', label: '現場変更報告の承認', sub: `最長${data.todo.selfReports.maxDays}日待ち`, n: data.todo.selfReports.count, href: '#/self-reports', urgent: data.todo.selfReports.maxDays >= 3 });
   if(data.todo.nominations.count) todoRows.push({ icon: 'user', label: 'メンバー指名の承認', sub: `最長${data.todo.nominations.maxDays}日待ち`, n: data.todo.nominations.count, href: '#/nominations', urgent: data.todo.nominations.maxDays >= 3 });
   if(data.todo.reportChecks.count) todoRows.push({ icon: 'fileText', label: '新人報告の2次チェック', sub: '未チェック', n: data.todo.reportChecks.count, href: '#/reports', urgent: false });
+  if(data.todo.rookieUnevaluated.count) todoRows.push({ icon: 'sparkles', label: '新人リストの未評価', sub: `最長${data.todo.rookieUnevaluated.maxDays}日待ち`, n: data.todo.rookieUnevaluated.count, href: '#/sites', urgent: data.todo.rookieUnevaluated.maxDays >= 7 });
 
   const issueRows = [
     { label: 'ランク未設定', value: data.dataIssues.noRank, href: '#/members', icon: 'user' },
@@ -3557,9 +3655,15 @@ async function openMemberDayEdit(uid, u, date){
 /* ===== 現場一覧(チーフ以上)===== */
 async function pageSites(app){
   if(!has('sites_view')){ notFound(app); return; }
-  const stSites = PAGE_STATE.sites || (PAGE_STATE.sites = { month: MONTH, openDates: new Set(), selected: new Set() });
+  const stSites = PAGE_STATE.sites || (PAGE_STATE.sites = { month: MONTH, openDates: new Set(), selected: new Set(), tab:'sites' });
   if(!stSites.openDates) stSites.openDates = new Set(); // 古い保存状態との互換
   if(!stSites.selected) stSites.selected = new Set();
+  if(!stSites.tab) stSites.tab = 'sites';
+  const tabsHtml = `<div class="ka-tabs sticky-filters" style="margin-bottom:10px">
+    <button class="ka-tab ${stSites.tab==='sites'?'on':''}" id="st-tab-sites">${icon('stadium',{size:'12px'})} 現場一覧</button>
+    <button class="ka-tab ${stSites.tab==='rookies'?'on':''}" id="st-tab-rookies">${icon('sparkles',{size:'12px'})} 新人リスト</button>
+  </div>`;
+  if(stSites.tab === 'rookies'){ await renderRookieListTab(app, stSites, tabsHtml); return; }
   const canRename = has('site_manage'); // 現場名・会場名の一括変更(手配者以上)
   const canRegister = ME.handler===1 && has('site_manage'); // 現場情報の手動登録(手配者以上・手配モード中のみ)
   const month = stSites.month;
@@ -3576,6 +3680,7 @@ async function pageSites(app){
   for(const k of [...stSites.selected]) if(!visibleKeys.has(k)) stSites.selected.delete(k);
   app.innerHTML = `
   <h2>現場一覧</h2>
+  ${tabsHtml}
   <div class="card">
     <div class="sticky-filters">
       <div class="row" style="margin-bottom:12px;align-items:center;flex-wrap:wrap;gap:8px">
@@ -3668,6 +3773,104 @@ async function pageSites(app){
       openSiteBulkRename(targets, () => { stSites.selected = new Set(); pageSites(app); });
     };
   }
+  $('#st-tab-sites').onclick = () => { stSites.tab = 'sites'; pageSites(app); };
+  $('#st-tab-rookies').onclick = () => { stSites.tab = 'rookies'; pageSites(app); };
+}
+
+// ===== 現場一覧「新人リスト」タブ: 台帳(実績)取込で見つかった、まだアプリ未登録の新人一覧 =====
+async function renderRookieListTab(app, stSites, tabsHtml){
+  const month = stSites.month;
+  const [y,mo] = month.split('-').map(Number);
+  const wireTabs = () => {
+    $('#st-tab-sites').onclick = () => { stSites.tab = 'sites'; pageSites(app); };
+    const rt = $('#st-tab-rookies'); if(rt) rt.onclick = () => { pageSites(app); };
+  };
+  app.innerHTML = `<h2>現場一覧</h2>${tabsHtml}<div class="muted">読み込み中…</div>`;
+  wireTabs();
+  let cands;
+  try{ cands = await api(`/rookie-candidates?month=${month}`); }
+  catch(e){ app.innerHTML += `<div class="msg err">${h(e.message)}</div>`; return; }
+
+  app.innerHTML = `
+  <h2>現場一覧</h2>
+  ${tabsHtml}
+  <div class="card">
+    <div class="row" style="margin-bottom:10px;align-items:center;gap:8px">
+      <button class="btn ghost sm" id="rk-prev">◀</button>
+      <b id="rk-jump-month" title="タップして年月を選択" style="min-width:110px;text-align:center;cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px">${y}年 ${mo}月</b>
+      <button class="btn ghost sm" id="rk-next">▶</button>
+    </div>
+    <div class="muted" style="font-size:12.5px;margin-bottom:12px">台帳(実績)取込で見つかった、まだアプリに登録されていない新人の一覧です。評価すると「新人報告する」ボタンが出て、正式な新人報告に引き上げられます。本人がアプリに登録されると、以降この一覧には出てこなくなります。</div>
+    <div class="cards" style="display:flex">
+    ${cands.length ? cands.map(c=>{
+      const latestEval = c.evals[0]; // ORDER BY id DESC(バックエンド側)なので先頭が最新
+      const reported = c.evals.some(e=>e.report_id);
+      return `<div class="dcard">
+        <div class="dcard-head"><span class="dcard-title">${h(c.name || ('登録番号:'+c.regno))}</span>${reported?'<span class="tag acquired">新人報告済み</span>':''}</div>
+        <div class="drow"><span class="dk">登録番号</span><span class="dv">${h(c.regno)}</span></div>
+        <div class="drow"><span class="dk">現場</span><span class="dv">${c.sites.map(s=>`${h(s.date.slice(5))} ${h(s.site)}`).join('、')}</span></div>
+        ${latestEval ? `<div class="drow"><span class="dk">評価</span><span class="dv">やる気${latestEval.s_motivation||'—'}/受答${latestEval.s_response||'—'}/総合${latestEval.s_total||'—'}${latestEval.note?'「'+h(latestEval.note)+'」':''}</span></div>` : ''}
+        <div class="row" style="margin-top:8px;gap:8px;flex-wrap:wrap">
+          <button class="btn ghost sm rk-eval-btn" data-regno="${h(c.regno)}">${icon('star',{size:'12px'})} 評価する</button>
+          ${latestEval && !reported ? `<button class="btn gold sm rk-report-btn" data-regno="${h(c.regno)}">${icon('fileText',{size:'12px'})} 新人報告する</button>` : ''}
+        </div>
+      </div>`;
+    }).join('') : '<div class="muted" style="padding:20px 0;text-align:center">この月は未登録の新人が見つかっていません</div>'}
+    </div>
+  </div>`;
+  wireTabs();
+  $('#rk-prev').onclick = () => { stSites.month = shiftMonth(month,-1); pageSites(app); };
+  $('#rk-next').onclick = () => { stSites.month = shiftMonth(month, 1); pageSites(app); };
+  const jumpBtn = $('#rk-jump-month');
+  if(jumpBtn) jumpBtn.onclick = () => openMonthJumpModal(month, (ym) => { stSites.month = ym; pageSites(app); });
+  app.querySelectorAll('.rk-eval-btn').forEach(b => b.onclick = () => {
+    const c = cands.find(x=>x.regno===b.dataset.regno);
+    openRookieEvalModal(c, () => pageSites(app));
+  });
+  app.querySelectorAll('.rk-report-btn').forEach(b => b.onclick = () => {
+    const c = cands.find(x=>x.regno===b.dataset.regno);
+    const ev = c.evals[0];
+    const lastSite = c.sites[c.sites.length-1] || {};
+    PAGE_STATE.reportPrefill = {
+      candidate_name: c.name || '',
+      first_chief: ME.name,
+      first_note: ev.note || '',
+      s_motivation: ev.s_motivation, s_response: ev.s_response, s_total: ev.s_total,
+      next_site: lastSite.site || '',
+      evalId: ev.id,
+    };
+    goTo('#/report');
+  });
+}
+
+// 新人リストの候補者への軽い評価(新人報告の2次チェックと同じ尺度)。保存後、新人報告への引き上げ導線が出る。
+function openRookieEvalModal(c, onDone){
+  const lastSite = c.sites[c.sites.length-1] || {};
+  modal(`<h3>${h(c.name || ('登録番号:'+c.regno))} を評価</h3>
+    <div class="muted" style="margin-bottom:10px">現場: ${c.sites.map(s=>`${h(s.date.slice(5))} ${h(s.site)}`).join('、')}</div>
+    <div class="form-grid" style="grid-template-columns:130px 1fr">
+      <label>やる気・表情(5段階)</label><select id="rke-mot">${[1,2,3,4,5].map(n=>`<option ${n===3?'selected':''}>${n}</option>`).join('')}</select>
+      <label>受け答え(5段階)</label><select id="rke-res">${[1,2,3,4,5].map(n=>`<option ${n===3?'selected':''}>${n}</option>`).join('')}</select>
+      <label>総合点(10段階)</label><select id="rke-tot">${[1,2,3,4,5,6,7,8,9,10].map(n=>`<option ${n===5?'selected':''}>${n}</option>`).join('')}</select>
+      <label>コメント</label><textarea id="rke-note" placeholder="良かった点・気になった点など"></textarea>
+    </div>
+    <div class="row" style="margin-top:14px"><button class="btn gold" id="rke-save" style="flex:1">評価を保存</button></div>`);
+  $('#rke-save').onclick = async () => {
+    const body = {
+      regno: c.regno, candidate_name: c.name || '',
+      date: lastSite.date || '', site: lastSite.site || '',
+      s_motivation: $('#rke-mot').value, s_response: $('#rke-res').value, s_total: $('#rke-tot').value,
+      note: $('#rke-note').value.trim(),
+    };
+    await withLoading($('#rke-save'), async () => {
+      try{
+        await api('/rookie-candidates/eval', { method:'POST', body });
+        closeModal();
+        popup('評価を保存しました');
+        if(onDone) onDone();
+      }catch(e){ popup(e.message, 'error'); }
+    });
+  };
 }
 
 // まだ誰もメンバーが配置されていない現場を、先に現場一覧へ表示させておくための登録モーダル。
@@ -5551,6 +5754,52 @@ async function pageMemberStats(app){
   staggerRows(app, '.stat-row, .mgr-row');
 }
 
+/* ===== 研修未受講リスト(member_stats_view権限者)。研修ごとに未受講者を一覧表示 ===== */
+async function pageTrainingStatus(app){
+  if(!has('member_stats_view')){ notFound(app); return; }
+  app.innerHTML = `<div class="muted">集計中…</div>`;
+  let data;
+  try{ data = await api('/training-status'); }
+  catch(e){ app.innerHTML = `<div class="msg err">${h(e.message)}</div>`; return; }
+
+  const groups = [
+    { key:'manner', title:'マナー研修 未受講', hint:'受講の翌日からEランク→Dランクへ自動昇格' },
+    { key:'team2', title:'チーム研修(2部) 未受講', hint:'ステージアップ研修(SU)と両方完了した翌月1日からDランク→Cランクへ自動昇格' },
+    { key:'su', title:'ステージアップ研修(SU) 未受講', hint:'チーム研修(2部)と両方完了した翌月1日からDランク→Cランクへ自動昇格' },
+  ];
+  const dayssince = created => {
+    if(!created) return '';
+    const d = Math.floor((Date.now() - new Date(created.replace(' ','T')+'Z').getTime()) / 86400000);
+    return d >= 0 ? `(${d}日前)` : '';
+  };
+
+  app.innerHTML = `
+  <h2>${icon('badge')} 研修未受講リスト</h2>
+  ${groups.map(g => {
+    const list = data[g.key] || [];
+    return `<div class="card" style="margin-bottom:14px">
+      <h3 style="margin-bottom:2px">${h(g.title)} <span class="muted" style="font-weight:400;font-size:12px">(${list.length}人)</span></h3>
+      <div class="muted" style="font-size:12px;margin-bottom:10px">${h(g.hint)}</div>
+      <table class="list pc-only">
+      <tr><th>氏名</th><th>ランク</th><th>課/班</th><th>担当手配</th><th>入社日</th></tr>
+      ${list.map(m=>`<tr class="${m.suspended?'is-suspended':''}">
+        <td><span class="name-link" data-goto-uid="${m.id}" style="cursor:pointer;text-decoration:underline dotted">${h(m.name)}</span>${m.suspended?' <span class="muted" style="font-size:11px">(停止中)</span>':''}</td>
+        <td>${h(m.rank)||'—'}</td><td>${h(m.ka)}${m.han?'/'+h(m.han):''}</td><td>${h(m.managerName)}</td>
+        <td>${h((m.created||'').slice(0,10))} <span class="muted">${dayssince(m.created)}</span></td>
+      </tr>`).join('') || `<tr><td colspan="5" class="muted">未受講者はいません</td></tr>`}
+      </table>
+      <div class="cards sp-only">
+      ${list.map(m=>`<div class="dcard ${m.suspended?'is-suspended':''}">
+        <div class="dcard-head"><span class="dcard-title name-link" data-goto-uid="${m.id}">${h(m.name)}</span>${m.suspended?'<span class="muted" style="font-size:11px">(停止中)</span>':''}</div>
+        <div class="drow"><span class="dk">ランク</span><span class="dv">${h(m.rank)||'—'}</span></div>
+        <div class="drow"><span class="dk">課/班</span><span class="dv">${h(m.ka)}${m.han?'/'+h(m.han):''}</span></div>
+        <div class="drow"><span class="dk">担当手配</span><span class="dv">${h(m.managerName)}</span></div>
+        <div class="drow"><span class="dk">入社日</span><span class="dv">${h((m.created||'').slice(0,10))} ${dayssince(m.created)}</span></div>
+      </div>`).join('') || '<div class="muted">未受講者はいません</div>'}
+      </div>
+    </div>`;
+  }).join('')}`;
+}
 
 /* ===== メンバー一覧(チーフ以上)。1課/2課タブ。2課優先表示 ===== */
 async function pageMembers(app){
@@ -6228,23 +6477,28 @@ async function pageEdit(app, initialUid){
 /* ===== 新人報告フォーム ===== */
 function pageReportForm(app){
   const isChief = has('report_check');
+  // 現場一覧の「新人リスト」タブから、軽い評価済みの候補者を「新人報告する」で引き上げてきた場合の
+  // 事前入力。1回使ったら消す(このページに再度来た時に前回分が残らないように)。
+  const prefill = PAGE_STATE.reportPrefill || null;
+  PAGE_STATE.reportPrefill = null;
   app.innerHTML = `
   <h2>新人報告</h2>
+  ${prefill ? `<div class="msg" style="background:#eef6ee;border:1px solid #bfe0bf;color:#2c5c2c;padding:10px;border-radius:8px;margin-bottom:12px;font-size:13px">新人リストの評価内容を反映しました。学年・次回日程など足りない項目を入力してください。</div>` : ''}
   <div class="card"><div class="form-grid">
     <div class="section-label">基本情報</div>
     <label>報告者名</label><input id="r-name" value="${h(ME.name)}" readonly style="background:#f0efe9">
-    <label>獲得候補者名 *</label><input id="r-cand">
+    <label>獲得候補者名 *</label><input id="r-cand" value="${h(prefill?.candidate_name||'')}">
     <label>獲得候補者学年</label><select id="r-grade"><option></option>${['高1','高2','高3','大1','大2','大3','大4','専門','社会人','その他'].map(g=>`<option>${g}</option>`).join('')}</select>
-    <label>次回現場名(分かれば)</label><input id="r-nsite" placeholder="スケジュールと一致すると現場メンバーに通知">
+    <label>次回現場名(分かれば)</label><input id="r-nsite" placeholder="スケジュールと一致すると現場メンバーに通知" value="${h(prefill?.next_site||'')}">
     <label>次回日付(分かれば)</label><input id="r-ndate" type="date">
     ${isChief ? '<div class="section-label">1次</div>' : '<div class="section-label">報告内容</div>'}
-    <label>連絡したチーフ</label><input id="r-fchief">
-    <label>所感(良かった点・課題点)</label><textarea id="r-fnote"></textarea>
+    <label>連絡したチーフ</label><input id="r-fchief" value="${h(prefill?.first_chief||'')}">
+    <label>所感(良かった点・課題点)</label><textarea id="r-fnote">${h(prefill?.first_note||'')}</textarea>
     ${isChief ? `
     <div class="section-label">2次</div>
-    <label>やる気・表情(5段階)</label><select id="r-mot">${[1,2,3,4,5].map(n=>`<option ${n===3?'selected':''}>${n}</option>`).join('')}</select>
-    <label>受け答え(5段階)</label><select id="r-res">${[1,2,3,4,5].map(n=>`<option ${n===3?'selected':''}>${n}</option>`).join('')}</select>
-    <label>総合点(10段階)</label><select id="r-tot">${[1,2,3,4,5,6,7,8,9,10].map(n=>`<option ${n===5?'selected':''}>${n}</option>`).join('')}</select>
+    <label>やる気・表情(5段階)</label><select id="r-mot">${[1,2,3,4,5].map(n=>`<option ${n===(prefill?.s_motivation||3)?'selected':''}>${n}</option>`).join('')}</select>
+    <label>受け答え(5段階)</label><select id="r-res">${[1,2,3,4,5].map(n=>`<option ${n===(prefill?.s_response||3)?'selected':''}>${n}</option>`).join('')}</select>
+    <label>総合点(10段階)</label><select id="r-tot">${[1,2,3,4,5,6,7,8,9,10].map(n=>`<option ${n===(prefill?.s_total||5)?'selected':''}>${n}</option>`).join('')}</select>
     <label>ドラフト承認</label><select id="r-draft"><option>OK</option><option>不可</option><option selected>様子見</option></select>
     <label>今後の育成計画</label><textarea id="r-plan"></textarea>` : ''}
   </div>
@@ -6256,6 +6510,7 @@ function pageReportForm(app){
       first_chief: $('#r-fchief').value, first_note: $('#r-fnote').value
     };
     if(isChief) Object.assign(body, { s_motivation:$('#r-mot').value, s_response:$('#r-res').value, s_total:$('#r-tot').value, draft:$('#r-draft').value, plan:$('#r-plan').value });
+    if(prefill?.evalId) body.rookie_eval_id = prefill.evalId;
     await withLoading($('#r-submit'), async () => {
       try{
         await api('/reports', { method:'POST', body });
