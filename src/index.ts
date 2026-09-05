@@ -1177,6 +1177,9 @@ async function upsertRookieCandidates(env, rows, userByRegno) {
     const date = String(r.date || '').trim();
     if (!regno || !date || !/^3\d{5}$/.test(regno) || excluded.has(regno)) continue;
     if (r.org !== undefined && r.org !== '' && !/^RB/i.test(r.org)) continue;
+    // 台帳のランク列がAランクの人は社員のため、新人リストの対象から除外する
+    // (parseFormatCのみランク列を持つ。他フォーマットはledgerRankが無いため素通りする)
+    if (r.ledgerRank && rankLetter(r.ledgerRank) === 'A') continue;
     if (userByRegno[regno]) continue; // 既にアプリ登録済みなら対象外
     const site = String(r.site || '').trim();
     const key = regno + '|' + date + '|' + site;
@@ -1960,8 +1963,9 @@ function parseFormatC(rows, cfg, fileDate) {
       const note = cols.note >= 0 ? String(line[cols.note] || '').trim() : '';
       const org = cols.org >= 0 ? String(line[cols.org] || '').trim() : '';
       const personName = cols.nameCol >= 0 ? String(line[cols.nameCol] || '').trim() : '';
+      const ledgerRank = cols.rank >= 0 ? String(line[cols.rank] || '').trim() : '';
       if (!tin && !tout && !duty) continue;
-      out.push({ regno, date: blockDate, site, venue: venueCell, tin, tout, duty, load_end: blockLoadEnd, show_end: blockShowEnd, multi, note, org, personName });
+      out.push({ regno, date: blockDate, site, venue: venueCell, tin, tout, duty, load_end: blockLoadEnd, show_end: blockShowEnd, multi, note, org, personName, ledgerRank });
     }
   }
   return { date: lastDate, venue: lastVenue, rows: out };
