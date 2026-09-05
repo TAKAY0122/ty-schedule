@@ -364,6 +364,8 @@ CREATE TABLE IF NOT EXISTS rookie_candidates(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   regno TEXT NOT NULL,
   name TEXT DEFAULT '',        -- 台帳記載の氏名。取込のたび最新値で上書き
+  name_norm TEXT DEFAULT '',   -- nameの空白除去版(normName())。GET /name-site-logがこの列の
+                                -- インデックスで絞り込み、テーブルが育ってもフルスキャンにならないようにする
   date TEXT NOT NULL,
   site TEXT DEFAULT '',
   venue TEXT DEFAULT '',
@@ -372,6 +374,7 @@ CREATE TABLE IF NOT EXISTS rookie_candidates(
   UNIQUE(regno, date, site)
 );
 CREATE INDEX IF NOT EXISTS idx_rookie_candidates_regno ON rookie_candidates(regno);
+CREATE INDEX IF NOT EXISTS idx_rookie_candidates_name_norm ON rookie_candidates(name_norm);
 
 -- 新人リストの候補者に対する軽い評価(新人報告の2次チェックと同じ尺度)。
 -- 「新人報告する」で本採用の新人報告(reports)へ引き上げた場合、report_idに紐付ける。

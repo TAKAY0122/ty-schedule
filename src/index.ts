@@ -1171,10 +1171,16 @@ async function upsertRookieCandidates(env, rows, userByRegno) {
     // r.name(parseFormatD)/r.personName(parseFormatC)のどちらかに氏名が入る。parseFormatAB(手配管理表)は
     // 登録番号列しか持たないため、その場合は空文字のまま(評価・新人報告画面で手入力してもらう)。
     const personName = String(r.name || r.personName || '').trim();
+    // name_norm(空白除去済みの氏名)を併せて保存し、GET /name-site-logがrookie_candidates全件を
+    // フルスキャンせずインデックスで絞り込めるようにする(name自体は空白の入り方が人によって
+    // バラバラなため、素のnameへの索引だけでは同一人物の表記ゆれを拾えない)。
     batch.push(env.DB.prepare(
-      `INSERT INTO rookie_candidates(regno,name,date,site,venue,first_seen_ts,last_seen_ts) VALUES(?,?,?,?,?,?,?)
-       ON CONFLICT(regno,date,site) DO UPDATE SET name=COALESCE(NULLIF(excluded.name,''),name), venue=excluded.venue, last_seen_ts=excluded.last_seen_ts`
-    ).bind(regno, personName, date, site, String(r.venue || '').trim(), ts, ts));
+      `INSERT INTO rookie_candidates(regno,name,name_norm,date,site,venue,first_seen_ts,last_seen_ts) VALUES(?,?,?,?,?,?,?,?)
+       ON CONFLICT(regno,date,site) DO UPDATE SET
+         name=COALESCE(NULLIF(excluded.name,''),name),
+         name_norm=COALESCE(NULLIF(excluded.name_norm,''),name_norm),
+         venue=excluded.venue, last_seen_ts=excluded.last_seen_ts`
+    ).bind(regno, personName, normName(personName), date, site, String(r.venue || '').trim(), ts, ts));
   }
   if (batch.length) {
     const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
@@ -4521,8 +4527,10 @@ async function api(req, env, url) {
         `SELECT date, site, venue FROM schedule WHERE type='work' AND user_id IN (${ph}) AND site<>'' ORDER BY date DESC LIMIT 200`
       ).bind(...ids).all()).results;
     }
-    const rookieRows = (await env.DB.prepare('SELECT name, date, site, venue FROM rookie_candidates').all()).results;
-    const rookieMatches = (rookieRows as any[]).filter(r => normName(r.name) === key);
+    // name_normにインデックスがあるため、rookie_candidates全件をスキャンせず絞り込める
+    // (会場一覧・編集履歴検索で過去に発生した「テーブルが育つほど重くなるフルスキャン」を
+    // 未然に防ぐため、2026年9月時点で最初からインデックス付きの列で検索するようにしている)。
+    const rookieMatches = (await env.DB.prepare('SELECT date, site, venue FROM rookie_candidates WHERE name_norm=?').bind(key).all()).results;
     const combined = [
       ...rows.map((r: any) => ({ date: r.date, site: r.site, venue: r.venue, source: 'registered' })),
       ...rookieMatches.map((r: any) => ({ date: r.date, site: r.site, venue: r.venue, source: 'rookie' })),
