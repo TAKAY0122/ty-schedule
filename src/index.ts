@@ -134,7 +134,7 @@ const APP_STRUCTURE_PAGES = [
   { hash: '#/handler-status', name: 'ログイン中・編集履歴', role: 'handler_tools権限者', desc: '現在ログイン中のメンバー一覧と、スケジュール編集履歴(取り消し操作含む)を確認する。activity_view権限があれば各メンバーが今どの画面を見ているかも確認できる。管理者(role===admin)だけ「全ログインセッション」セクションが追加表示され、稼働中かどうかに関わらず全セッションと最後に見ていたページを、全データ閲覧と同じソート・絞り込み・CSV出力つきの表で確認できる(元は全データ閲覧側にあった機能をこちらへ統合)。' },
   { hash: '#/import', name: 'スプレッドシート取込', role: 'import_data権限者', desc: '台帳・予定表のURLを登録して取込を実行する。台帳ExcelファイルをPCから直接アップロードして取り込むカードもある(常に手動実行、複数ファイル一括・ファイルごとの対象日指定に対応)。' },
   { hash: '#/sched-sources', name: '予定表ソース管理', role: '設定権限者', desc: 'チーフ予定表専用フォーマットの自動取込設定。「担当手配者未設定(チーフ手配)の人はこのソースから取り込まない」オプションを持つ。' },
-  { hash: '#/daicho', name: '台帳保管', role: '台帳管理権限者', desc: '取込済みExcelファイルの保管・ダウンロード・削除(複数選択対応)。保存済みファイルを選択して再取込(再アップロード不要)する機能もある。' },
+  { hash: '#/daicho', name: '台帳保管', role: '台帳管理権限者', desc: '取込済みExcelファイルの保管・ダウンロード・削除(複数選択対応)。保存済みファイルを選択して再取込(再アップロード不要)する機能もある。「過去分を新人リストへ反映」ボタン(管理者専用)から、保管済みの全ファイルを読み直して新人リスト(rookie_candidates)へバックフィルできる(scheduleへは書き込まない)。' },
   { hash: '#/calendar-guide', name: 'カレンダー連携のやり方', role: '全員', desc: 'Google/Outlook/Appleカレンダーへの連携手順を案内する専用ページ。' },
   { hash: '#/legacy-import', name: '過去データ取込確認', role: 'admin', desc: '手配帳から外部で再構築した過去の給与実績(2021年6月〜2025年12月分、計55ヶ月)を、管理者だけが閲覧できるデモデータとして月単位で確認する画面。「公開する」でスケジュール本体へ反映、「削除する」で取り消せる。複数月をまとめて公開する機能もある。' },
   { hash: '#/system', name: 'システム管理(ハブ)', role: '管理系のいずれかの権限を持つ人', desc: '管理・運用まわりの入口をまとめた一覧画面。アカウント/権限・運用状況・データ取込/保管・システム設定の4グループに分け、各画面が何をするものかを1行説明つきで並べる。ドロワーの「システム管理」からここに入る(以前は6項目がドロワーに直接並んでいた)。権限が無い項目は表示されない。' },
@@ -186,6 +186,7 @@ const APP_STRUCTURE_API_GROUPS = [
     ['GET', '/sites', '月間の現場一覧(新人共有・要注意共有マーク付き。実績が無く手動登録のみの現場も未配置として合わせて返す)'],
     ['GET', '/rookie-candidates', '台帳(実績)取込で見つかった未登録の新人(新人リスト)を月指定で取得(sites_view権限)。regnoごとに登場現場・評価履歴をまとめる'],
     ['POST', '/rookie-candidates/eval', '新人リストの候補者への軽い評価を登録(sites_view権限)。新人報告(POST /reports)への引き上げ前の下書き的な位置づけ'],
+    ['POST', '/rookie-candidates/backfill', '保管済みの過去の台帳ファイルをすべて読み直し、新人リストへ反映するバックフィル処理(管理者専用)。scheduleへは書き込まない。body.cursorを使い、done:trueになるまでループ呼び出しする'],
     ['GET', '/site-members', '指定現場・日のメンバー一覧({list,venue}形式。実績0件の場合はvenueに手動登録側の会場を返す)'],
     ['GET/PUT', '/site-record', '個人の現場記録(配置・休憩・自由記入)の取得・保存'],
     ['GET', '/site-record-breaks', '指定現場・日の全員分の休憩合計(チーフ以上)'],
@@ -1179,6 +1180,7 @@ async function upsertRookieCandidates(env, rows, userByRegno) {
     const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
     for (const part of chunk(batch, 200)) await env.DB.batch(part);
   }
+  return batch.length;
 }
 
 async function applyImportRows(env, rows, editorId, mode = 'replace-person-day', srcLabel = 'spreadsheet', isDaicho = false, opt: any = {}) {
@@ -1549,11 +1551,11 @@ async function fetchXlsxSheets(id) {
   return parseXlsxBuffer(buf, headerTitle);
 }
 
-// 台帳Excel(xlsxバイナリ)を解析し、DBへ反映する共通処理。
-// アップロードされたファイル(POST /import-excel-daicho)、台帳保管から再取込するファイル
-// (POST /daicho/reimport-from-archive)、両方から共通で呼ばれる。
-// R2への保存や通知等、呼び出し元ごとに異なる後処理は、この関数の外側で行う。
-async function processDaichoExcelBuffer(env, buf, fileName, targetDate, editorId, keywordMap) {
+// 台帳Excel(xlsxバイナリ)を解析し、パース結果(全シート分の行・シートごとの読み取り件数)を返す。
+// DBへの反映(applyImportRows/upsertRookieCandidates)は行わない純粋なパース処理で、
+// processDaichoExcelBuffer(通常取込)とbackfillRookieCandidatesFromArchive(過去分の
+// 新人リスト反映)の両方から共通で呼ばれる。
+async function parseDaichoExcelBuffer(env, buf, fileName, targetDate, keywordMap) {
   const got = await parseXlsxBuffer(buf, fileName.replace(/\.xlsx?$/i, ''));
   let allRows = [], sheetReport = [];
   // ファイル名・シート自身のいずれからも年月が拾えない手配管理表(フォーマットD)向けに、
@@ -1578,6 +1580,15 @@ async function processDaichoExcelBuffer(env, buf, fileName, targetDate, editorId
       sheetReport.push({ name: sh.name, count: 0, note: `解析エラー: ${e.message}` });
     }
   }
+  return { allRows, sheetReport };
+}
+
+// 台帳Excel(xlsxバイナリ)を解析し、DBへ反映する共通処理。
+// アップロードされたファイル(POST /import-excel-daicho)、台帳保管から再取込するファイル
+// (POST /daicho/reimport-from-archive)、両方から共通で呼ばれる。
+// R2への保存や通知等、呼び出し元ごとに異なる後処理は、この関数の外側で行う。
+async function processDaichoExcelBuffer(env, buf, fileName, targetDate, editorId, keywordMap) {
+  const { allRows, sheetReport } = await parseDaichoExcelBuffer(env, buf, fileName, targetDate, keywordMap);
   if (!allRows.length) return { ok: false, error: 'データを読み取れませんでした', sheetReport };
   const r = await applyImportRows(env, allRows, editorId, 'replace-person-day', `台帳Excel取込(${fileName})`, true);
   return { ok: true, applied: r.applied, changes: r.changes || [], ts: r.ts, allRows, sheetReport };
@@ -4136,6 +4147,47 @@ async function api(req, env, url) {
       Number(body.s_motivation) || null, Number(body.s_response) || null, Number(body.s_total) || null,
       String(body.note || ''), jstTs()).run();
     return J({ ok: 1, id: ins.meta && ins.meta.last_row_id });
+  }
+  // 保管済みの過去の台帳ファイル(daicho_archive、R2)をすべて読み直し、rookie_candidatesへ
+  // 反映するバックフィル処理。新人リスト機能の追加より前に取り込まれたファイルは対象外だったため、
+  // 過去分も遡って拾えるようにする(2026年9月、ユーザーからの要望)。scheduleへは一切書き込まない
+  // (applyImportRowsではなくparseDaichoExcelBuffer+upsertRookieCandidatesのみを呼ぶ)。
+  // 件数が多いと1リクエストで終わらないため、時間予算内で処理できた分だけ進め、続きは
+  // body.cursor(処理済み最大id)を使って呼び出し側がdone:trueになるまでループ呼び出しする。
+  // 過去データの一括操作という性質上、legacy-import(過去データ取込確認)と同様に
+  // 管理者専用の固定チェックで保護し、PERMSによる個別権限付与の対象にはしない。
+  if (method === 'POST' && path === '/rookie-candidates/backfill') {
+    if (me.role !== 'admin') return ERR('権限がありません', 403);
+    if (!env.DAICHO) return ERR('R2が未設定のため使用できません', 500);
+    const cursor = Number(body.cursor) || 0;
+    const OVERALL_BUDGET_MS = 20000;
+    const startedAt = Date.now();
+    const keywordMap = await loadNonSiteKeywords(env);
+    const allUsers = (await env.DB.prepare('SELECT id, regno FROM users').all()).results;
+    const userByRegno = {}; for (const u of allUsers as any[]) userByRegno[normRegno(u.regno)] = u;
+
+    const files = (await env.DB.prepare(
+      'SELECT id, r2_key, file_name FROM daicho_archive WHERE id>? ORDER BY id ASC LIMIT 500'
+    ).bind(cursor).all()).results;
+
+    let processedCount = 0, lastId = cursor;
+    const errors: any[] = [];
+    for (const f of files as any[]) {
+      if (Date.now() - startedAt > OVERALL_BUDGET_MS) break;
+      lastId = f.id;
+      processedCount++;
+      try {
+        const obj = await env.DAICHO.get(f.r2_key);
+        if (!obj) { errors.push({ id: f.id, fileName: f.file_name, error: 'ファイル本体が見つかりません(削除済みの可能性)' }); continue; }
+        const buf = new Uint8Array(await obj.arrayBuffer());
+        const { allRows } = await parseDaichoExcelBuffer(env, buf, f.file_name || `台帳_${f.id}.xlsx`, null, keywordMap);
+        if (allRows.length) await upsertRookieCandidates(env, allRows, userByRegno);
+      } catch (e) {
+        errors.push({ id: f.id, fileName: f.file_name, error: e.message });
+      }
+    }
+    const remaining = (await env.DB.prepare('SELECT COUNT(*) AS c FROM daicho_archive WHERE id>?').bind(lastId).first()).c;
+    return J({ done: remaining === 0, nextCursor: lastId, processedCount, remaining, errors: errors.slice(0, 10) });
   }
 
   // ---- 現場一覧: 現場情報の手動登録(手配者以上・手配モード中のみ)。

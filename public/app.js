@@ -9559,6 +9559,33 @@ async function pageAppStructure(app){
   switchTab(RENDERERS[st.tab] ? st.tab : 'overview');
 }
 
+// 保管済みの過去の台帳ファイルすべてを読み直し、新人リスト(rookie_candidates)へ反映する
+// バックフィル処理。件数が多く1回のリクエストでは終わらないため、サーバー側が返すnextCursorを
+// 使って完了するまでループ呼び出しする(管理者専用、#/daichoの「過去分を新人リストへ反映」から)。
+function openRookieBackfillModal(totalFiles){
+  modal(`<h3>${icon('sparkles',{size:'15px'})} 過去分を新人リストへ反映</h3>
+    <div class="muted" style="font-size:12.5px;margin-bottom:12px">保管されている台帳ファイル(全${totalFiles}件)を読み直し、まだアプリに登録されていない新人を新人リストへ反映します。スケジュール本体・給与・通知には一切触れません。件数によっては数十秒〜数分かかります。</div>
+    <button class="btn gold" id="rkb-start" style="width:100%">実行する</button>
+    <div id="rkb-progress" style="margin-top:12px"></div>`);
+  $('#rkb-start').onclick = () => withLoading($('#rkb-start'), async () => {
+    const progEl = $('#rkb-progress');
+    let cursor = 0, processed = 0, errors = [];
+    try{
+      while(true){
+        progEl.innerHTML = `<span class="spinner" style="width:13px;height:13px;border-width:2px;margin-right:5px"></span>処理中… ${processed}/${totalFiles}件`;
+        const r = await api('/rookie-candidates/backfill', { method:'POST', body:{ cursor } });
+        processed += r.processedCount;
+        if(r.errors && r.errors.length) errors = errors.concat(r.errors);
+        cursor = r.nextCursor;
+        if(r.done) break;
+      }
+      progEl.innerHTML = `<div class="msg ok">完了しました(${processed}件確認)</div>`
+        + (errors.length ? `<div class="muted" style="margin-top:8px;font-size:12px">読み取れなかったファイル(${errors.length}件):<br>${errors.slice(0,10).map(e=>`${h(e.fileName||('#'+e.id))}: ${h(e.error)}`).join('<br>')}</div>` : '');
+      popup(`過去分の反映が完了しました(${processed}件確認)`);
+    }catch(e){ progEl.innerHTML = `<div class="msg err">${h(e.message)}</div>`; }
+  });
+}
+
 async function pageDaicho(app){
   if(ME.role !== 'admin'){ notFound(app); return; }
   app.innerHTML = `<h2>${icon('package')} 台帳保管</h2><div class="card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>`;
@@ -9766,6 +9793,15 @@ async function pageDaicho(app){
 
   app.innerHTML = `
   <h2 style="margin-bottom:8px">${icon('package')} 台帳保管</h2>
+  ${items.length ? `<div class="card" style="margin-bottom:14px">
+    <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+      <div style="max-width:640px">
+        <b>過去分を新人リストへ反映</b>
+        <div class="muted" style="font-size:12px;margin-top:2px">新人リスト(未登録の新人を検知する機能)は追加後に取り込んだ台帳のみが対象でした。保管済みの過去ファイルすべてを読み直し、まだアプリに登録されていない新人を新人リストへまとめて反映します(スケジュール本体・給与には一切触れません)。件数が多いため数回に分けて処理します。</div>
+      </div>
+      <button class="btn ghost sm" id="dc-rookie-backfill">${icon('sparkles',{size:'13px'})} 反映する</button>
+    </div>
+  </div>` : ''}
   <div class="card">
     ${items.length ? `
     <div class="sticky-filters">
@@ -9791,6 +9827,7 @@ async function pageDaicho(app){
   </div>`;
 
   if(items.length){
+    $('#dc-rookie-backfill').onclick = () => openRookieBackfillModal(items.length);
     renderList();
     const dn = $('#dc-name');
     if(dn) dn.oninput = () => { st.name = dn.value; renderList(); }; // input要素自体には触れないのでキーボードは閉じない
