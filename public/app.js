@@ -2226,16 +2226,17 @@ async function pageChat(app, hash){
   else await pageChatList(app);
 }
 
-// チャット一覧: 全体・課・手配チーム・個人メッセージをグループ表示。現場ごとのチャットは
-// 一覧には出さず、現場詳細モーダルから直接開く(#/sites参照)。
+// チャット一覧: お知らせ・全体・課・手配チーム・個人メッセージをグループ表示。現場ごとのチャットは
+// 一覧には出さず、現場詳細モーダルから直接開く(#/sites参照)。「お知らせ」はアップデートのお知らせを
+// 自動投稿する専用ルーム(全体/チーフ以上/手配担当以上/管理者の4つ、閲覧できる分だけ表示される)。
 async function pageChatList(app){
   app.innerHTML = `<h2>${icon('messageCircle')} チャット</h2><div class="muted">読み込み中…</div>`;
   let rooms;
   try{ rooms = await api('/chat/rooms?ensure=1'); }
   catch(e){ app.innerHTML += `<div class="msg err">${h(e.message)}</div>`; return; }
 
-  const groupLabel = { all:'全体', ka:'課', manager:'手配チーム', dm:'個人メッセージ' };
-  const order = ['all','ka','manager','dm'];
+  const groupLabel = { notice:'お知らせ', all:'全体', ka:'課', manager:'手配チーム', dm:'個人メッセージ' };
+  const order = ['notice','all','ka','manager','dm'];
   const byType = {};
   for(const r of rooms) (byType[r.type] ||= []).push(r);
 

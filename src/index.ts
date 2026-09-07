@@ -101,7 +101,7 @@ const APP_STRUCTURE_CRON = [
 ];
 const APP_STRUCTURE_PAGES = [
   { hash: '#/home', name: 'ホーム', role: '全員', desc: 'ログイン後の最初の画面。今日から1週間分の予定をスワイプで確認でき、未読通知・承認待ち件数、権限に応じたメニューショートカットを表示する。' },
-  { hash: '#/chat', name: 'チャット', role: '全員', desc: 'チャット一覧(全体・課・手配チーム・個人)と、選んだルームのメッセージ画面(#/chat/:id)。ポーリング方式で新着メッセージを取得する。現場ごとのチャットは現場詳細モーダルから、個人チャット(DM)は一覧の「新しいメッセージ」から開始する。チーフ以上は現場詳細モーダルから招待URL/QR(#/g/:token)を発行できる。' },
+  { hash: '#/chat', name: 'チャット', role: '全員', desc: 'チャット一覧(お知らせ・全体・課・手配チーム・個人)と、選んだルームのメッセージ画面(#/chat/:id)。ポーリング方式で新着メッセージを取得する。現場ごとのチャットは現場詳細モーダルから、個人チャット(DM)は一覧の「新しいメッセージ」から開始する。チーフ以上は現場詳細モーダルから招待URL/QR(#/g/:token)を発行できる。お知らせルーム(全体/チーフ以上/手配担当以上/管理者の4つ、閲覧はロールの下限で判定)には、アップデートのお知らせがsender_name「お知らせ」のシステムメッセージとして自動投稿される。' },
   { hash: '#/g/:token', name: '現場チャットのゲスト招待ページ', role: '全員(未ログインでも可)', desc: '現場ごとのチャットへの招待URL/QRの遷移先。アプリのログイン状態に関わらず動く専用の入口画面(render()内でTOKEN有無チェックより前に振り分ける)。ログイン中なら通常のアカウントでそのままチャットへ、未ログインならログインするか、名前を入力してゲストとして参加できる。現場当日(JST)以外は利用不可。' },
   { hash: '#/dashboard', name: '管理者ダッシュボード', role: 'dashboard_view権限者', desc: '定期処理(台帳再取込・予定表ソース取込・ランク昇格適用・新人報告リマインド)の最終実行日時、予定表ソースのエラー詳細等、システム状態を一覧表示する。' },
   { hash: '#/schedule', name: 'マイスケジュール', role: '全員', desc: '月間カレンダーで自身(または閲覧権限のある他者)のスケジュールを表示する。日付タップで現場変更報告・休み希望の入力モーダルを開く。member_summary_view権限があれば画面末尾に個人の年間サマリーを表示。「行った会場」「行った公演」ボタン(全員の中での順位表示含む)は誰でも見られるが、そこから会場/公演詳細への遷移と、現場検索バーの利用はsites_view権限(チーフ以上)に限る。月見出しタップで年月を直接選択できる。' },
@@ -331,8 +331,8 @@ const APP_STRUCTURE_TABLE_COMMENTS = {
   site_group_members: 'site_groupsの所属メンバー(会場名/公演名)',
   artist_folders: '公演一覧限定のフォルダ機能(複数公演を1件に集約表示)',
   artist_folder_members: 'artist_foldersの所属公演',
-  chat_rooms: 'チャットルーム。typeで種別(all=全体/manager=手配チーム/ka=課/site=現場ごと/dm=個人)を区別し、ref_keyで種別内の対象を特定する。site種別はguest_tokenを発行するとゲスト招待URL/QRの識別子になる',
-  chat_messages: 'チャットメッセージ本体。guest_idが設定されていればゲスト送信(sender_idはNULL)',
+  chat_rooms: 'チャットルーム。typeで種別(all=全体/manager=手配チーム/ka=課/site=現場ごと/dm=個人/notice=お知らせ)を区別し、ref_keyで種別内の対象を特定する。site種別はguest_tokenを発行するとゲスト招待URL/QRの識別子になる。notice種別のref_keyは対象ロールの下限(all/chief/handler/admin)',
+  chat_messages: 'チャットメッセージ本体。guest_idが設定されていればゲスト送信(sender_idはNULL)。sender_id・guest_idどちらもNULLの場合はアップデートのお知らせ等のシステム送信(sender_nameに送信者名を保持、既定は「お知らせ」)',
   chat_reads: 'ユーザーごとのルーム別既読位置(未読件数の算出に使用)',
   chat_guests: '現場ごとのチャットにアプリアカウント無しで参加する人のゲスト識別子。device_tokenをブラウザに保存し、以後の閲覧・投稿を紐付ける',
 };
@@ -6000,11 +6000,17 @@ async function api(req, env, url) {
   }
 
   // ---- チャット(ポーリング方式) ----
+  // お知らせルーム(type='notice')のref_key→閲覧に必要な最低ロールレベル。'all'は全員、以降は
+  // LVの階層どおり上位ロールほど累積で閲覧できる(例: 'chief'部屋はchief/handler/adminが見られる)。
+  const NOTICE_ROOM_TIERS = ['all', 'chief', 'handler', 'admin'];
+  const NOTICE_ROOM_MIN_LV = { all: 0, chief: 1, handler: 2, admin: 3 };
   // ルーム種別ごとのアクセス可否判定。'all'は全員、'ka'は同じ課、'manager'は本人+その手配担当の
   // チーム(manager_id未設定者はka単位の仮想チーム'ka:<課>')、'dm'は当事者2名、'site'は当日その
-  // 現場に配置されている本人、またはsite_manage権限者・管理者(手配管理のため)。
+  // 現場に配置されている本人、またはsite_manage権限者・管理者(手配管理のため)、'notice'は
+  // NOTICE_ROOM_MIN_LV以上のロール。
   async function chatRoomAuthorized(env, me, room) {
     if (room.type === 'all') return true;
+    if (room.type === 'notice') return lv(me) >= (NOTICE_ROOM_MIN_LV[room.ref_key] ?? Infinity);
     if (room.type === 'ka') return room.ref_key === (me.ka || '未設定');
     if (room.type === 'manager') {
       if (String(room.ref_key).startsWith('ka:')) return !me.manager_id && room.ref_key === 'ka:' + (me.ka || '未設定');
@@ -6079,6 +6085,15 @@ async function api(req, env, url) {
     const roomRows: any[] = [];
     const allRoom = await env.DB.prepare("SELECT * FROM chat_rooms WHERE type='all'").first();
     if (allRoom) roomRows.push(allRoom);
+    const myLv = lv(me);
+    const noticeTiers = NOTICE_ROOM_TIERS.filter(t => myLv >= NOTICE_ROOM_MIN_LV[t]);
+    if (noticeTiers.length) {
+      const placeholders = noticeTiers.map(() => '?').join(',');
+      const noticeRows = (await env.DB.prepare(
+        `SELECT * FROM chat_rooms WHERE type='notice' AND ref_key IN (${placeholders})`
+      ).bind(...noticeTiers).all()).results;
+      for (const r of noticeRows as any[]) roomRows.push(r);
+    }
     const kaKey = me.ka || '未設定';
     if (ensure) roomRows.push(await getOrCreateChatRoom(env, 'ka', kaKey, `${kaKey}チャット`));
     else { const r = await env.DB.prepare("SELECT * FROM chat_rooms WHERE type='ka' AND ref_key=?").bind(kaKey).first(); if (r) roomRows.push(r); }
@@ -6096,8 +6111,10 @@ async function api(req, env, url) {
     const out = [];
     for (const r of roomRows) {
       const lastRead = lastReadByRoom[r.id] || 0;
+      // sender_idがNULLのメッセージ(お知らせ等のシステム送信)も「自分以外からの送信」として
+      // 未読カウントに含める(NULL<>xはSQL上falseになりNULLだけ素通りしてしまうため、IS NULLで明示的に拾う)
       const unread = (await env.DB.prepare(
-        'SELECT COUNT(*) AS c FROM chat_messages WHERE room_id=? AND id>? AND sender_id<>?'
+        'SELECT COUNT(*) AS c FROM chat_messages WHERE room_id=? AND id>? AND (sender_id IS NULL OR sender_id<>?)'
       ).bind(r.id, lastRead, me.id).first()).c;
       const name = r.type === 'dm' ? await chatDmPeerName(env, me, r.ref_key) : r.name;
       out.push({ id: r.id, type: r.type, name, unread });
