@@ -276,9 +276,11 @@ const APP_STRUCTURE_API_GROUPS = [
     ['GET', '/chat/rooms', '参加中ルーム一覧(全体・課・手配チーム・個人)と各ルームの未読件数を取得(全員可)。ensure=1で課・手配チームルームを未作成でも作成してから返す(#/chat表示時のみ使用。ポーリングでは既存ルームのみ返す軽量版)'],
     ['POST', '/chat/rooms/open', '現場ごと(site)・個人(dm)のルームを開く(無ければ作成)。siteは当日その現場に配置されている本人または管理者のみ、dmは相手ユーザーを指定するだけで開ける'],
     ['GET', '/chat/room', 'ルーム1件の情報(種別・表示名)を取得。アクセス権が無ければ404'],
-    ['GET', '/chat/messages', '指定ルームのメッセージ取得。after_id指定でポーリング差分取得、無指定なら最新50件(ルームへのアクセス権が必要)'],
+    ['GET', '/chat/messages', '指定ルームのメッセージ取得。after_id指定でポーリング差分取得、無指定なら最新50件(ルームへのアクセス権が必要)。各メッセージにreactions(絵文字ごとの件数・自分が押したか・押した人の氏名)を含め、レスポンス直下にはルーム参加者の既読状況reads(ユーザーごとのlast_read_message_id)も含める'],
     ['POST', '/chat/messages', 'メッセージ送信(ルームへのアクセス権が必要、2000字まで)'],
     ['POST', '/chat/read', '既読位置(last_read_message_id)の更新(ルームへのアクセス権が必要)'],
+    ['POST', '/chat/messages/:id/react', 'メッセージへの絵文字リアクションを追加/変更(body.emoji)。emoji未指定(空)なら自分のリアクションを取り消す。1人1メッセージにつき1個まで(押し直すと差し替え)'],
+    ['GET', '/chat/reactions', '指定ルーム(room_id)・指定メッセージ群(ids、カンマ区切り)の最新リアクション状態を取得。ポーリングで新着メッセージに含まれない「既に表示中の古いメッセージへの他人の新規リアクション」を反映するための軽量な差分確認用'],
     ['POST', '/chat/rooms/guest-link', '現場ごとのチャットに、アプリアカウントを持たない人が参加できる招待URL/QR用のトークンを発行(無ければ作成、あれば既存を返す)。チーフ以上かつそのルームへのアクセス権がある人のみ'],
     ['GET', '/guest-chat/:token', '招待トークンからルーム情報(現場名・日付・当日かどうか)を取得(認証不要)'],
     ['POST', '/guest-chat/:token/join', 'ゲストとして参加し、device_tokenを発行(認証不要)。現場当日(JST)以外は404/403'],
@@ -333,7 +335,8 @@ const APP_STRUCTURE_TABLE_COMMENTS = {
   artist_folder_members: 'artist_foldersの所属公演',
   chat_rooms: 'チャットルーム。typeで種別(all=全体/manager=手配チーム/ka=課/site=現場ごと/dm=個人/notice=役職別(チーフ以上/手配担当以上/管理者、通常の会話も可能))を区別し、ref_keyで種別内の対象を特定する。site種別はguest_tokenを発行するとゲスト招待URL/QRの識別子になる。notice種別のref_keyは対象ロールの下限(chief/handler/admin。all向けは既存の全体チャットへ直接投稿するため専用ルームを持たない)',
   chat_messages: 'チャットメッセージ本体。guest_idが設定されていればゲスト送信(sender_idはNULL)。sender_id・guest_idどちらもNULLの場合はアップデートのお知らせ等のシステム送信(sender_nameに送信者名を保持、既定は「お知らせ」)',
-  chat_reads: 'ユーザーごとのルーム別既読位置(未読件数の算出に使用)',
+  chat_reads: 'ユーザーごとのルーム別既読位置(未読件数の算出・「既読n」表示に使用)',
+  chat_reactions: 'メッセージへの絵文字リアクション(LINE風)。1人1メッセージにつき1個まで(PK: message_id,user_id)',
   chat_guests: '現場ごとのチャットにアプリアカウント無しで参加する人のゲスト識別子。device_tokenをブラウザに保存し、以後の閲覧・投稿を紐付ける',
 };
 // ファイル構成・依存関係(#/app-structureの「ファイル構成」タブ用。静的な説明文)
@@ -6175,6 +6178,25 @@ async function api(req, env, url) {
     const name = room.type === 'dm' ? await chatDmPeerName(env, me, room.ref_key) : room.name;
     return J({ id: room.id, type: room.type, name });
   }
+  // 指定したメッセージid群のリアクションを、id→[{emoji,count,mine,users}]の形でまとめて取得する。
+  // GET /chat/messages(通常のポーリング応答に同梱)とGET /chat/reactions(表示中の古いメッセージへの
+  // 他人の新規リアクションを反映するための軽量な差分確認用)の両方から使う共通ロジック。
+  async function loadReactions(env, ids, meId) {
+    const out: Record<number, any[]> = {};
+    if (!ids.length) return out;
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = (await env.DB.prepare(
+      `SELECT cr.message_id, cr.emoji, cr.user_id, u.name FROM chat_reactions cr JOIN users u ON u.id=cr.user_id WHERE cr.message_id IN (${placeholders}) ORDER BY cr.created_at`
+    ).bind(...ids).all()).results as any[];
+    const byMsg: Record<number, Record<string, any>> = {};
+    for (const r of rows) {
+      const byEmoji = (byMsg[r.message_id] ||= {});
+      const e = (byEmoji[r.emoji] ||= { emoji: r.emoji, count: 0, mine: false, users: [] });
+      e.count++; e.users.push(r.name); if (r.user_id === meId) e.mine = true;
+    }
+    for (const id of ids) out[id] = Object.values(byMsg[id] || {});
+    return out;
+  }
   if (method === 'GET' && path === '/chat/messages') {
     const roomId = Number(url.searchParams.get('room_id'));
     if (!roomId) return ERR('不正なリクエストです');
@@ -6188,7 +6210,15 @@ async function api(req, env, url) {
       const desc = (await env.DB.prepare('SELECT * FROM chat_messages WHERE room_id=? ORDER BY id DESC LIMIT 50').bind(roomId).all()).results;
       rows = (desc as any[]).slice().reverse();
     }
-    return J((rows as any[]).map(r => ({ id: r.id, senderId: r.sender_id, senderName: r.sender_name, body: r.body, ts: r.ts, isGuest: r.guest_id !== null, mine: r.sender_id === me.id })));
+    const ids = (rows as any[]).map(r => r.id);
+    const reactions = await loadReactions(env, ids, me.id);
+    const reads = (await env.DB.prepare(
+      'SELECT cr.user_id AS userId, u.name AS name, cr.last_read_message_id AS lastReadMessageId FROM chat_reads cr JOIN users u ON u.id=cr.user_id WHERE cr.room_id=?'
+    ).bind(roomId).all()).results;
+    return J({
+      messages: (rows as any[]).map(r => ({ id: r.id, senderId: r.sender_id, senderName: r.sender_name, body: r.body, ts: r.ts, isGuest: r.guest_id !== null, mine: r.sender_id === me.id, reactions: reactions[r.id] || [] })),
+      reads
+    });
   }
   if (method === 'POST' && path === '/chat/messages') {
     const roomId = Number(body.room_id);
@@ -6210,6 +6240,45 @@ async function api(req, env, url) {
       `INSERT INTO chat_reads(room_id,user_id,last_read_message_id) VALUES(?,?,?)
        ON CONFLICT(room_id,user_id) DO UPDATE SET last_read_message_id=MAX(last_read_message_id,excluded.last_read_message_id)`
     ).bind(roomId, me.id, lastId).run();
+    return J({ ok: 1 });
+  }
+  // ルームに対するアクセス権を確認したうえで、指定メッセージ群のリアクション状態(loadReactions())を
+  // 返す。GET /chat/messagesはafter_id以降の新着分しか返さないため、画面に既に表示済みの古い
+  // メッセージへ他の人が新しくリアクションを付けても、そのままではポーリングで気付けない。この
+  // エンドポイントは、フロントが「今画面に出ているメッセージid一覧」を渡し、それらの最新状態を
+  // 都度まとめて取り直すことでこのギャップを埋める(差分ではなくスナップショット方式)。
+  if (method === 'GET' && path === '/chat/reactions') {
+    const roomId = Number(url.searchParams.get('room_id'));
+    const idsParam = String(url.searchParams.get('ids') || '');
+    if (!roomId || !idsParam) return ERR('不正なリクエストです');
+    const room = await env.DB.prepare('SELECT * FROM chat_rooms WHERE id=?').bind(roomId).first();
+    if (!room || !(await chatRoomAuthorized(env, me, room))) return ERR('ページが見つかりません', 404);
+    const ids = idsParam.split(',').map(Number).filter(n => n > 0).slice(0, 200);
+    // 指定id群のうち、実際にこのルームに属するものだけを対象にする(他ルームのidを混入されないため)
+    const placeholders = ids.map(() => '?').join(',');
+    const validRows = ids.length ? (await env.DB.prepare(
+      `SELECT id FROM chat_messages WHERE room_id=? AND id IN (${placeholders})`
+    ).bind(roomId, ...ids).all()).results as any[] : [];
+    const validIds = validRows.map(r => r.id);
+    const reactions = await loadReactions(env, validIds, me.id);
+    return J(reactions);
+  }
+  let reactMatch;
+  if (method === 'POST' && (reactMatch = path.match(/^\/chat\/messages\/(\d+)\/react$/))) {
+    const msgId = Number(reactMatch[1]);
+    const emoji = String(body.emoji || '').trim().slice(0, 8);
+    const msg = await env.DB.prepare('SELECT * FROM chat_messages WHERE id=?').bind(msgId).first();
+    if (!msg) return ERR('メッセージが見つかりません', 404);
+    const room = await env.DB.prepare('SELECT * FROM chat_rooms WHERE id=?').bind(msg.room_id).first();
+    if (!room || !(await chatRoomAuthorized(env, me, room))) return ERR('ページが見つかりません', 404);
+    if (!emoji) {
+      await env.DB.prepare('DELETE FROM chat_reactions WHERE message_id=? AND user_id=?').bind(msgId, me.id).run();
+    } else {
+      await env.DB.prepare(
+        `INSERT INTO chat_reactions(message_id,user_id,emoji,created_at) VALUES(?,?,?,?)
+         ON CONFLICT(message_id,user_id) DO UPDATE SET emoji=excluded.emoji, created_at=excluded.created_at`
+      ).bind(msgId, me.id, emoji, jstTs()).run();
+    }
     return J({ ok: 1 });
   }
 

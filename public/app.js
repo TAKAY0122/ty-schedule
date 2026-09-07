@@ -2219,6 +2219,8 @@ async function pollBell(){
 }
 
 /* ===== チャット(第1弾は全体チャットのみ、ポーリング方式) ===== */
+// リアクションで選べる絵文字の固定パレット(LINE風。ここに載っていない絵文字は付けられない)
+const REACTION_EMOJIS = ['👍','❤️','😂','😮','😢','🙏'];
 // #/chat(一覧)と#/chat/:id(個別ルーム)を振り分ける
 async function pageChat(app, hash){
   const m = (hash||'').match(/^#\/chat\/(\d+)/);
@@ -2291,7 +2293,12 @@ function openNewChatPicker(onPick){
   $('#ncp-q').focus();
 }
 
-// 個別ルームのメッセージ画面
+// 個別ルームのメッセージ画面。既読(誰が読んだか)・絵文字リアクション(LINE風)にも対応する。
+// ポーリング(6秒間隔)はafter_id指定の新着メッセージ差分に加え、画面に既に表示済みの
+// メッセージの既読状況(reads、ルーム参加者ごとのlast_read_message_id)は毎回まとめて取り直し、
+// リアクションは表示中の全idをGET /chat/reactionsへ渡してスナップショットで取り直す
+// (他人が古いメッセージに新しく付けたリアクションも反映するため。詳細はサーバー側の
+// GET /chat/reactionsのコメント参照)。
 async function pageChatRoom(app, roomId){
   app.innerHTML = `<div class="muted">読み込み中…</div>`;
   let room;
@@ -2314,38 +2321,99 @@ async function pageChatRoom(app, roomId){
 
   const logEl = $('#chat-log');
   let lastId = 0;
+  let currentReads = []; // [{userId,name,lastReadMessageId}] ルーム参加者全員分(自分含む)
+  const msgMeta = new Map(); // id -> { senderId, mine }
   const nearBottom = () => logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 60;
   const fmtTime = ts => String(ts||'').slice(5,16); // jstTs()は"YYYY-MM-DD HH:MM:SS"形式 → "MM-DD HH:MM"
+
+  const readersFor = m => currentReads.filter(r => r.userId !== m.senderId && r.lastReadMessageId >= m.id);
+  const readLabel = m => {
+    const n = readersFor(m).length;
+    if(!n) return '';
+    return room.type === 'dm' ? '既読' : `既読 ${n}`;
+  };
+  const reactionsHtml = (id, reactions) => `${(reactions||[]).map(r =>
+    `<button type="button" class="chat-reaction-chip${r.mine?' mine':''}" data-id="${id}" data-emoji="${h(r.emoji)}" data-mine="${r.mine?1:0}" title="${h(r.users.join('、'))}">${h(r.emoji)}<span class="cnt">${r.count}</span></button>`
+  ).join('')}<button type="button" class="chat-react-add" data-id="${id}" title="リアクションを付ける">${icon('plus',{size:'11px'})}</button>`;
 
   const appendMessages = (msgs, opts={}) => {
     if(!msgs.length) return;
     const empty = logEl.querySelector('.chat-empty'); if(empty) empty.remove();
     const wasNear = nearBottom();
     for(const m of msgs){
+      msgMeta.set(m.id, { senderId: m.senderId, mine: m.mine });
       const row = document.createElement('div');
       row.className = 'chat-row' + (m.mine ? ' mine' : '');
-      row.innerHTML = `<div class="chat-bubble">${m.mine?'':`<div class="chat-sender">${h(m.senderName)}${m.isGuest?' <span class="muted">(ゲスト)</span>':''}</div>`}<div class="chat-body"></div><div class="chat-time">${h(fmtTime(m.ts))}</div></div>`;
+      row.dataset.id = m.id;
+      row.innerHTML = `<div class="chat-bubble">${m.mine?'':`<div class="chat-sender">${h(m.senderName)}${m.isGuest?' <span class="muted">(ゲスト)</span>':''}</div>`}<div class="chat-body"></div><div class="chat-time">${h(fmtTime(m.ts))}</div><div class="chat-reactions">${reactionsHtml(m.id, m.reactions)}</div>${m.mine?`<div class="chat-read" data-id="${m.id}"></div>`:''}</div>`;
       row.querySelector('.chat-body').textContent = m.body; // 改行はCSSのwhite-space:pre-wrapで表現するためtextContentで挿入
       logEl.appendChild(row);
       lastId = Math.max(lastId, m.id);
     }
     if(opts.initial || wasNear) logEl.scrollTop = logEl.scrollHeight;
   };
+  // 表示済みメッセージのうち自分が送ったものだけ、最新のreadsを反映して「既読」ラベルを更新する
+  const updateReadLabels = () => {
+    logEl.querySelectorAll('.chat-read[data-id]').forEach(el => {
+      const id = Number(el.dataset.id);
+      const meta = msgMeta.get(id);
+      if(!meta) return;
+      el.textContent = readLabel({ id, senderId: meta.senderId });
+    });
+  };
+  // 表示中のメッセージidをまとめてGET /chat/reactionsへ渡し、最新のリアクション状態で置き換える
+  const refreshReactions = async () => {
+    const ids = [...msgMeta.keys()].slice(-200); // サーバー側の上限(200件)に合わせ、直近分だけ問い合わせる
+    if(!ids.length) return;
+    let data;
+    try{ data = await api(`/chat/reactions?room_id=${room.id}&ids=${ids.join(',')}`); }
+    catch(_){ return; }
+    for(const [idStr, reactions] of Object.entries(data)){
+      const row = logEl.querySelector(`.chat-row[data-id="${idStr}"] .chat-reactions`);
+      if(row) row.innerHTML = reactionsHtml(idStr, reactions);
+    }
+  };
   const markRead = () => { if(lastId) api('/chat/read', { method:'POST', body:{ room_id: room.id, last_read_message_id: lastId } }).catch(()=>{}); };
+
+  const applyResult = (data, opts={}) => {
+    currentReads = data.reads || [];
+    if(data.messages.length) appendMessages(data.messages, opts);
+    updateReadLabels();
+  };
 
   try{
     const initial = await api(`/chat/messages?room_id=${room.id}`);
-    if(initial.length){ appendMessages(initial, { initial:true }); markRead(); }
-    else logEl.innerHTML = '<div class="chat-empty">まだメッセージはありません。最初のメッセージを送ってみましょう。</div>';
+    if(initial.messages.length){ applyResult(initial, { initial:true }); markRead(); }
+    else { currentReads = initial.reads || []; logEl.innerHTML = '<div class="chat-empty">まだメッセージはありません。最初のメッセージを送ってみましょう。</div>'; }
   }catch(e){ logEl.innerHTML = `<div class="msg err">${h(e.message)}</div>`; }
 
   const poll = async () => {
     try{
       const fresh = await api(`/chat/messages?room_id=${room.id}&after_id=${lastId}`);
-      if(fresh.length){ appendMessages(fresh); markRead(); }
+      applyResult(fresh);
+      if(fresh.messages.length) markRead();
     }catch(_){}
+    await refreshReactions();
   };
   timers.push(setInterval(poll, 6000));
+
+  // リアクション・既読ラベルのクリックは、行が再描画されても効くようログ全体への委譲で処理する
+  logEl.addEventListener('click', async (e) => {
+    const addBtn = e.target.closest('.chat-react-add');
+    if(addBtn){ openReactionPicker(addBtn.dataset.id, room.id, refreshReactions); return; }
+    const chip = e.target.closest('.chat-reaction-chip');
+    if(chip){
+      const emoji = chip.dataset.mine === '1' ? '' : chip.dataset.emoji;
+      try{ await api(`/chat/messages/${chip.dataset.id}/react`, { method:'POST', body:{ emoji } }); }catch(err){ popup(err.message, 'error'); }
+      await refreshReactions();
+      return;
+    }
+    const readEl = e.target.closest('.chat-read');
+    if(readEl && readEl.textContent){
+      const meta = msgMeta.get(Number(readEl.dataset.id));
+      if(meta) openReadList(readersFor({ id: Number(readEl.dataset.id), senderId: meta.senderId }));
+    }
+  });
 
   const input = $('#chat-input');
   // Shift+Enterでの複数行入力時、CSSのmax-height(120px)まではテキスト量に応じて自動で高さを伸ばす
@@ -2364,6 +2432,23 @@ async function pageChatRoom(app, roomId){
   };
   $('#chat-send').onclick = send;
   input.onkeydown = (e) => { if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); } };
+}
+// リアクション用の絵文字ピッカー(固定パレット)。選ぶと即座に付け替え、呼び出し元のonDoneで再描画させる
+function openReactionPicker(msgId, roomId, onDone){
+  modal(`<h3>${icon('sparkles',{size:'14px'})} リアクション</h3>
+    <div class="react-picker-row">${REACTION_EMOJIS.map(em => `<button type="button" class="react-pick" data-emoji="${h(em)}">${em}</button>`).join('')}</div>`);
+  $('#modal-layer').querySelectorAll('.react-pick').forEach(b => b.onclick = async () => {
+    closeModal();
+    try{ await api(`/chat/messages/${msgId}/react`, { method:'POST', body:{ emoji: b.dataset.emoji } }); }catch(e){ popup(e.message, 'error'); }
+    if(onDone) onDone();
+  });
+}
+// 「既読」ラベルをタップした時に、実際に読んだ人の氏名一覧を表示する
+function openReadList(readers){
+  const rows = readers.length
+    ? readers.map(r => `<div class="read-list-row">${h(r.name)}</div>`).join('')
+    : '<div class="muted" style="padding:10px 0;text-align:center">まだ誰も既読していません</div>';
+  modal(`<h3>${icon('checkCircle',{size:'14px'})} 既読(${readers.length})</h3>${rows}`);
 }
 
 // ドロワーメニュー・ホーム画面の「チャット」項目に未読件数バッジを出す(通知とは別の未読管理)。

@@ -1705,6 +1705,21 @@ body.theme-dark .theme-switch:hover{background:var(--ops-panel2)}
 .chat-row.mine .chat-sender{display:none}
 .chat-body{font-size:14px;white-space:pre-wrap;word-break:break-word;line-height:1.5}
 .chat-time{font-size:10px;color:var(--muted);margin-top:3px;text-align:right}
+.chat-reactions{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;justify-content:flex-end}
+.chat-row:not(.mine) .chat-reactions{justify-content:flex-start}
+.chat-reaction-chip{display:inline-flex;align-items:center;gap:3px;font-size:12px;line-height:1;background:#fff;border:1px solid var(--line);border-radius:999px;padding:3px 7px;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.chat-reaction-chip.mine{background:rgba(201,162,39,.16);border-color:var(--gold)}
+.chat-reaction-chip .cnt{font-size:11px;color:var(--muted);font-weight:600}
+.chat-reaction-chip.mine .cnt{color:var(--ink)}
+.chat-react-add{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:999px;border:1px solid var(--line);background:#fff;color:var(--muted);cursor:pointer;-webkit-tap-highlight-color:transparent}
+.chat-react-add:hover{color:var(--ink);border-color:var(--gold)}
+.chat-read{font-size:10px;color:var(--muted);margin-top:3px;text-align:right;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.chat-read:hover{text-decoration:underline}
+.react-picker-row{display:flex;gap:10px;justify-content:center;padding:10px 0;flex-wrap:wrap}
+.react-picker-row button{font-size:26px;line-height:1;background:none;border:none;cursor:pointer;padding:6px;border-radius:10px}
+.react-picker-row button:hover{background:var(--paper)}
+.read-list-row{display:flex;align-items:center;padding:6px 0;font-size:13.5px;border-bottom:1px solid #f0eee7}
+.read-list-row:last-child{border-bottom:none}
 .chat-input-row{display:flex;gap:8px;margin-top:12px;align-items:flex-end}
 .chat-input-row textarea{flex:1;resize:none;min-height:38px;max-height:120px}
 .chat-empty{text-align:center;color:var(--muted);font-size:12.5px;padding:30px 0}
@@ -1712,4 +1727,10 @@ body.theme-dark .theme-switch:hover{background:var(--ops-panel2)}
 :is(body.ops-page,body.theme-dark) #app .chat-row.mine .chat-bubble{background:rgba(224,184,74,.18);border-color:var(--ops-gold)}
 :is(body.ops-page,body.theme-dark) #app .chat-sender,
 :is(body.ops-page,body.theme-dark) #app .chat-time,
+:is(body.ops-page,body.theme-dark) #app .chat-read,
 :is(body.ops-page,body.theme-dark) #app .chat-empty{color:var(--ops-dim)}
+:is(body.ops-page,body.theme-dark) #app .chat-reaction-chip,
+:is(body.ops-page,body.theme-dark) #app .chat-react-add{background:var(--ops-panel2);border-color:var(--ops-line);color:var(--ops-txt)}
+:is(body.ops-page,body.theme-dark) #app .chat-reaction-chip.mine{background:rgba(224,184,74,.18);border-color:var(--ops-gold)}
+body.theme-dark #modal-layer .read-list-row{border-bottom-color:var(--ops-line)}
+body.theme-dark #modal-layer .react-picker-row button:hover{background:var(--ops-panel2)}

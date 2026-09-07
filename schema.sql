@@ -583,6 +583,17 @@ CREATE TABLE IF NOT EXISTS chat_reads(
   last_read_message_id INTEGER DEFAULT 0,
   PRIMARY KEY(room_id, user_id)
 );
+-- メッセージへの絵文字リアクション(LINE風)。1人1メッセージにつき1個まで(PKがmessage_id,user_id)。
+-- 変更(付け替え)はUPSERT、取り消しはDELETEで表現する。ゲスト送信のメッセージにも付けられるが、
+-- リアクションする側は常にアプリアカウント保持者のみ(ゲスト自身はリアクションできない)。
+CREATE TABLE IF NOT EXISTS chat_reactions(
+  message_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  emoji TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY(message_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_chat_reactions_message ON chat_reactions(message_id);
 INSERT OR IGNORE INTO chat_rooms(type, ref_key, name) VALUES ('all', '', '全体チャット');
 INSERT OR IGNORE INTO chat_rooms(type, ref_key, name) VALUES
   ('notice', 'chief', 'チーフ以上チャット'),
