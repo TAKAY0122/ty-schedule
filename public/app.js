@@ -2226,17 +2226,19 @@ async function pageChat(app, hash){
   else await pageChatList(app);
 }
 
-// チャット一覧: お知らせ・全体・課・手配チーム・個人メッセージをグループ表示。現場ごとのチャットは
-// 一覧には出さず、現場詳細モーダルから直接開く(#/sites参照)。「お知らせ」はアップデートのお知らせを
-// 自動投稿する専用ルーム(全体/チーフ以上/手配担当以上/管理者の4つ、閲覧できる分だけ表示される)。
+// チャット一覧: 全体・役職・課・手配チーム・個人メッセージをグループ表示。現場ごとのチャットは
+// 一覧には出さず、現場詳細モーダルから直接開く(#/sites参照)。「役職」はチーフ以上/手配担当以上/
+// 管理者向けの通常の会話が可能なチャット(閲覧できる分だけ表示される)。アップデートのお知らせは、
+// 対象ロールに応じてこれらのルームまたは全体チャットへsender_name「お知らせ」で自動投稿される
+// (「お知らせ専用」の別ルームは持たない、2026年9月ユーザーの明示的な指示)。
 async function pageChatList(app){
   app.innerHTML = `<h2>${icon('messageCircle')} チャット</h2><div class="muted">読み込み中…</div>`;
   let rooms;
   try{ rooms = await api('/chat/rooms?ensure=1'); }
   catch(e){ app.innerHTML += `<div class="msg err">${h(e.message)}</div>`; return; }
 
-  const groupLabel = { notice:'お知らせ', all:'全体', ka:'課', manager:'手配チーム', dm:'個人メッセージ' };
-  const order = ['notice','all','ka','manager','dm'];
+  const groupLabel = { all:'全体', notice:'役職', ka:'課', manager:'手配チーム', dm:'個人メッセージ' };
+  const order = ['all','notice','ka','manager','dm'];
   const byType = {};
   for(const r of rooms) (byType[r.type] ||= []).push(r);
 

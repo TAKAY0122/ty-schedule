@@ -536,14 +536,16 @@ CREATE TABLE IF NOT EXISTS artist_folder_members(
 CREATE INDEX IF NOT EXISTS idx_artist_folder_members_folder ON artist_folder_members(folder_id);
 
 -- チャット。typeでルーム種別を区別する('all'=全体/'manager'=手配チーム/'ka'=課/'site'=現場ごと/'dm'=個人/
--- 'notice'=お知らせ)。ref_keyは種別内で対象を特定するキー('all'は空文字、'manager'は手配担当者のuser_id
+-- 'notice'=役職別)。ref_keyは種別内で対象を特定するキー('all'は空文字、'manager'は手配担当者のuser_id
 -- (未設定者は課の仮想チーム'ka:<課>')、'ka'は課名、'site'は'日付|現場名'、'dm'は
--- '小さいuser_id-大きいuser_id'、'notice'は対象ロールの下限'all'/'chief'/'handler'/'admin')。
+-- '小さいuser_id-大きいuser_id'、'notice'は対象ロールの下限'chief'/'handler'/'admin')。
 -- 'all'・'ka'・'manager'・'notice'は参加者が動的に決まる(usersテーブルのka/manager_id/roleを見て判定)
 -- ため、参加者を管理するテーブルは持たない。'site'・'dm'も同様にscheduleテーブル・ref_key自体から
--- 動的にアクセス可否を判定する(chatRoomAuthorized())。'notice'はアップデートのお知らせをsender_name
--- 「お知らせ」(sender_id/guest_idともにNULL)のシステムメッセージとして自動投稿する専用ルームで、
--- 通常のメッセージ送信も可能(ロール階層に沿った累積アクセスの雑談ルームを兼ねる)。
+-- 動的にアクセス可否を判定する(chatRoomAuthorized())。'notice'はチーフ以上/手配担当以上/管理者向けの
+-- 通常のチャットルーム(ロール階層に沿った累積アクセス。会話も可能)で、アップデートのお知らせが
+-- sender_name「お知らせ」(sender_id/guest_idともにNULL)のシステムメッセージとして自動投稿される。
+-- 'all'ロール向けの内容は、この専用ルームを持たず既存の全体チャット('all'種別)へ直接投稿する
+-- (「お知らせ専用」の別ルームにはしない、2026年9月ユーザーの明示的な指示)。
 CREATE TABLE IF NOT EXISTS chat_rooms(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   type TEXT NOT NULL,
@@ -583,8 +585,7 @@ CREATE TABLE IF NOT EXISTS chat_reads(
 );
 INSERT OR IGNORE INTO chat_rooms(type, ref_key, name) VALUES ('all', '', '全体チャット');
 INSERT OR IGNORE INTO chat_rooms(type, ref_key, name) VALUES
-  ('notice', 'all', 'お知らせ(全体)'),
-  ('notice', 'chief', 'お知らせ(チーフ以上)'),
-  ('notice', 'handler', 'お知らせ(手配担当以上)'),
-  ('notice', 'admin', 'お知らせ(管理者)');
+  ('notice', 'chief', 'チーフ以上チャット'),
+  ('notice', 'handler', '手配担当以上チャット'),
+  ('notice', 'admin', '管理者チャット');
 
