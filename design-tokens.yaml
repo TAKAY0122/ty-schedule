@@ -89,6 +89,19 @@ colors:
     saturday: "#1F5FD6"
     sunday: "#D93636"
 
+  # --- 配置表: 業務内容タグの分類色(意味を持たない、ユーザーが自由に割り当てる識別用の色) ---
+  # status色(success/warning/danger等)とは役割が異なるため独立させる。低彩度で紙面(page_bg)に
+  # 馴染むトーンに統一し、原色的な虹色配置(参考スプレッドシートそのまま)にはしない。
+  # ユーザーは配置表の設定画面でタグ(例:「物販整理」「MTG」等)にこの中から1色を割り当てる。
+  tag_palette:
+    - { key: "gold",   text: "#8A6300", bg: "#FFF3D6", border: "#E9D9A6" }  # 既存warningと共用トーン
+    - { key: "blue",   text: "#1F5391", bg: "#EAF2FB", border: "#CBD9EC" }  # 既存ka1と共用トーン
+    - { key: "green",  text: "#1F7A3D", bg: "#E7F6EC", border: "#BFDDC7" }  # 既存successと共用トーン
+    - { key: "rose",   text: "#A33A52", bg: "#FBEAEE", border: "#E9C7D0" }
+    - { key: "violet", text: "#6B4FA0", bg: "#EFEAF7", border: "#D3C7E8" }  # status.specialより明度を上げ控えめに
+    - { key: "teal",   text: "#1F6E6E", bg: "#E6F3F3", border: "#BEDADA" }
+    - { key: "slate",  text: "#4B5568", bg: "#EEF0F3", border: "#D2D6DD" }  # 未分類・その他のデフォルト
+
 # ==========================================================================
 # タイポグラフィ
 # ==========================================================================

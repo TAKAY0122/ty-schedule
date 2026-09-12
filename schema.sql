@@ -458,6 +458,61 @@ CREATE TABLE IF NOT EXISTS venue_manual_history(
 );
 CREATE INDEX IF NOT EXISTS idx_venue_manual_history_venue ON venue_manual_history(venue, created_at DESC);
 
+-- 配置表(現場情報タブ)。1行=1人、1列=1時間帯、セルは行×列の交点。列(時間帯)はユーザーが
+-- 現場ごとに自由に追加・削除・改名できる(参考: 会場マニュアルと同じく機能公開設定は当面「準備中」)。
+CREATE TABLE IF NOT EXISTS haichi_columns(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL,
+  site TEXT NOT NULL,
+  seq INTEGER NOT NULL DEFAULT 0,
+  label TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_haichi_columns_site ON haichi_columns(date, site);
+
+-- nameが表示名の正(台帳に載っているがusersには居ない他拠点・外部委託スタッフも氏名だけで
+-- 行を作れるようにするため)。uidは、その名前が実際にアプリ登録メンバーと一致する場合だけ設定する
+-- (氏名タップでスケジュール画面へ遷移する等、登録メンバー向け機能の判定に使う)。
+CREATE TABLE IF NOT EXISTS haichi_rows(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  date TEXT NOT NULL,
+  site TEXT NOT NULL,
+  seq INTEGER NOT NULL DEFAULT 0,
+  name TEXT NOT NULL DEFAULT '',
+  uid INTEGER,
+  wireless INTEGER NOT NULL DEFAULT 0,
+  meal INTEGER NOT NULL DEFAULT 0,
+  job1st TEXT DEFAULT '',
+  note TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_haichi_rows_site ON haichi_rows(date, site);
+
+-- tag列はtag_palette(design-tokens.yaml)のkey(gold/blue/green/rose/violet/teal/slate)のみ、
+-- サーバー側でenumチェックして保存する(NULL可)。
+CREATE TABLE IF NOT EXISTS haichi_cells(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  row_id INTEGER NOT NULL,
+  column_id INTEGER NOT NULL,
+  content TEXT DEFAULT '',
+  tag TEXT,
+  UNIQUE(row_id, column_id)
+);
+CREATE INDEX IF NOT EXISTS idx_haichi_cells_row ON haichi_cells(row_id);
+
+-- guest_tokenは現場チャットのゲスト招待(chat_rooms.guest_token)と同じ考え方。値があれば
+-- 共有URL/QRが有効(既定は閲覧専用)。チャットのゲスト招待と違い当日(JST)限定にはしない
+-- (配置表は事前確認用途を想定するため)。guest_can_editをチーフ以上が有効にした場合のみ、
+-- 共有URLを持つ人(アプリ未登録者含む)も配置表を編集できる。
+CREATE TABLE IF NOT EXISTS haichi_meta(
+  date TEXT NOT NULL,
+  site TEXT NOT NULL,
+  updated_by INTEGER,
+  updated_at TEXT,
+  guest_token TEXT,
+  guest_can_edit INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(date, site)
+);
+CREATE INDEX IF NOT EXISTS idx_haichi_meta_guest_token ON haichi_meta(guest_token);
+
 -- ログイン失敗回数の記録(ブルートフォース攻撃対策)。登録番号ごとに一定回数失敗すると
 -- 一定時間ロックする。regnoが存在しない/しないに関わらず記録し、アカウント有無の推測も防ぐ。
 CREATE TABLE IF NOT EXISTS login_attempts(

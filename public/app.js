@@ -266,6 +266,7 @@ const FEATURE_LABELS = {
   'artists': { icon:'megaphone', label:'公演一覧' },
   'app-structure': { icon:'sitemap', label:'アプリ構造ビューア' },
   'rookie-list': { icon:'sparkles', label:'新人リスト(現場詳細)' },
+  'haichi-hyo': { icon:'clipboardList', label:'配置表(現場詳細)' },
 };
 const FEATURE_KEYS = Object.keys(FEATURE_LABELS);
 // 給与計算区分コード → 表示用の日本語ラベル(業務名対応表の表示に使う)
@@ -1035,6 +1036,8 @@ async function openSiteModal(date, site){
   ]);
   // 「新人」ボタン(このモーダル内の新人リスト)自体の機能公開設定。管理者は常に見られる
   const canRookie = canRoster && (ME.role === 'admin' || !['hidden','maintenance'].includes(featureStatus['rookie-list']));
+  // 「配置表」タブ自体の機能公開設定。閲覧・編集とも現場情報を開ける権限(sites_view)と同じ基準
+  const canHaichi = canRoster && (ME.role === 'admin' || !['hidden','maintenance'].includes(featureStatus['haichi-hyo']));
   const list = siteData.list;
   // 休憩時間の合計(チーフ以上に公開。6h超45分/8h超60分の目安に届いていない場合だけ軽く表示)
   const breakByUid = {}; breaksArr.forEach(b => breakByUid[b.uid] = b);
@@ -1099,8 +1102,7 @@ async function openSiteModal(date, site){
   // 誤って混ぜないため)。まとめて編集の対象には、その現在閲覧中の現場自体も
   // 含めないと「選択したのに自分の日だけ変わらない」ことになるため、別途取得したcurrentを加える
   const currentGig = (history && history.current) || [];
-  modal(`<h3>現場情報</h3>
-    <dl class="kv">
+  const infoBodyHtml = `<dl class="kv">
       <dt>現場名</dt><dd><b>${h(site)}</b></dd>
       <dt>会場</dt><dd>${venue ? `<span class="name-link venue-detail-link" data-venue="${h(venue)}">${h(venue)}</span>` : '<span class="muted">未登録</span>'}</dd>
       ${loadEnd?`<dt>搬入終了</dt><dd>${h(loadEnd)}</dd>`:''}
@@ -1127,7 +1129,26 @@ async function openSiteModal(date, site){
     ${samePast.length ? `<div class="section-label" style="margin-top:14px">過去の公演(現場名・会場名が完全一致)</div>
       <div>${samePast.map(histItem).join('')}</div>` : ''}
     ${venue ? histSection('今後の同会場の公演', [], sameVenueFuture, 'venue') : ''}
-    ${histSection('今後の同アーティストの公演', [], sameSiteFuture, 'site')}`);
+    ${histSection('今後の同アーティストの公演', [], sameSiteFuture, 'site')}`;
+  modal(`<h3>現場情報</h3>
+    ${canHaichi ? `<div class="tabbar" id="site-modal-tabs">
+      <button type="button" class="tabbtn on" data-tab="info">基本情報</button>
+      <button type="button" class="tabbtn" data-tab="haichi">配置表</button>
+    </div>` : ''}
+    <div id="site-tab-info">${infoBodyHtml}</div>
+    ${canHaichi ? `<div id="site-tab-haichi" style="display:none"></div>` : ''}`);
+  if(canHaichi){
+    let haichiLoaded = false;
+    const tabsEl = $('#site-modal-tabs');
+    tabsEl.onclick = (e) => {
+      const btn = e.target.closest('.tabbtn'); if(!btn) return;
+      tabsEl.querySelectorAll('.tabbtn').forEach(b => b.classList.toggle('on', b === btn));
+      const showHaichi = btn.dataset.tab === 'haichi';
+      $('#site-tab-info').style.display = showHaichi ? 'none' : '';
+      $('#site-tab-haichi').style.display = showHaichi ? '' : 'none';
+      if(showHaichi && !haichiLoaded){ haichiLoaded = true; loadHaichiTab(date, site, list); }
+    };
+  }
   const rosterBtn = $('#site-roster-btn');
   if(rosterBtn) rosterBtn.onclick = () => openSiteRoster(date, site);
   const chatBtn = $('#site-chat-btn');
@@ -1190,6 +1211,388 @@ async function openSiteModal(date, site){
       };
     });
   }
+}
+
+// ==== 配置表タブ(現場情報、準備中機能) ====
+// 氏名×時間帯のクロス表。閲覧・編集ともsites_view権限(チーフ以上)があれば誰でも可能
+// (会場マニュアルと同じ考え方。site_manageのような追加権限は不要)。
+// 表全体を毎回innerHTMLで再構築する既存のrender()方式に合わせ、セルクリック→<input>差し替えの
+// その場編集にする(venue-manualのcontentEditableとは別方式。フォーカス競合を避けるため)。
+// 認証済みモーダル(loadHaichiTab)と共有URLのゲストページ(renderGuestHaichiEntry)の両方から、
+// 描画・編集ロジック自体はhaichiEditorInit()を共有する(データの取得元・保存先だけが異なるため)。
+const HAICHI_TAGS = ['gold','blue','green','rose','violet','teal','slate'];
+const HAICHI_TAG_LABEL = { gold:'金', blue:'青', green:'緑', rose:'ローズ', violet:'紫', teal:'ティール', slate:'グレー' };
+
+// container: 描画先の要素。data: {columns,rows}。opts: {
+//   editable(false なら閲覧専用で列の表示切替以外の操作は一切出さない),
+//   siteMembers(氏名欄のプルダウン候補。未指定可),
+//   onSave(payload)=>Promise<{columns,rows}>(必須、editable時のみ呼ばれる),
+//   onDaicho()=>Promise<{list,truncated}>(渡すと「台帳から氏名候補」ボタンを表示),
+//   onShare()=>void(渡すと「共有リンク」ボタンを表示),
+// }
+function haichiEditorInit(container, data, opts){
+  const editable = !!opts.editable;
+  const siteMembers = opts.siteMembers || [];
+  let nextTemp = -1; // 未保存の新規行・新規列の仮id(負の数。保存時にtempIdとして送る)
+  const st = {
+    columns: data.columns.map(c => ({ id:c.id, label:c.label })),
+    rows: data.rows.map(r => ({ id:r.id, name:r.name, uid:r.uid, wireless:r.wireless, meal:r.meal, job1st:r.job1st, note:r.note, cells: r.cells || {} })),
+  };
+  const hiddenCols = new Set();
+  let colPanelOpen = false;
+  let editing = null; // {rowId, key} key: 列id(数値)、または'job1st'/'note'/'col-<id>'(列見出し改名時)
+  let daichoNames = [];
+  const memberByName = {}; siteMembers.forEach(p => memberByName[p.name] = p.uid);
+
+  const isColKey = k => /^-?\d+$/.test(String(k));
+  const findRow = id => st.rows.find(r => r.id === id);
+  const tagCellStyle = tag => tag ? `color:var(--tag-${tag}-t);background:var(--tag-${tag}-bg)` : '';
+
+  // popup()は#modal-layerを丸ごと差し替えるため、このタブが現場情報モーダルの中に
+  // ネストされている場合に使うと親モーダルごと消えてしまう(実際に発生した不具合)。
+  // 保存結果・台帳検索結果は、このタブ内に留まる軽量なインライントーストで表示する。
+  function showToast(msg, isErr){
+    const old = container.querySelector('.hc-toast'); if(old) old.remove();
+    const el = document.createElement('div');
+    el.className = 'msg hc-toast' + (isErr ? ' err' : '');
+    el.style.whiteSpace = 'pre-line';
+    el.textContent = msg;
+    container.prepend(el);
+    setTimeout(() => { if(el.isConnected) el.remove(); }, 3500);
+  }
+
+  function nameCellHtml(row){
+    if(!editable) return `<span class="celltext plain">${h(row.name) || '<span class="dash">(未定)</span>'}</span>`;
+    return `<input class="name-input" list="hc-names-datalist" data-namein="${row.id}" value="${h(row.name)}" placeholder="氏名">`;
+  }
+  function cellHtml(row, colId){
+    const c = row.cells[colId] || { content:'', tag:null };
+    if(!editable) return `<span class="celltext" style="${tagCellStyle(c.tag)}">${h(c.content) || '<span class="dash">—</span>'}</span>`;
+    const dot = `<span class="tagdot ${c.tag?'':'empty'}" style="${c.tag?`background:var(--tag-${c.tag}-t)`:''}" data-tagbtn data-row="${row.id}" data-col="${colId}"></span>`;
+    if(editing && editing.rowId === row.id && editing.key === colId){
+      return `<div class="cellwrap">${dot}<input class="cellinput" data-cellinput data-row="${row.id}" data-col="${colId}" value="${h(c.content)}"></div>`;
+    }
+    return `<div class="cellwrap">${dot}<span class="celltext" style="${tagCellStyle(c.tag)}" data-cell data-row="${row.id}" data-col="${colId}">${h(c.content) || '<span class="dash">(未入力)</span>'}</span></div>`;
+  }
+  function plainCellHtml(row, key, placeholder){
+    const val = row[key] || '';
+    if(!editable) return `<span class="celltext plain">${h(val) || `<span class="dash">${h(placeholder)}</span>`}</span>`;
+    if(editing && editing.rowId === row.id && editing.key === key){
+      return `<input class="cellinput" data-cellinput data-row="${row.id}" data-col="${key}" value="${h(val)}">`;
+    }
+    return `<span class="celltext plain" data-cell data-row="${row.id}" data-col="${key}">${h(val) || `<span class="dash">${h(placeholder)}</span>`}</span>`;
+  }
+
+  function fixSticky(){
+    const tbl = container.querySelector('.haichi'); if(!tbl) return;
+    requestAnimationFrame(() => {
+      const first = tbl.querySelector('td.stick, th.stick');
+      const w = first ? first.getBoundingClientRect().width : 30;
+      tbl.querySelectorAll('tr').forEach(tr => {
+        const cells = tr.querySelectorAll('.stick');
+        if(cells[0]) cells[0].style.left = '0px';
+        if(cells[1]) cells[1].style.left = w + 'px';
+      });
+    });
+  }
+
+  function render(){
+    const wlOn = !hiddenCols.has('wl'), mealOn = !hiddenCols.has('meal'), noteOn = !hiddenCols.has('note');
+    const usedTags = new Set(); st.rows.forEach(r => Object.values(r.cells).forEach(c => { if(c.tag) usedTags.add(c.tag); }));
+    const nameOptions = [...new Set([...siteMembers.map(p => p.name), ...daichoNames])];
+    container.innerHTML = `
+      <div class="toolbar">
+        <div class="toolbar-l">
+          ${opts.onDaicho ? `<button type="button" class="btn ghost sm" id="hc-daicho-btn">${icon('download',{size:'13px'})} 台帳から氏名候補</button>` : ''}
+          <button type="button" class="btn ghost sm" id="hc-colpanel-btn">${icon('layoutGrid',{size:'13px'})} 列の表示設定</button>
+          ${editable ? `<button type="button" class="btn ghost sm" id="hc-addcol-btn">${icon('plus',{size:'13px'})} 時間帯を追加</button>` : ''}
+          ${opts.onShare ? `<button type="button" class="btn ghost sm" id="hc-share-btn">${icon('link',{size:'13px'})} 共有リンク</button>` : ''}
+        </div>
+        <div class="legend">${[...usedTags].map(t => `<span class="chip" style="color:var(--tag-${t}-t);background:var(--tag-${t}-bg);border-color:var(--tag-${t}-b)">${h(HAICHI_TAG_LABEL[t])}</span>`).join('')}</div>
+      </div>
+      <div class="col-panel ${colPanelOpen?'open':''}" id="hc-colpanel">
+        <label><input type="checkbox" ${wlOn?'checked':''} data-col="wl"> 無線</label>
+        <label><input type="checkbox" ${mealOn?'checked':''} data-col="meal"> 食事</label>
+        <label><input type="checkbox" ${noteOn?'checked':''} data-col="note"> 備考</label>
+      </div>
+      <div class="tbl-scroll"><table class="haichi" id="hc-table">
+        <thead><tr>
+          <th class="stick">#</th>
+          ${wlOn?'<th>無線</th>':''}
+          ${mealOn?'<th>食事</th>':''}
+          <th class="stick stick-name">氏名</th>
+          ${st.columns.map(col => `<th><div class="colhead">
+            ${editable && editing && editing.key === 'col-'+col.id ? `<input value="${h(col.label)}" data-colinput="${col.id}">` : `<span ${editable?`data-colrename="${col.id}"`:''}>${h(col.label)}</span>`}
+            ${editable ? `<button type="button" class="icobtn" data-delcol="${col.id}" title="この列を削除">${icon('x',{size:'11px'})}</button>` : ''}
+          </div></th>`).join('')}
+          <th>業務内容1st</th>
+          ${noteOn?'<th>備考</th>':''}
+          ${editable ? '<th></th>' : ''}
+        </tr></thead>
+        <tbody>${st.rows.map((r,i) => `<tr>
+          <td class="num stick">${i+1}</td>
+          ${wlOn?`<td class="chk">${editable ? `<input type="checkbox" data-wl="${r.id}" ${r.wireless?'checked':''}>` : (r.wireless ? icon('check',{size:'13px'}) : '<span class="dash">—</span>')}</td>`:''}
+          ${mealOn?`<td class="chk">${editable ? `<input type="checkbox" data-meal="${r.id}" ${r.meal?'checked':''}>` : (r.meal ? icon('check',{size:'13px'}) : '<span class="dash">—</span>')}</td>`:''}
+          <td class="stick stick-name">${nameCellHtml(r)}</td>
+          ${st.columns.map(col => `<td>${cellHtml(r, col.id)}</td>`).join('')}
+          <td>${plainCellHtml(r, 'job1st', '業務内容')}</td>
+          ${noteOn?`<td>${plainCellHtml(r, 'note', '—')}</td>`:''}
+          ${editable ? `<td><button type="button" class="icobtn" data-delrow="${r.id}" title="この行を削除">${icon('x',{size:'11px'})}</button></td>` : ''}
+        </tr>`).join('')}</tbody>
+        <tfoot><tr class="foot">
+          <td class="stick" colspan="${1+(wlOn?1:0)+(mealOn?1:0)+1}">計</td>
+          <td colspan="${st.columns.length+1+(noteOn?1:0)+(editable?1:0)}">${st.rows.filter(r=>r.wireless).length}名(無線) / ${st.rows.filter(r=>r.meal).length}名(食事) ・ 計${st.rows.length}名</td>
+        </tr></tfoot>
+      </table></div>
+      ${editable ? `<div class="addrow-bar">
+        <button type="button" class="btn ghost sm" id="hc-addrow-btn">${icon('plus',{size:'13px'})} 行を追加</button>
+      </div>
+      <div class="row" style="gap:8px;margin-top:12px">
+        <button type="button" class="btn gold" id="hc-save-btn">保存する</button>
+      </div>
+      <datalist id="hc-names-datalist">${nameOptions.map(n => `<option value="${h(n)}">`).join('')}</datalist>` : ''}`;
+    fixSticky();
+    wire();
+  }
+
+  function wire(){
+    const table = container.querySelector('#hc-table');
+    container.querySelector('#hc-colpanel-btn').onclick = () => { colPanelOpen = !colPanelOpen; render(); };
+    container.querySelector('#hc-colpanel').querySelectorAll('input[type=checkbox]').forEach(cb => cb.onchange = () => {
+      if(cb.checked) hiddenCols.delete(cb.dataset.col); else hiddenCols.add(cb.dataset.col);
+      render();
+    });
+    if(!editable) return; // 閲覧専用はここまで(列の表示切替だけ操作可能)
+
+    const addColBtn = container.querySelector('#hc-addcol-btn');
+    addColBtn.onclick = () => {
+      const id = nextTemp--;
+      st.columns.push({ id, label:'新しい時間帯' });
+      st.rows.forEach(r => r.cells[id] = { content:'', tag:null });
+      editing = { rowId:null, key:'col-'+id };
+      render();
+      const inp = container.querySelector(`[data-colinput="${id}"]`); if(inp){ inp.focus(); inp.select(); }
+    };
+    container.querySelector('#hc-addrow-btn').onclick = () => {
+      const id = nextTemp--;
+      const cells = {}; st.columns.forEach(c => cells[c.id] = { content:'', tag:null });
+      st.rows.push({ id, name:'', uid:null, wireless:0, meal:0, job1st:'', note:'', cells });
+      render();
+      const inp = container.querySelector(`[data-namein="${id}"]`); if(inp) inp.focus();
+    };
+    const daichoBtn = container.querySelector('#hc-daicho-btn');
+    if(daichoBtn) daichoBtn.onclick = () => withLoading(daichoBtn, async () => {
+      try{
+        const res = await opts.onDaicho();
+        daichoNames = res.list || [];
+        render();
+        showToast(daichoNames.length
+          ? `台帳から${daichoNames.length}件の氏名候補が見つかりました(氏名欄でその場から選べます)${res.truncated ? '\n※件数が多く、一部のファイルは時間の都合で確認できませんでした' : ''}`
+          : '見つかりませんでした。見つからない場合は氏名欄に直接入力してください。');
+      }catch(e){ showToast(e.message, true); }
+    });
+    const shareBtn = container.querySelector('#hc-share-btn');
+    if(shareBtn) shareBtn.onclick = () => opts.onShare();
+    container.querySelector('#hc-save-btn').onclick = () => withLoading(container.querySelector('#hc-save-btn'), async () => {
+      const payload = {
+        columns: st.columns.map((c,i) => ({ ...(c.id < 0 ? { tempId:c.id } : { id:c.id }), seq:i, label:c.label })),
+        rows: st.rows.map((r,i) => ({
+          ...(r.id < 0 ? { tempId:r.id } : { id:r.id }),
+          seq:i, name:r.name, uid:r.uid, wireless:r.wireless, meal:r.meal, job1st:r.job1st, note:r.note,
+          cells: Object.fromEntries(st.columns.map(c => [c.id, r.cells[c.id] || { content:'', tag:null }])),
+        })),
+      };
+      try{
+        const res = await opts.onSave(payload);
+        st.columns = res.columns.map(c => ({ id:c.id, label:c.label }));
+        st.rows = res.rows.map(r => ({ id:r.id, name:r.name, uid:r.uid, wireless:r.wireless, meal:r.meal, job1st:r.job1st, note:r.note, cells:r.cells || {} }));
+        render();
+        showToast('保存しました');
+      }catch(e){ showToast(e.message, true); }
+    });
+
+    table.querySelectorAll('[data-namein]').forEach(inp => {
+      const commit = () => {
+        const row = findRow(Number(inp.dataset.namein));
+        row.name = inp.value.slice(0,40);
+        row.uid = memberByName[row.name] || null;
+      };
+      inp.onchange = commit;
+      // documentレベルの共通キー操作(モーダル内Enter→primaryボタン自動クリック)に横取りされると、
+      // onchange(blur時発火)が走る前に保存が実行され、入力した氏名が保存されない事故が実際にあった。
+      // ここで確定+blurまで済ませ、stopPropagationでそちらに渡さないようにする。
+      inp.onkeydown = (e) => { if(e.key === 'Enter'){ e.preventDefault(); e.stopPropagation(); commit(); inp.blur(); } };
+    });
+    table.querySelectorAll('[data-wl]').forEach(cb => cb.onchange = () => { findRow(Number(cb.dataset.wl)).wireless = cb.checked?1:0; render(); });
+    table.querySelectorAll('[data-meal]').forEach(cb => cb.onchange = () => { findRow(Number(cb.dataset.meal)).meal = cb.checked?1:0; render(); });
+
+    table.querySelectorAll('[data-cell]').forEach(el => el.onclick = () => {
+      editing = { rowId: Number(el.dataset.row), key: isColKey(el.dataset.col) ? Number(el.dataset.col) : el.dataset.col };
+      render();
+      const inp = container.querySelector(`[data-cellinput][data-row="${el.dataset.row}"][data-col="${el.dataset.col}"]`);
+      if(inp){ inp.focus(); inp.select(); }
+    });
+    table.querySelectorAll('[data-cellinput]').forEach(inp => {
+      const commit = () => {
+        const row = findRow(Number(inp.dataset.row));
+        const key = isColKey(inp.dataset.col) ? Number(inp.dataset.col) : inp.dataset.col;
+        if(typeof key === 'number'){
+          if(!row.cells[key]) row.cells[key] = { content:'', tag:null };
+          row.cells[key].content = inp.value.slice(0,200);
+        } else {
+          row[key] = inp.value.slice(0,200);
+        }
+        editing = null; render();
+      };
+      inp.onkeydown = (e) => { if(e.key==='Enter'){ e.preventDefault(); e.stopPropagation(); commit(); } if(e.key==='Escape'){ editing=null; render(); } };
+      inp.onblur = commit;
+    });
+    table.querySelectorAll('[data-tagbtn]').forEach(dot => dot.onclick = (e) => {
+      e.stopPropagation();
+      openHaichiTagPopover(dot, Number(dot.dataset.row), Number(dot.dataset.col), st, render);
+    });
+    table.querySelectorAll('[data-colrename]').forEach(span => span.onclick = () => {
+      editing = { rowId:null, key:'col-'+span.dataset.colrename };
+      render();
+      const inp = container.querySelector(`[data-colinput="${span.dataset.colrename}"]`); if(inp){ inp.focus(); inp.select(); }
+    });
+    table.querySelectorAll('[data-colinput]').forEach(inp => {
+      const commit = () => {
+        const col = st.columns.find(c => c.id === Number(inp.dataset.colinput));
+        col.label = inp.value.slice(0,40) || col.label;
+        editing = null; render();
+      };
+      inp.onkeydown = (e) => { if(e.key==='Enter'){ e.preventDefault(); e.stopPropagation(); commit(); } if(e.key==='Escape'){ editing=null; render(); } };
+      inp.onblur = commit;
+    });
+    table.querySelectorAll('[data-delcol]').forEach(btn => btn.onclick = () => {
+      const colId = Number(btn.dataset.delcol);
+      st.columns = st.columns.filter(c => c.id !== colId);
+      st.rows.forEach(r => delete r.cells[colId]);
+      render();
+    });
+    table.querySelectorAll('[data-delrow]').forEach(btn => btn.onclick = () => {
+      st.rows = st.rows.filter(r => r.id !== Number(btn.dataset.delrow));
+      render();
+    });
+  }
+
+  render();
+}
+
+// タグ色選択のポップオーバー(表全体のrender()とは独立にDOMへ直接追加/削除する。renderのたびに
+// 消えてよい一時的なUIのため、st(閉じたスコープの編集状態)とrerender関数だけを受け取る)
+function openHaichiTagPopover(anchor, rowId, colId, st, rerender){
+  document.querySelectorAll('.tagpop').forEach(p => p.remove());
+  const rect = anchor.getBoundingClientRect();
+  const pop = document.createElement('div');
+  pop.className = 'tagpop';
+  pop.style.top = (rect.bottom + 6) + 'px';
+  pop.style.left = Math.min(rect.left, window.innerWidth - 170) + 'px';
+  pop.innerHTML = `<button type="button" class="none" data-tagpick="" title="色をクリア">${icon('x',{size:'10px'})}</button>` +
+    HAICHI_TAGS.map(t => `<button type="button" style="background:var(--tag-${t}-t)" data-tagpick="${t}" title="${h(HAICHI_TAG_LABEL[t])}"></button>`).join('');
+  document.body.appendChild(pop);
+  const close = () => pop.remove();
+  pop.querySelectorAll('[data-tagpick]').forEach(btn => btn.onclick = (e) => {
+    e.stopPropagation();
+    const row = st.rows.find(r => r.id === rowId);
+    if(!row.cells[colId]) row.cells[colId] = { content:'', tag:null };
+    row.cells[colId].tag = btn.dataset.tagpick || null;
+    close(); rerender();
+  });
+  setTimeout(() => document.addEventListener('click', function onDoc(e){
+    if(!e.target.closest('.tagpop')){ close(); document.removeEventListener('click', onDoc); }
+  }), 0);
+}
+
+// 現場情報モーダルの「配置表」タブを開いた時に呼ばれる(初回のみ、以後はタブ切替で使い回す)
+async function loadHaichiTab(date, site, siteMembers){
+  const panel = $('#site-tab-haichi');
+  panel.innerHTML = `<div class="loading-box"><span class="spinner"></span>読み込んでいます…</div>`;
+  let data;
+  try{ data = await api(`/site-haichi?date=${date}&site=${encodeURIComponent(site)}`); }
+  catch(e){ panel.innerHTML = `<div class="msg err">${h(e.message)}</div>`; return; }
+  // 共有リンクの状態(canEdit)はopenHaichiShareModalと共有する(同じオブジェクトを参照させることで、
+  // モーダルを開き直しても直前に切り替えた値がリセットされないようにする)
+  const guestState = { canEdit: !!data.guestCanEdit, url: data.guestUrl };
+  haichiEditorInit(panel, data, {
+    editable: true,
+    siteMembers,
+    onDaicho: async () => {
+      const res = await api(`/site-haichi/daicho-names?date=${date}&site=${encodeURIComponent(site)}`);
+      return { list: res.names || [], truncated: res.truncated };
+    },
+    onShare: () => openHaichiShareModal(date, site, guestState),
+    onSave: (payload) => api('/site-haichi', { method:'PUT', body:{ date, site, ...payload } }),
+  });
+}
+
+// 配置表の共有リンク(既定は閲覧専用)。現場チャットのゲスト招待(openGuestInviteModal)と同じ
+// QR/URL表示パターンを踏襲するが、チーフ以上が編集も許可できるチェックボックスを持つ点が異なる。
+// guestState: {canEdit,url}(loadHaichiTabと共有する同一オブジェクト。再度開いた時の初期値に使う)
+function openHaichiShareModal(date, site, guestState){
+  modal(`<h3>${icon('link',{size:'15px'})} 配置表の共有リンク</h3><div class="loading-box"><span class="spinner"></span>発行しています…</div>`);
+  (async () => {
+    let data;
+    try{ data = await api('/site-haichi/guest-link', { method:'POST', body:{ date, site, canEdit: guestState.canEdit } }); }
+    catch(e){ modal(`<h3>配置表の共有リンク</h3><div class="msg err">${h(e.message)}</div>`); return; }
+    guestState.url = data.url; guestState.canEdit = data.canEdit;
+    const qr = QR.generate(data.url);
+    modal(`<h3>${icon('link',{size:'15px'})} 配置表の共有リンク</h3>
+      <div class="muted" style="font-size:12.5px;margin-bottom:12px">${h(site)}(${h(date)})の配置表を、アプリのアカウントが無い人にも共有できます。</div>
+      ${qr ? `<div style="text-align:center;margin-bottom:12px">${QR.toSvg(qr)}</div>` : '<div class="msg err">QRコードの生成に失敗しました(URLが長すぎる可能性があります)。下のURLを直接共有してください。</div>'}
+      <div class="row" style="gap:6px;margin-bottom:12px">
+        <input id="hs-url" value="${h(data.url)}" readonly style="flex:1;font-size:12px" onclick="this.select()">
+        <button class="btn ghost sm" id="hs-copy">コピー</button>
+      </div>
+      <label class="row" style="gap:6px;align-items:center;font-size:13px;cursor:pointer">
+        <input type="checkbox" id="hs-canedit" ${data.canEdit?'checked':''}>
+        共有した人も配置表を編集できるようにする
+      </label>`);
+    $('#hs-copy').onclick = async () => {
+      try{ await navigator.clipboard.writeText(data.url); popup('コピーしました'); }
+      catch(e){ $('#hs-url').select(); popup('選択したのでCtrl+C(Cmd+C)でコピーしてください'); }
+    };
+    $('#hs-canedit').onchange = async (e) => {
+      const checked = e.target.checked;
+      try{
+        const r = await api('/site-haichi/guest-link', { method:'POST', body:{ date, site, canEdit: checked } });
+        guestState.canEdit = r.canEdit;
+      }catch(err){ popup(err.message, 'error'); e.target.checked = !checked; }
+    };
+  })();
+}
+
+// 配置表の共有ページ(#/gh/:token)。#/g/:token(現場チャットのゲスト招待)と同じく、認証状態に
+// 関わらず動く専用の入口画面。閲覧専用/編集可の切替はcanEditフラグをそのままhaichiEditorInitへ渡す。
+async function renderGuestHaichiEntry(token){
+  clearTimers();
+  document.body.classList.remove('ops-page');
+  const root = document.getElementById('root');
+  root.innerHTML = `<div class="login-wrap"><div class="login-card" id="guest-haichi-card" style="max-width:none;width:min(1100px,96vw)"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div></div>`;
+  const cardEl = () => $('#guest-haichi-card');
+  let data;
+  try{
+    const res = await fetch('/api/guest-haichi/'+token);
+    data = await res.json().catch(() => ({}));
+    if(!res.ok) throw new Error(data.error || 'リンクが無効です');
+  }catch(e){
+    cardEl().innerHTML = `<h1>リンクが無効です</h1><div class="sub">${h(e.message)}</div>`;
+    return;
+  }
+  cardEl().innerHTML = `
+    <h1 style="font-size:18px">${h(data.site)} <span class="muted" style="font-size:13px;font-weight:400">配置表</span></h1>
+    <div class="sub" style="margin-bottom:14px">${h(data.date)}${data.canEdit ? '' : '(閲覧専用)'}</div>
+    <div id="ghc-panel"></div>`;
+  haichiEditorInit($('#ghc-panel'), data, {
+    editable: !!data.canEdit,
+    onSave: async (payload) => {
+      const res = await fetch('/api/guest-haichi/'+token, { method:'PUT', headers:{ 'content-type':'application/json' }, body: JSON.stringify(payload) });
+      const d = await res.json().catch(() => ({}));
+      if(!res.ok) throw new Error(d.error || '保存できませんでした');
+      return d;
+    },
+  });
 }
 
 // ---- QRコード生成(ISO/IEC 18004準拠、バイトモード固定・誤り訂正レベルL・バージョン1〜10のみ対応) ----
@@ -1648,6 +2051,9 @@ async function render(){
   // 入口ページ。TOKEN(通常ログイン)の有無チェックより前に振り分ける。
   const guestMatch = (location.hash || '').match(/^#\/g\/([a-zA-Z0-9]+)/);
   if(guestMatch){ await renderGuestChatEntry(guestMatch[1]); return; }
+  // 配置表の共有ページ(#/gh/:token)。上と同じくTOKEN(通常ログイン)の有無チェックより前に振り分ける
+  const guestHaichiMatch = (location.hash || '').match(/^#\/gh\/([a-zA-Z0-9]+)/);
+  if(guestHaichiMatch){ await renderGuestHaichiEntry(guestHaichiMatch[1]); return; }
   if(!TOKEN){ renderLogin(); return; }
   if(!ME){
     try{ ME = await api('/me'); } catch(e){ renderLogin(e.message); return; }

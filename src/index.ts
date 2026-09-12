@@ -15,6 +15,11 @@ const ERR = (m, s = 400) => J({ error: m }, s);
 const LV = { member: 0, chief: 1, handler: 2, admin: 3 };
 const lv = u => LV[u.role] ?? 0;
 const HOURLY = 1150; // 基本時給
+// 配置表(現場情報タブ)の業務内容タグ色。認証不要の/guest-haichi/:tokenルートが、この後方に
+// ある配置表関連コード(loadHaichiState/saveHaichiState)より前に評価されるため、
+// モジュール直下(リクエスト処理関数の外)で定義する必要がある(constのTDZに、後方のif分岐が
+// 先に実行されて引っかかる事故が実際にあった)。
+const HAICHI_TAGS = ['gold', 'blue', 'green', 'rose', 'violet', 'teal', 'slate'];
 
 // ===== 個別追加権限 =====
 // 基本権限(メンツ/チーフ/手配者/管理者)とは別に、ユーザー単位で個別に機能を追加できる。
@@ -103,6 +108,7 @@ const APP_STRUCTURE_PAGES = [
   { hash: '#/home', name: 'ホーム', role: '全員', desc: 'ログイン後の最初の画面。今日から1週間分の予定をスワイプで確認でき、未読通知・承認待ち件数、権限に応じたメニューショートカットを表示する。' },
   { hash: '#/chat', name: 'チャット', role: '全員', desc: 'チャット一覧(全体・役職(チーフ以上/手配担当以上/管理者)・課・手配チーム・個人)と、選んだルームのメッセージ画面(#/chat/:id)。ポーリング方式で新着メッセージを取得する。現場ごとのチャットは現場詳細モーダルから、個人チャット(DM)は一覧の「新しいメッセージ」から開始する。チーフ以上は現場詳細モーダルから招待URL/QR(#/g/:token)を発行できる。役職チャット(チーフ以上/手配担当以上/管理者の3つ、閲覧はロールの下限で判定。「お知らせ専用」ではなく通常の会話も可能)と全体チャットには、アップデートのお知らせが対象ロールに応じてsender_name「お知らせ」のシステムメッセージとして自動投稿される。' },
   { hash: '#/g/:token', name: '現場チャットのゲスト招待ページ', role: '全員(未ログインでも可)', desc: '現場ごとのチャットへの招待URL/QRの遷移先。アプリのログイン状態に関わらず動く専用の入口画面(render()内でTOKEN有無チェックより前に振り分ける)。ログイン中なら通常のアカウントでそのままチャットへ、未ログインならログインするか、名前を入力してゲストとして参加できる。現場当日(JST)以外は利用不可。' },
+  { hash: '#/gh/:token', name: '配置表の閲覧専用共有ページ', role: '全員(未ログインでも可)', desc: '配置表の共有URL/QRの遷移先。#/g/:tokenと同じくTOKEN有無チェックより前に振り分ける専用入口画面。閲覧のみで編集はできない。チャットのゲスト招待と異なり、現場当日以外でも(事前の確認用途を想定し)利用できる。' },
   { hash: '#/dashboard', name: '管理者ダッシュボード', role: 'dashboard_view権限者', desc: '定期処理(台帳再取込・予定表ソース取込・ランク昇格適用・新人報告リマインド)の最終実行日時、予定表ソースのエラー詳細等、システム状態を一覧表示する。' },
   { hash: '#/schedule', name: 'マイスケジュール', role: '全員', desc: '月間カレンダーで自身(または閲覧権限のある他者)のスケジュールを表示する。日付タップで現場変更報告・休み希望の入力モーダルを開く。member_summary_view権限があれば画面末尾に個人の年間サマリーを表示。「行った会場」「行った公演」ボタン(全員の中での順位表示含む)は誰でも見られるが、そこから会場/公演詳細への遷移と、現場検索バーの利用はsites_view権限(チーフ以上)に限る。月見出しタップで年月を直接選択できる。' },
   { hash: '#/edit', name: 'スケジュール入力', role: '手配者(手配モード中)', desc: '現場へのメンバー一括登録、個人ごとの詳細編集(時刻・業務・休憩等)を行う。' },
@@ -191,6 +197,12 @@ const APP_STRUCTURE_API_GROUPS = [
     ['POST', '/rookie-excluded', '新人リストの除外設定に登録番号を追加(wage_settings権限)。以後の台帳取込・一覧表示から除外される'],
     ['DELETE', '/rookie-excluded/:regno', '新人リストの除外設定から登録番号を1件解除(wage_settings権限)'],
     ['GET', '/site-members', '指定現場・日のメンバー一覧({list,venue}形式。実績0件の場合はvenueに手動登録側の会場を返す)'],
+    ['GET', '/site-haichi', '配置表(現場情報タブ、準備中機能)の列・行・セルを取得(sites_view、チーフ以上)'],
+    ['PUT', '/site-haichi', '配置表を差分保存(sites_view、チーフ以上)。列→行→セルの順にid突き合わせで追加/変更/削除を判定'],
+    ['GET', '/site-haichi/daicho-names', '配置表の氏名候補を、台帳保管の最近のファイルをその場で解析して取得(sites_view、チーフ以上)。台帳フォーマットC以外は氏名を読み取れない制約あり(ベストエフォート)'],
+    ['POST', '/site-haichi/guest-link', '配置表の共有URL/QR用トークンを発行(無ければ作成、あれば既存を返す。sites_view、チーフ以上)。body.canEditで共有相手の編集可否を切替'],
+    ['GET', '/guest-haichi/:token', '招待トークンから配置表を取得(認証不要、日付制限なし)。canEditで編集可否を返す'],
+    ['PUT', '/guest-haichi/:token', '招待トークンから配置表を差分保存(認証不要)。guest_can_editが有効な場合のみ許可'],
     ['GET/PUT', '/site-record', '個人の現場記録(配置・休憩・自由記入)の取得・保存'],
     ['GET', '/site-record-breaks', '指定現場・日の全員分の休憩合計(チーフ以上)'],
     ['GET', '/site-roster', '複数日現場の稼働表。同じ現場(または会場)が連続する日程を自動判定し、その期間の人だけを日付×人のマトリックス形式で返す(チーフ以上)'],
@@ -2600,6 +2612,26 @@ async function api(req, env, url) {
     return ERR('不正なリクエストです');
   }
 
+  // ---- 配置表の共有(認証不要・招待URLのトークンで本人確認)。チャットのゲスト招待と違い、
+  //      事前確認用途を想定し現場当日限定にはしない。既定は閲覧専用で、chief以上が
+  //      guest_can_editを有効にした場合だけPUTでの編集も受け付ける。 ----
+  let ghm;
+  if (method === 'GET' && (ghm = path.match(/^\/guest-haichi\/([a-zA-Z0-9]+)$/))) {
+    const meta = await env.DB.prepare('SELECT * FROM haichi_meta WHERE guest_token=?').bind(ghm[1]).first();
+    if (!meta) return ERR('リンクが無効です', 404);
+    const { date, site } = meta as any;
+    const state = await loadHaichiState(env, date, site);
+    return J({ date, site, canEdit: !!(meta as any).guest_can_edit, ...state });
+  }
+  if (method === 'PUT' && (ghm = path.match(/^\/guest-haichi\/([a-zA-Z0-9]+)$/))) {
+    const meta = await env.DB.prepare('SELECT * FROM haichi_meta WHERE guest_token=?').bind(ghm[1]).first();
+    if (!meta) return ERR('リンクが無効です', 404);
+    if (!(meta as any).guest_can_edit) return ERR('このリンクは閲覧専用です', 403);
+    const { date, site } = meta as any;
+    const state = await saveHaichiState(env, date, site, body, null);
+    return J({ ok: 1, date, site, ...state });
+  }
+
   // ---- スプレッドシート取り込み(GAS用・共有トークン認証)----
   // GAS から POST /api/import-schedule で呼び出す。セッション不要。
   if (method === 'POST' && path === '/import-schedule') {
@@ -2722,7 +2754,7 @@ async function api(req, env, url) {
     'admin', 'admin-settings', 'role-permissions', 'perm-matrix', 'handler-status',
     'import', 'sched-sources', 'daicho', 'member-summary',
     'venues', 'venue-manual', 'legacy-import', 'artists', 'app-structure', 'system',
-    'training-status', 'chat', 'rookie-list',
+    'training-status', 'chat', 'rookie-list', 'haichi-hyo',
   ];
   if (method === 'GET' && path === '/settings/feature-status') {
     const status = {};
@@ -5001,6 +5033,190 @@ async function api(req, env, url) {
     const key = `manuals/${encodeURIComponent(venue)}/${jstTs().replace(/[: ]/g, '-')}_${rnd().slice(0, 10)}${ext}`;
     await env.MANUALS.put(key, await file.arrayBuffer(), { httpMetadata: { contentType } });
     return J({ key });
+  }
+
+  // ==== 配置表(現場情報タブ、準備中機能) ====
+  // 1行=1人、1列=1時間帯のクロス表。列(時間帯)は現場ごとに自由に追加・削除・改名できる。
+  // 氏名はusers登録の有無に関わらずname(表示名)を正とする(台帳には登録番号が「3」始まりでない
+  // 他拠点・外部委託スタッフも載っており、そういう人もuid無しの行として扱えるようにするため)。
+  // HAICHI_TAGSはモジュール直下(ファイル先頭付近)で定義済み。
+
+  async function loadHaichiState(env, date, site) {
+    const [columns, rows, cells] = await Promise.all([
+      env.DB.prepare('SELECT id, label FROM haichi_columns WHERE date=? AND site=? ORDER BY seq, id').bind(date, site).all(),
+      env.DB.prepare('SELECT id, name, uid, wireless, meal, job1st, note FROM haichi_rows WHERE date=? AND site=? ORDER BY seq, id').bind(date, site).all(),
+      env.DB.prepare('SELECT hc.row_id, hc.column_id, hc.content, hc.tag FROM haichi_cells hc JOIN haichi_rows hr ON hr.id=hc.row_id WHERE hr.date=? AND hr.site=?').bind(date, site).all(),
+    ]);
+    const cellsByRow: Record<number, any> = {};
+    for (const c of cells.results as any[]) (cellsByRow[c.row_id] ||= {})[c.column_id] = { content: c.content, tag: c.tag };
+    return {
+      columns: columns.results,
+      rows: (rows.results as any[]).map(r => ({ ...r, cells: cellsByRow[r.id] || {} })),
+    };
+  }
+
+  // 列→行→セルの順にid突き合わせで追加/変更/削除を判定する差分保存(会場マニュアルのブロック
+  // 差分保存と同じ考え方)。認証済みのPUT /site-haichiと、guest_can_edit時のPUT /guest-haichi/:token
+  // の両方から呼ぶ(editorIdはゲスト編集時null)。
+  async function saveHaichiState(env, date, site, body, editorId) {
+    const clampStr = (v, max) => String(v ?? '').slice(0, max);
+    const ts = jstTs();
+
+    const incomingCols = Array.isArray(body.columns) ? body.columns.slice(0, 30) : [];
+    const existingCols = (await env.DB.prepare('SELECT * FROM haichi_columns WHERE date=? AND site=?').bind(date, site).all()).results as any[];
+    const existingColById = new Map(existingCols.map(c => [c.id, c]));
+    const colKeyToId: Record<string, number> = {};
+    const seenColIds = new Set<number>();
+    let seq = 0;
+    for (const c of incomingCols) {
+      const label = clampStr(c.label, 60) || '(名称未設定)';
+      const id = Number(c.id);
+      if (c.id && existingColById.has(id)) {
+        seenColIds.add(id);
+        const cur = existingColById.get(id);
+        if (cur.label !== label || cur.seq !== seq) {
+          await env.DB.prepare('UPDATE haichi_columns SET label=?,seq=? WHERE id=?').bind(label, seq, id).run();
+        }
+        colKeyToId[String(c.id)] = id;
+      } else {
+        const ins = await env.DB.prepare('INSERT INTO haichi_columns(date,site,seq,label) VALUES(?,?,?,?)').bind(date, site, seq, label).run();
+        colKeyToId[String(c.tempId ?? c.id)] = ins.meta.last_row_id as number;
+      }
+      seq++;
+    }
+    const deletedColIds = existingCols.filter(c => !seenColIds.has(c.id)).map(c => c.id);
+
+    const incomingRows = Array.isArray(body.rows) ? body.rows.slice(0, 200) : [];
+    const existingRows = (await env.DB.prepare('SELECT * FROM haichi_rows WHERE date=? AND site=?').bind(date, site).all()).results as any[];
+    const existingRowById = new Map(existingRows.map(r => [r.id, r]));
+    const seenRowIds = new Set<number>();
+    seq = 0;
+    for (const r of incomingRows) {
+      const name = clampStr(r.name, 40);
+      const uid = Number(r.uid) || null;
+      const wireless = r.wireless ? 1 : 0;
+      const meal = r.meal ? 1 : 0;
+      const job1st = clampStr(r.job1st, 120);
+      const note = clampStr(r.note, 200);
+      let rowId: number;
+      const id = Number(r.id);
+      if (r.id && existingRowById.has(id)) {
+        rowId = id; seenRowIds.add(id);
+        const cur = existingRowById.get(id);
+        if (cur.name !== name || cur.uid !== uid || cur.wireless !== wireless || cur.meal !== meal || cur.job1st !== job1st || cur.note !== note || cur.seq !== seq) {
+          await env.DB.prepare('UPDATE haichi_rows SET seq=?,name=?,uid=?,wireless=?,meal=?,job1st=?,note=? WHERE id=?')
+            .bind(seq, name, uid, wireless, meal, job1st, note, id).run();
+        }
+      } else {
+        const ins = await env.DB.prepare('INSERT INTO haichi_rows(date,site,seq,name,uid,wireless,meal,job1st,note) VALUES(?,?,?,?,?,?,?,?,?)')
+          .bind(date, site, seq, name, uid, wireless, meal, job1st, note).run();
+        rowId = ins.meta.last_row_id as number;
+      }
+      const cellsObj = r.cells && typeof r.cells === 'object' ? r.cells : {};
+      for (const colKey of Object.keys(cellsObj)) {
+        const colId = colKeyToId[String(colKey)];
+        if (!colId) continue; // 保存中に削除された列は無視
+        const cell = cellsObj[colKey] || {};
+        const content = clampStr(cell.content, 200);
+        const tag = HAICHI_TAGS.includes(cell.tag) ? cell.tag : null;
+        await env.DB.prepare(
+          'INSERT INTO haichi_cells(row_id,column_id,content,tag) VALUES(?,?,?,?) ON CONFLICT(row_id,column_id) DO UPDATE SET content=excluded.content,tag=excluded.tag'
+        ).bind(rowId, colId, content, tag).run();
+      }
+      seq++;
+    }
+    const deletedRowIds = existingRows.filter(r => !seenRowIds.has(r.id)).map(r => r.id);
+
+    if (deletedRowIds.length) {
+      const ph = deletedRowIds.map(() => '?').join(',');
+      await env.DB.prepare(`DELETE FROM haichi_cells WHERE row_id IN (${ph})`).bind(...deletedRowIds).run();
+      await env.DB.prepare(`DELETE FROM haichi_rows WHERE id IN (${ph})`).bind(...deletedRowIds).run();
+    }
+    if (deletedColIds.length) {
+      const ph = deletedColIds.map(() => '?').join(',');
+      await env.DB.prepare(`DELETE FROM haichi_cells WHERE column_id IN (${ph})`).bind(...deletedColIds).run();
+      await env.DB.prepare(`DELETE FROM haichi_columns WHERE id IN (${ph})`).bind(...deletedColIds).run();
+    }
+
+    await env.DB.prepare(
+      'INSERT INTO haichi_meta(date,site,updated_by,updated_at) VALUES(?,?,?,?) ON CONFLICT(date,site) DO UPDATE SET updated_by=excluded.updated_by,updated_at=excluded.updated_at'
+    ).bind(date, site, editorId, ts).run();
+
+    return loadHaichiState(env, date, site);
+  }
+
+  if (method === 'GET' && path === '/site-haichi') {
+    if (!has(me, 'sites_view')) return ERR('権限がありません', 403);
+    const date = (url.searchParams.get('date') || '').trim();
+    const site = (url.searchParams.get('site') || '').trim();
+    if (!date || !site) return ERR('日付と現場名が必要です');
+    const meta = await env.DB.prepare('SELECT guest_token, guest_can_edit FROM haichi_meta WHERE date=? AND site=?').bind(date, site).first();
+    const state = await loadHaichiState(env, date, site);
+    return J({
+      ...state,
+      guestUrl: meta && (meta as any).guest_token ? `${url.origin}/#/gh/${(meta as any).guest_token}` : null,
+      guestCanEdit: !!(meta && (meta as any).guest_can_edit),
+    });
+  }
+
+  if (method === 'PUT' && path === '/site-haichi') {
+    if (!has(me, 'sites_view')) return ERR('権限がありません', 403);
+    const date = String(body.date || '').trim();
+    const site = String(body.site || '').trim();
+    if (!date || !site) return ERR('日付と現場名が必要です');
+    const state = await saveHaichiState(env, date, site, body, me.id);
+    return J({ ok: 1, ...state });
+  }
+
+  // 配置表の氏名候補を、台帳保管(daicho_archive)の最近のファイルをその場で解析して集める
+  // (ベストエフォート)。applyImportRowsを経由しないため、登録番号が「3」始まりでない
+  // 他拠点・外部委託スタッフの氏名も、台帳フォーマットC(personName列を持つ)であれば拾える。
+  // フォーマットD/ABは現場名・登録番号までしか読めず氏名は拾えない(見つからなければ手入力を促す)。
+  if (method === 'GET' && path === '/site-haichi/daicho-names') {
+    if (!has(me, 'sites_view')) return ERR('権限がありません', 403);
+    const date = (url.searchParams.get('date') || '').trim();
+    const site = (url.searchParams.get('site') || '').trim();
+    if (!date || !site) return ERR('日付と現場名が必要です');
+    if (!env.DAICHO) return ERR('R2が未設定のため、この機能は使用できません', 500);
+    const keywordMap = await loadNonSiteKeywords(env);
+    const ARCHIVE_LIMIT = 30, BUDGET_MS = 8000;
+    const archives = (await env.DB.prepare('SELECT id, r2_key, file_name FROM daicho_archive ORDER BY id DESC LIMIT ?').bind(ARCHIVE_LIMIT).all()).results as any[];
+    const start = Date.now();
+    const names = new Set<string>();
+    let scanned = 0, truncated = false;
+    for (const rec of archives) {
+      if (Date.now() - start > BUDGET_MS) { truncated = true; break; }
+      scanned++;
+      try {
+        const obj = await env.DAICHO.get(rec.r2_key);
+        if (!obj) continue;
+        const buf = new Uint8Array(await obj.arrayBuffer());
+        const { allRows } = await parseDaichoExcelBuffer(env, buf, rec.file_name || `台帳_${rec.id}.xlsx`, date, keywordMap);
+        for (const r of allRows) {
+          if (r.date === date && (r.site || '') === site && r.personName) names.add(String(r.personName).trim());
+        }
+      } catch (e) { /* このファイルは解析できなかったので飛ばす */ }
+    }
+    return J({ names: [...names], scanned, truncated });
+  }
+
+  // 配置表の共有URL/QR用トークンを発行(無ければ作成、あれば既存を返す)。body.canEditを
+  // 渡すと、既存トークンのままguest_can_editだけを更新できる(URLを再発行せず権限だけ切替可能)。
+  if (method === 'POST' && path === '/site-haichi/guest-link') {
+    if (!has(me, 'sites_view')) return ERR('権限がありません', 403);
+    const date = String(body.date || '').trim();
+    const site = String(body.site || '').trim();
+    if (!date || !site) return ERR('日付と現場名が必要です');
+    const canEdit = body.canEdit ? 1 : 0;
+    const meta = await env.DB.prepare('SELECT guest_token FROM haichi_meta WHERE date=? AND site=?').bind(date, site).first();
+    let token = meta && (meta as any).guest_token;
+    if (!token) token = rndShort();
+    if (meta) {
+      await env.DB.prepare('UPDATE haichi_meta SET guest_token=?,guest_can_edit=? WHERE date=? AND site=?').bind(token, canEdit, date, site).run();
+    } else {
+      await env.DB.prepare('INSERT INTO haichi_meta(date,site,guest_token,guest_can_edit) VALUES(?,?,?,?)').bind(date, site, token, canEdit).run();
+    }
+    return J({ token, canEdit: !!canEdit, url: `${url.origin}/#/gh/${token}` });
   }
 
   // ---- 会場一覧: 選択した複数の会場名を、まとめて統一名称に変更(手配者以上)。

@@ -9,6 +9,15 @@
   --cell-site:#ffe94d;    /* 現場名(黄)*/
   --cell-off:#d93636;     /* 休暇・×(赤)*/
   --sat:#1f5fd6; --sun:#d93636;
+  /* 配置表: 業務内容タグの分類色(design-tokens.yaml colors.tag_palette と対応)。
+     status色(--ok/--warn/--danger)とは役割が異なる、意味を持たない識別用の色 */
+  --tag-gold-t:#8a6300; --tag-gold-bg:#fff3d6; --tag-gold-b:#e9d9a6;
+  --tag-blue-t:#1f5391; --tag-blue-bg:#eaf2fb; --tag-blue-b:#cbd9ec;
+  --tag-green-t:#1f7a3d; --tag-green-bg:#e7f6ec; --tag-green-b:#bfddc7;
+  --tag-rose-t:#a33a52; --tag-rose-bg:#fbeaee; --tag-rose-b:#e9c7d0;
+  --tag-violet-t:#6b4fa0; --tag-violet-bg:#efeaf7; --tag-violet-b:#d3c7e8;
+  --tag-teal-t:#1f6e6e; --tag-teal-bg:#e6f3f3; --tag-teal-b:#bedada;
+  --tag-slate-t:#4b5568; --tag-slate-bg:#eef0f3; --tag-slate-b:#d2d6dd;
   --ok:#2e7d32; --warn:#b26a00; --danger:#c0392b; --muted:#6b7089;
   /* 押した時に少しだけ弾んで戻る、触感のある操作感のための共通イージング。
      ボタン等が押された瞬間(:active突入)は既存のtransition-durationで素早く反応させ、
@@ -345,6 +354,54 @@ table.list tr.click:hover{background:#fdf6e0;cursor:pointer}
 .dcard-actions select{flex:1;min-width:120px}
 .dscore{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
 .dscore span{background:#f5f3ec;border-radius:5px;padding:2px 8px;font-size:12px}
+
+/* 現場情報モーダルのタブ(基本情報/配置表) */
+.tabbar{display:flex;gap:2px;border-bottom:1px solid #f0eee7;margin-bottom:12px}
+.tabbtn{appearance:none;border:none;background:none;font:inherit;font-size:14px;font-weight:700;color:#6b6b7b;padding:8px 4px;margin-right:20px;cursor:pointer;border-bottom:2px solid transparent}
+.tabbtn.on{color:var(--ink);border-bottom-color:var(--gold)}
+
+/* 配置表(現場情報タブ) */
+#site-tab-haichi .toolbar,#ghc-panel .toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+#site-tab-haichi .toolbar-l,#ghc-panel .toolbar-l{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+#site-tab-haichi .legend,#ghc-panel .legend{display:flex;gap:6px;flex-wrap:wrap}
+#site-tab-haichi .col-panel,#ghc-panel .col-panel{display:none;gap:14px;flex-wrap:wrap;font-size:12.5px;padding:8px 0;border-bottom:1px solid #f0eee7;margin-bottom:8px}
+#site-tab-haichi .col-panel.open,#ghc-panel .col-panel.open{display:flex}
+#site-tab-haichi .col-panel label,#ghc-panel .col-panel label{display:flex;align-items:center;gap:5px;color:#6b6b7b;cursor:pointer}
+#site-tab-haichi .tbl-scroll,#ghc-panel .tbl-scroll{overflow-x:auto;border:1px solid var(--line);border-radius:8px}
+table.haichi{border-collapse:separate;border-spacing:0;width:100%;font-size:13px}
+table.haichi th,table.haichi td{padding:6px 8px;border-bottom:1px solid #f0eee7;white-space:nowrap;text-align:left;vertical-align:middle}
+table.haichi thead th{background:var(--ink);color:#f3f1ea;font-size:11.5px;font-weight:700;position:sticky;top:0;z-index:2}
+table.haichi tbody tr:hover td{background:#f7f5ef}
+table.haichi td.num{text-align:center;color:#888;font-variant-numeric:tabular-nums}
+table.haichi td.chk{text-align:center}
+table.haichi .stick{position:sticky;left:0;background:#fff;z-index:1;box-shadow:2px 0 4px rgba(20,20,30,.06)}
+/* table{width:100%}のauto table-layoutが、表全体が既に横スクロールしている状況でも氏名列を
+   不当に圧縮してしまう(実機375px幅で氏名が読めなくなる不具合が実際にあった)ため、最低幅を確保する */
+table.haichi .stick-name{min-width:92px}
+table.haichi thead th.stick{background:var(--ink);z-index:3}
+table.haichi tbody tr:hover td.stick{background:#fbfaf6}
+table.haichi .foot td{background:var(--ink);color:#f3f1ea;font-weight:700;font-size:12.5px;border-bottom:none}
+table.haichi .dash{color:var(--line);font-weight:400}
+table.haichi .name-input{font:inherit;font-size:13px;font-weight:600;color:var(--ink);border:1px solid transparent;background:transparent;border-radius:6px;padding:3px 4px;min-width:80px;max-width:110px;width:100%}
+table.haichi .name-input:hover{border-color:var(--line)}
+table.haichi .name-input:focus{border-color:var(--gold-dark);outline:none;background:#f7f5ef}
+table.haichi .cellwrap{display:flex;align-items:center;gap:5px;min-width:80px}
+table.haichi .tagdot{width:9px;height:9px;border-radius:50%;flex-shrink:0;border:1px solid rgba(0,0,0,.15);cursor:pointer;padding:0}
+table.haichi .tagdot.empty{background:#fff;border-style:dashed;border-color:var(--line)}
+table.haichi .celltext{border-radius:6px;font-weight:600;padding:3px 7px;cursor:text;flex:1;min-height:1.4em;display:inline-block}
+table.haichi .celltext.plain{font-weight:400;background:none!important}
+table.haichi .celltext:hover{outline:1px dashed var(--line)}
+table.haichi .cellinput{font:inherit;font-size:13px;border:1px solid var(--gold-dark);border-radius:6px;padding:2px 6px;flex:1;min-width:60px}
+table.haichi .colhead{display:flex;align-items:center;gap:4px}
+table.haichi .colhead input{font:inherit;font-size:11.5px;font-weight:700;color:var(--ink);background:#f3f1ea;border:1px solid var(--gold);border-radius:4px;padding:2px 4px;width:100%}
+table.haichi .icobtn{appearance:none;border:none;background:none;padding:2px;cursor:pointer;color:inherit;opacity:.55;display:inline-flex;border-radius:4px}
+table.haichi .icobtn:hover{opacity:1;background:rgba(255,255,255,.15)}
+table.haichi td .icobtn{color:#888}
+table.haichi td .icobtn:hover{color:#222;background:#f0eee7}
+.tagpop{position:fixed;z-index:1200;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow-md);padding:8px;display:flex;gap:6px;flex-wrap:wrap;width:150px}
+.tagpop button{width:22px;height:22px;border-radius:50%;border:1px solid rgba(0,0,0,.15);cursor:pointer;padding:0}
+.tagpop button.none{background:#fff;border-style:dashed;display:flex;align-items:center;justify-content:center;color:#888}
+#site-tab-haichi .addrow-bar,#ghc-panel .addrow-bar{margin-top:8px}
 
 /* スマホ用 スケジュール入力(日選択フォーム) */
 .me-pick{display:flex;align-items:center;gap:10px;margin-bottom:12px;background:var(--ink);padding:10px 12px;border-radius:8px}
