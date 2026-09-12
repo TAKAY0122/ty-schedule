@@ -355,7 +355,10 @@ table.list tr.click:hover{background:#fdf6e0;cursor:pointer}
 .dscore{display:flex;gap:6px;flex-wrap:wrap;margin-top:4px}
 .dscore span{background:#f5f3ec;border-radius:5px;padding:2px 8px;font-size:12px}
 
-/* 現場情報モーダルのタブ(基本情報/配置表) */
+/* モーダル→フルページ化した詳細画面(現場情報・会場詳細・公演詳細等)共通の「戻る」導線 */
+.page-back-row{margin-bottom:10px}
+
+/* 現場情報のタブ(基本情報/配置表/稼働表) */
 .tabbar{display:flex;gap:2px;border-bottom:1px solid #f0eee7;margin-bottom:12px}
 .tabbtn{appearance:none;border:none;background:none;font:inherit;font-size:14px;font-weight:700;color:#6b6b7b;padding:8px 4px;margin-right:20px;cursor:pointer;border-bottom:2px solid transparent}
 .tabbtn.on{color:var(--ink);border-bottom-color:var(--gold)}

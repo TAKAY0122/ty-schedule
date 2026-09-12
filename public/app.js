@@ -151,6 +151,7 @@ const PAGE_LABELS = {
   'daicho':'台帳保管','permissions':'権限の個人設定','calendar-guide':'カレンダー連携のやり方','version-history':'アップデート履歴',
   'password':'パスワード変更','login':'ログイン画面','venues':'会場一覧','legacy-import':'過去データ取込確認','artists':'公演一覧',
   'app-structure':'アプリ構造ビューア','system':'システム管理','venue-manual':'会場マニュアル',
+  'site':'現場情報','venue':'会場詳細','artist':'公演詳細','day-edit':'スケジュール編集','site-bulk-edit':'一括編集',
 };
 function pageLabelFromHash(hash){
   if(!hash) return '';
@@ -1021,8 +1022,18 @@ function openHandlerPin(onSuccess){
   // フォーカス・Enterでの送信は、modal()共通のキーボード操作(_focusModalDefault / document keydown)に任せる
 }
 
-// 現場情報モーダル(チーフ以上が閲覧、手配担当以上はメンバー追加・一括編集可)
-async function openSiteModal(date, site){
+// 現場情報(チーフ以上が閲覧、手配担当以上はメンバー追加・一括編集可)。#/site/:date/:site のフルページ。
+// 基本情報・配置表・稼働表の3タブ構成(配置表・稼働表はいずれも遅延読み込み)。
+async function pageSiteDetail(app, hash){
+  if(!has('sites_view')){ notFound(app); return; }
+  const parts = hash.split('/');
+  const date = parts[2] || '';
+  const site = decodeURIComponent(parts[3] || '');
+  if(!date || !site){ notFound(app); return; }
+  app.innerHTML = `<div class="page-back-row"><a href="#/sites" class="btn ghost sm">${icon('arrowLeft',{size:13})} 現場一覧へ戻る</a></div>
+    <h2>${icon('briefcase')} 現場情報</h2>
+    <div class="card" id="site-detail-card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>`;
+  const cardEl = $('#site-detail-card');
   const canPay = LV[ME.role] >= 2;
   const canAdd = ME.handler === 1; // 手配者モードのときメンバー追加・編集可
   const canViewSched = LV[ME.role] >= 1; // 名前タップでスケジュールへ遷移できるか(チーフ以上)
@@ -1110,8 +1121,7 @@ async function openSiteModal(date, site){
       <dt>日付</dt><dd>${h(date)}</dd>
       <dt>人数</dt><dd>チーフ・手配 ${chiefs.length}名 / メンツ ${members.length}名(計${list.length}名)</dd>
     </dl>
-    ${(canRoster || canChat) ? `<div class="row" style="gap:8px;margin:2px 0 10px">
-      ${canRoster ? `<button type="button" class="btn ghost sm" id="site-roster-btn">${icon('layoutGrid',{size:'13px'})} 稼働表</button>` : ''}
+    ${(canChat || canRookie) ? `<div class="row" style="gap:8px;margin:2px 0 10px">
       ${canChat ? `<button type="button" class="btn ghost sm" id="site-chat-btn">${icon('messageCircle',{size:'13px'})} チャット</button>` : ''}
       ${canInvite ? `<button type="button" class="btn ghost sm" id="site-invite-btn">${icon('link',{size:'13px'})} 招待リンク</button>` : ''}
       ${canRookie ? `<button type="button" class="btn ghost sm" id="site-rookie-btn">${icon('sparkles',{size:'13px'})} 新人</button>` : ''}
@@ -1130,32 +1140,33 @@ async function openSiteModal(date, site){
       <div>${samePast.map(histItem).join('')}</div>` : ''}
     ${venue ? histSection('今後の同会場の公演', [], sameVenueFuture, 'venue') : ''}
     ${histSection('今後の同アーティストの公演', [], sameSiteFuture, 'site')}`;
-  modal(`<h3>現場情報</h3>
-    ${canHaichi ? `<div class="tabbar" id="site-modal-tabs">
+  cardEl.innerHTML = `
+    ${(canHaichi || canRoster) ? `<div class="tabbar" id="site-detail-tabs">
       <button type="button" class="tabbtn on" data-tab="info">基本情報</button>
-      <button type="button" class="tabbtn" data-tab="haichi">配置表</button>
+      ${canHaichi ? `<button type="button" class="tabbtn" data-tab="haichi">配置表</button>` : ''}
+      ${canRoster ? `<button type="button" class="tabbtn" data-tab="roster">稼働表</button>` : ''}
     </div>` : ''}
     <div id="site-tab-info">${infoBodyHtml}</div>
-    ${canHaichi ? `<div id="site-tab-haichi" style="display:none"></div>` : ''}`);
-  if(canHaichi){
-    let haichiLoaded = false;
-    const tabsEl = $('#site-modal-tabs');
+    ${canHaichi ? `<div id="site-tab-haichi" style="display:none"></div>` : ''}
+    ${canRoster ? `<div id="site-tab-roster" style="display:none"></div>` : ''}`;
+  const tabsEl = $('#site-detail-tabs');
+  if(tabsEl){
+    let haichiLoaded = false, rosterLoaded = false;
     tabsEl.onclick = (e) => {
       const btn = e.target.closest('.tabbtn'); if(!btn) return;
       tabsEl.querySelectorAll('.tabbtn').forEach(b => b.classList.toggle('on', b === btn));
-      const showHaichi = btn.dataset.tab === 'haichi';
-      $('#site-tab-info').style.display = showHaichi ? 'none' : '';
-      $('#site-tab-haichi').style.display = showHaichi ? '' : 'none';
-      if(showHaichi && !haichiLoaded){ haichiLoaded = true; loadHaichiTab(date, site, list); }
+      const tab = btn.dataset.tab;
+      $('#site-tab-info').style.display = tab === 'info' ? '' : 'none';
+      if($('#site-tab-haichi')) $('#site-tab-haichi').style.display = tab === 'haichi' ? '' : 'none';
+      if($('#site-tab-roster')) $('#site-tab-roster').style.display = tab === 'roster' ? '' : 'none';
+      if(tab === 'haichi' && !haichiLoaded){ haichiLoaded = true; loadHaichiTab(date, site, list); }
+      if(tab === 'roster' && !rosterLoaded){ rosterLoaded = true; loadSiteRosterTab(date, site); }
     };
   }
-  const rosterBtn = $('#site-roster-btn');
-  if(rosterBtn) rosterBtn.onclick = () => openSiteRoster(date, site);
   const chatBtn = $('#site-chat-btn');
   if(chatBtn) chatBtn.onclick = () => withLoading(chatBtn, async () => {
     try{
       const room = await api('/chat/rooms/open', { method:'POST', body:{ type:'site', date, site } });
-      closeModal();
       goTo('#/chat/'+room.id);
     }catch(e){ popup(e.message, 'error'); }
   });
@@ -1168,49 +1179,67 @@ async function openSiteModal(date, site){
   });
   const rookieBtn = $('#site-rookie-btn');
   if(rookieBtn) rookieBtn.onclick = () => openSiteRookieModal(date, site);
-  const venueLink = $('#modal-layer .venue-detail-link');
-  if(venueLink) venueLink.onclick = () => { closeModal(); openVenueModal(venueLink.dataset.venue); };
-  document.querySelectorAll('#modal-layer .site-hist-bulk-edit').forEach(btn => {
+  const venueLink = $('#site-detail-card .venue-detail-link');
+  if(venueLink) venueLink.onclick = () => goTo('#/venue/' + encodeURIComponent(venueLink.dataset.venue));
+  document.querySelectorAll('#site-detail-card .site-hist-bulk-edit').forEach(btn => {
     btn.onclick = (e) => {
       e.stopPropagation();
       if(btn.dataset.key === 'venue'){
-        openSiteBulkRename([...currentGig, ...sameVenueFuture], () => openSiteModal(date, site),
+        openSiteBulkRename([...currentGig, ...sameVenueFuture], () => pageSiteDetail(app, hash),
           { fieldsMode:'venue', title:'同会場の公演の会場をまとめて変更' });
       } else {
-        openSiteBulkRename([...currentGig, ...sameSiteFuture], () => openSiteModal(date, site),
+        openSiteBulkRename([...currentGig, ...sameSiteFuture], () => pageSiteDetail(app, hash),
           { fieldsMode:'site', title:'同アーティストの公演名をまとめて変更' });
       }
     };
   });
-  document.querySelectorAll('#modal-layer .site-hist-item').forEach(el => {
-    el.onclick = () => openSiteModal(el.dataset.date, el.dataset.site);
+  document.querySelectorAll('#site-detail-card .site-hist-item').forEach(el => {
+    el.onclick = () => goTo('#/site/' + el.dataset.date + '/' + encodeURIComponent(el.dataset.site));
   });
   // 氏名タップ → スケジュールへ遷移(編集モーダルより優先。行/カード全体のクリックとは独立させる)
   if(canViewSched){
-    document.querySelectorAll('#modal-layer .name-link[data-goto-uid]').forEach(el => {
+    document.querySelectorAll('#site-detail-card .name-link[data-goto-uid]').forEach(el => {
       el.onclick = (e) => {
         e.stopPropagation();
-        closeModal();
-        location.hash = '#/schedule/' + el.dataset.gotoUid;
+        goTo('#/schedule/' + el.dataset.gotoUid);
       };
     });
   }
   if(canAdd){
     $('#site-add-btn').onclick = () => openSiteAdd(date, site, venue, (list.find(p=>p.tin)||{}).tin || '', (list.find(p=>p.tout)||{}).tout || '');
     const eb = $('#site-edit-btn');
-    if(eb) eb.onclick = () => openSiteBulkEdit(date, site, venue, list);
-    // 各メンバー行/カードをタップ → 個人のその日の編集モーダルへ(氏名タップ時は上のハンドラでstopPropagation済み)
-    const byUid = {}; list.forEach(p => byUid[p.uid] = p);
+    if(eb) eb.onclick = () => goTo('#/site-bulk-edit/' + date + '/' + encodeURIComponent(site));
+    // 各メンバー行/カードをタップ → 個人のその日の編集ページへ(氏名タップ時は上のハンドラでstopPropagation済み)
     document.querySelectorAll('.sm-edit[data-uid]').forEach(el => {
       el.style.cursor = 'pointer';
       el.onclick = () => {
         const uid = Number(el.dataset.uid);
-        const p = byUid[uid];
-        if(!p) return;
-        openMemberDayEdit(uid, { name:p.name, role:p.role, rank:p.rank, ka:p.ka, han:p.han }, date);
+        goTo('#/day-edit/' + uid + '/' + date);
       };
     });
   }
+}
+
+// 稼働表タブ(現場情報)。複数日にわたる現場の日付×人のマトリックス表を、
+// 現場情報ページの「稼働表」タブとして遅延読み込みする(旧openSiteRoster)。
+async function loadSiteRosterTab(date, site){
+  const panel = $('#site-tab-roster');
+  panel.innerHTML = `<div class="loading-box"><span class="spinner"></span>読み込んでいます…</div>`;
+  let data;
+  try{ data = await api(`/site-roster?date=${date}&site=${encodeURIComponent(site)}`); }
+  catch(e){ panel.innerHTML = `<div class="msg err">${h(e.message)}</div>`; return; }
+  const periodLabel = data.dates.length > 1
+    ? `${data.dates[0]} 〜 ${data.dates[data.dates.length-1]}(${data.dates.length}日間)`
+    : data.dates[0];
+  panel.innerHTML = `<dl class="kv">
+      <dt>現場名</dt><dd><b>${h(data.site)}</b></dd>
+      ${data.venue?`<dt>会場</dt><dd>${h(data.venue)}</dd>`:''}
+      <dt>期間</dt><dd>${h(periodLabel)}</dd>
+    </dl>
+    <div style="margin-top:10px">
+      ${data.rows.length ? renderMatrixTable(data.dates, data.rows, {scrollable:true}) : '<div class="muted">この期間、この現場に入っているメンバーはいません</div>'}
+    </div>`;
+  wireMatrixCellClicks(panel);
 }
 
 // ==== 配置表タブ(現場情報、準備中機能) ====
@@ -1784,28 +1813,6 @@ function openGuestInviteModal(roomId, site, date){
   })();
 }
 
-// 複数日にわたる現場の稼働表。現場名(会場名一致を含む)から連続した日付の範囲を自動判定し、
-// その期間にこの現場(または同じ会場)へ入っている人だけを、スケジュール一覧と同じマトリックス
-// 形式で表示する。openSiteModalの「稼働表」ボタンから呼ばれる。
-async function openSiteRoster(date, site){
-  let data;
-  try{ data = await api(`/site-roster?date=${date}&site=${encodeURIComponent(site)}`); }
-  catch(e){ popup(e.message, 'error'); return; }
-  const periodLabel = data.dates.length > 1
-    ? `${data.dates[0]} 〜 ${data.dates[data.dates.length-1]}(${data.dates.length}日間)`
-    : data.dates[0];
-  modal(`<h3>${icon('layoutGrid',{size:'15px'})} 稼働表</h3>
-    <dl class="kv">
-      <dt>現場名</dt><dd><b>${h(data.site)}</b></dd>
-      ${data.venue?`<dt>会場</dt><dd>${h(data.venue)}</dd>`:''}
-      <dt>期間</dt><dd>${h(periodLabel)}</dd>
-    </dl>
-    <div style="margin-top:10px">
-      ${data.rows.length ? renderMatrixTable(data.dates, data.rows, {scrollable:true}) : '<div class="muted">この期間、この現場に入っているメンバーはいません</div>'}
-    </div>`);
-  wireMatrixCellClicks($('#modal-layer'));
-}
-
 // 現場記録(配置・休憩時間・自由記入欄)。本人と管理者のみ閲覧・編集可。育成計画・備考もあわせて表示。
 async function openSiteRecord(uid, uname, date, site){
   let data;
@@ -1889,9 +1896,26 @@ async function openSiteRecord(uid, uname, date, site){
 }
 
 // 現場の既存メンバーを一括編集(IN/OUT/会場/備考をまとめて変更、個別に外す)
-async function openSiteBulkEdit(date, site, venue, list){
+// 現場メンバーの一括編集(手配者以上)。#/site-bulk-edit/:date/:site のフルページ。
+async function pageSiteBulkEdit(app, hash){
+  if(ME.handler !== 1){ notFound(app); return; }
+  const parts = hash.split('/');
+  const date = parts[2] || '';
+  const site = decodeURIComponent(parts[3] || '');
+  if(!date || !site){ notFound(app); return; }
+  const backHash = '#/site/' + date + '/' + encodeURIComponent(site);
+  app.innerHTML = `<div class="page-back-row"><a href="${h(backHash)}" class="btn ghost sm">${icon('arrowLeft',{size:13})} 現場情報へ戻る</a></div>
+    <h2>${icon('edit')} 既存メンバーを一括編集</h2>
+    <div class="card" id="site-bulk-edit-card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>`;
+  const cardEl = $('#site-bulk-edit-card');
+  let siteData;
+  try{ siteData = await api(`/site-members?date=${date}&site=${encodeURIComponent(site)}`); }
+  catch(e){ cardEl.innerHTML = `<div class="msg err">${h(e.message)}</div>`; return; }
+  const list = siteData.list;
+  const venue = (list.find(p => p.venue) || {}).venue || siteData.venue || '';
+  if(!list.length){ cardEl.innerHTML = `<div class="muted">この日・この現場に入っているメンバーはいません</div>`; return; }
   const def = { tin:(list.find(p=>p.tin)||{}).tin||'', tout:(list.find(p=>p.tout)||{}).tout||'' };
-  modal(`<h3>既存メンバーを一括編集</h3>
+  cardEl.innerHTML = `
     <div class="muted" style="margin-bottom:8px"><b>${h(site)}</b>${venue?` / ${h(venue)}`:''} / ${h(date)}</div>
     <div class="be-note muted" style="margin-bottom:10px">チェックを入れた人だけに、現場名・会場・IN/OUTの変更を適用します(空欄の項目は変更しません)。チェックを外した人は変更しません。「休暇」にチェックを入れた人はこの現場を休暇に変更します(現場の変更内容より優先されます)。</div>
     <div class="form-grid" style="grid-template-columns:70px 1fr;max-width:420px">
@@ -1911,8 +1935,8 @@ async function openSiteBulkEdit(date, site, venue, list){
         <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted);cursor:pointer"><input type="checkbox" class="be-off" data-uid="${p.uid}">休暇</label>
       </div>`).join('')}
     </div>
-    <div class="row" style="margin-top:14px"><button class="btn gold" id="be-save" style="flex:1">変更を保存</button></div>`);
-  wirePickButtons($('#modal-layer'));
+    <div class="row" style="margin-top:14px"><button class="btn gold" id="be-save" style="flex:1">変更を保存</button></div>`;
+  wirePickButtons(cardEl);
   $('#be-save').onclick = async () => {
     const siteNew=$('#be-site').value.trim();
     const venueNew=$('#be-venue').value.trim(), tin=$('#be-in').value.trim(), tout=$('#be-out').value.trim();
@@ -1930,10 +1954,8 @@ async function openSiteBulkEdit(date, site, venue, list){
       try{
         const r = await api('/site-edit',{method:'PUT',body:{ date, site, keepUids:keep, offUids:off,
           newSite:siteNew, venue:venueNew, tin, tout }});
-        closeModal();
         popup(`${r.updated||0}名を更新${r.off?` / ${r.off}名を休暇に変更`:''}しました。`);
-        if(typeof pageSites==='function' && location.hash.startsWith('#/sites')){ const app=document.getElementById('app'); pageSites(app); }
-        else render();
+        goTo(backHash);
       }catch(e){ popup(e.message,'error'); }
     });
   };
@@ -2104,8 +2126,13 @@ async function render(){
     else if(hash.startsWith('#/schedule')) await pageSchedule(app, hash);
     else if(hash === '#/members') await pageMembers(app);
     else if(hash === '#/sites') await pageSites(app);
+    else if(hash.startsWith('#/site/')) await pageSiteDetail(app, hash);
+    else if(hash.startsWith('#/site-bulk-edit/')) await pageSiteBulkEdit(app, hash);
+    else if(hash.startsWith('#/day-edit/')) await pageDayEdit(app, hash);
     else if(hash === '#/venues') await pageVenues(app);
+    else if(hash.startsWith('#/venue/')) await pageVenueDetail(app, hash);
     else if(hash === '#/artists') await pageArtists(app);
+    else if(hash.startsWith('#/artist/')) await pageArtistDetail(app, hash);
     else if(hash.startsWith('#/venue-manual')) await pageVenueManual(app, hash);
     else if(hash === '#/day-schedule') await pageDaySchedule(app);
     else if(hash === '#/summary' || hash.startsWith('#/summary/')) await pageSummary(app, hash);
@@ -4160,7 +4187,7 @@ async function pageSchedule(app, hash){
   const histBtn = LV[ME.role]>=2 ? `<button class="btn ghost sm" id="view-history">${icon('fileText')} 変更履歴</button>` : '';
   const calSyncBtn = uid===ME.id ? `<button class="btn ghost sm" id="cal-sync">${icon('calendar')} カレンダー連携</button>` : '';
   // 「行った会場/公演」の一覧・ランキング表示自体は誰でも見られる(全員対象)。
-  // タップした先の会場/公演の詳細(openVenueModal/openArtistModal)だけはsites_view権限(チーフ以上)に限る。
+  // タップした先の会場/公演の詳細(pageVenueDetail/pageArtistDetail)だけはsites_view権限(チーフ以上)に限る。
   const venueListBtn = `<button class="btn ghost sm" id="member-venue-list">${icon('mapPin')} 行った会場</button>`;
   const artistListBtn = `<button class="btn ghost sm" id="member-artist-list">${icon('megaphone')} 行った公演</button>`;
   app.innerHTML = `
@@ -4262,7 +4289,7 @@ async function pageSchedule(app, hash){
         <button type="button" class="btn ghost sm sched-search-item" data-date="${r.date}" data-site="${h(r.site)}" style="display:block;width:100%;text-align:left;margin-bottom:4px;white-space:normal">
           ${h(r.date)} ${h(r.site)}${r.venue?` <span class="muted">(${h(r.venue)})</span>`:''}
         </button>`).join('') : `<div class="muted" style="padding:8px 2px">該当する現場はありません</div>`);
-      resEl.querySelectorAll('.sched-search-item').forEach(b => b.onclick = () => openSiteModal(b.dataset.date, b.dataset.site));
+      resEl.querySelectorAll('.sched-search-item').forEach(b => b.onclick = () => goTo('#/site/' + b.dataset.date + '/' + encodeURIComponent(b.dataset.site)));
     };
     const debouncedSearch = debounce(runSearch, 300);
     const sq = $('#sched-search-q'), sd = $('#sched-search-date');
@@ -4318,14 +4345,14 @@ async function pageSchedule(app, hash){
       finally{ planSaving = false; }
     });
   }
-  app.querySelectorAll('.site-cell').forEach(td => td.onclick = (ev) => { ev.stopPropagation(); openSiteModal(td.dataset.date, td.dataset.site); });
+  app.querySelectorAll('.site-cell').forEach(td => td.onclick = (ev) => { ev.stopPropagation(); goTo('#/site/' + td.dataset.date + '/' + encodeURIComponent(td.dataset.site)); });
   if(canRecord){
     app.querySelectorAll('.rec-btn').forEach(td => td.onclick = (ev) => { ev.stopPropagation(); openSiteRecord(uid, u.name, td.dataset.date, td.dataset.site); });
   }
 
   // 手配者モード中:日付(行)タップで、このメンバーのその日に現場を追加/編集
   if(ME.handler === 1){
-    const openDayEdit = (date) => openMemberDayEdit(uid, u, date);
+    const openDayEdit = (date) => goTo('#/day-edit/' + uid + '/' + date);
     // PC:行の日・曜・備考など(現場名セル以外)をタップ
     app.querySelectorAll('table.sched tbody tr').forEach(tr => {
       if(tr.classList.contains('total-row')) return;
@@ -4528,9 +4555,25 @@ async function openScheduleSelfReport(date){
   wireReportTab();
 }
 
-async function openMemberDayEdit(uid, u, date){
-  if(ME.handler !== 1){ return; }
-  if(isLockedDate(date) && ME.role !== 'admin'){ modal(`<h3>${h(u.name)} さん / ${h(date)}</h3><div class="msg" style="background:#fff6e5;border:1px solid #f0dca8;color:#8a5a00;padding:12px;border-radius:8px">この日は<b>給与確定済み</b>（現場日から2週間経過）のため編集できません。</div><div class="row" style="margin-top:12px"><button class="btn ghost" onclick="closeModal()">閉じる</button></div>`); return; }
+// 個人の日別スケジュール編集(手配者モード)。#/day-edit/:uid/:date のフルページ。
+async function pageDayEdit(app, hash){
+  if(ME.handler !== 1){ notFound(app); return; }
+  const parts = hash.split('/');
+  const uid = Number(parts[2]);
+  const date = parts[3] || '';
+  if(!uid || !date){ notFound(app); return; }
+  const users = await getUsers();
+  const u = users.find(x => x.id === uid);
+  if(!u){ notFound(app); return; }
+  app.innerHTML = `<div class="page-back-row"><button type="button" class="btn ghost sm" id="day-edit-back">${icon('arrowLeft',{size:13})} 戻る</button></div>
+    <h2>${icon('edit')} ${h(u.name)} さん / ${h(date)}</h2>
+    <div class="card" id="day-edit-card"></div>`;
+  $('#day-edit-back').onclick = () => history.back();
+  const cardEl = $('#day-edit-card');
+  if(isLockedDate(date) && ME.role !== 'admin'){
+    cardEl.innerHTML = `<div class="msg" style="background:#fff6e5;border:1px solid #f0dca8;color:#8a5a00;padding:12px;border-radius:8px">この日は<b>給与確定済み</b>(現場日から2週間経過)のため編集できません。</div>`;
+    return;
+  }
   // その日の既存スロットを取得
   let existing = [];
   try{
@@ -4551,7 +4594,7 @@ async function openMemberDayEdit(uid, u, date){
     </div>
     <button class="btn ghost xs md-del" data-i="${i}">この現場を削除</button>
   </div>`;
-  modal(`<h3>${h(u.name)} さん / ${h(date)}</h3>
+  cardEl.innerHTML = `
     <div class="muted" style="margin-bottom:8px">この日の現場を追加・編集します(複数可)。業務名で給与が自動計算されます。</div>
     <div id="md-slots">${(existing.length?existing:[{}]).map((s,i)=>slotRow(s,i)).join('')}</div>
     <button class="btn ghost sm" id="md-add" style="margin-top:8px">＋ 現場をもう一つ追加</button>
@@ -4564,7 +4607,7 @@ async function openMemberDayEdit(uid, u, date){
       <button class="btn ghost sm md-status" data-t="off">休暇</button>
       ${has('site_manage') ? `<button class="btn ghost sm md-status" data-t="paid">有給</button>` : ''}
       <button class="btn ghost sm md-status" data-t="x">×</button>
-    </div>`);
+    </div>`;
   let idx = existing.length || 1;
   const bind = () => {
     document.querySelectorAll('#md-slots .md-del').forEach(b=>b.onclick=()=>{
@@ -4596,8 +4639,8 @@ async function openMemberDayEdit(uid, u, date){
           if(!(await conflictModal(r.conflicts))) return;
           r = await api('/schedule',{method:'PUT',body:{uid,date,slots,force:true}});
         }
-        closeModal(); popup(withWarnNote('保存しました', r));
-        if(location.hash.startsWith('#/sites')){ pageSites(document.getElementById('app')); } else render();
+        popup(withWarnNote('保存しました', r));
+        history.back();
       }catch(e){ popup(e.message,'error'); }
     });
   };
@@ -4606,8 +4649,8 @@ async function openMemberDayEdit(uid, u, date){
     await withLoading(b, async () => {
       try{
         await api('/schedule',{method:'PUT',body:{uid,date,slots:[{type:t}]}});
-        closeModal(); popup(lbl+'に設定しました');
-        if(location.hash.startsWith('#/sites')){ pageSites(document.getElementById('app')); } else render();
+        popup(lbl+'に設定しました');
+        history.back();
       }catch(e){ popup(e.message,'error'); }
     });
   });
@@ -4698,7 +4741,7 @@ async function pageSites(app){
     if(d.open) stSites.openDates.add(d.dataset.date);
     else stSites.openDates.delete(d.dataset.date);
   }));
-  app.querySelectorAll('.st-site').forEach(b => b.onclick = () => openSiteModal(b.dataset.date, b.dataset.site));
+  app.querySelectorAll('.st-site').forEach(b => b.onclick = () => goTo('#/site/' + b.dataset.date + '/' + encodeURIComponent(b.dataset.site)));
   app.querySelectorAll('.st-rookie-item').forEach(b => b.onclick = () => {
     location.hash = b.dataset.reportId ? `#/reports?open=${b.dataset.reportId}` : '#/reports';
   });
@@ -5061,7 +5104,7 @@ async function pageVenues(app){
           ${v.hasManual?`<div class="st-site-row2"><span class="venue-manual-badge" title="会場マニュアルあり">${icon('bookOpen',{size:'12px'})} マニュアルあり</span></div>`:''}
         </button>
       </div>`).join('') : `<div class="muted" style="padding:20px 0;text-align:center">${q||st.manualOnly||st.groupFilter?'該当する会場はありません':'まだ会場のデータがありません'}</div>`;
-    listEl.querySelectorAll('.venue-item').forEach(b => b.onclick = () => openVenueModal(b.dataset.venue));
+    listEl.querySelectorAll('.venue-item').forEach(b => b.onclick = () => goTo('#/venue/' + encodeURIComponent(b.dataset.venue)));
     if(canRename){
       listEl.querySelectorAll('.st-site-check').forEach(cb => cb.onclick = (e) => {
         e.stopPropagation(); // 親のvenue-itemボタン(会場詳細を開く)を誤って発火させない
@@ -5144,18 +5187,26 @@ function openVenueBulkRename(venues, onDone){
   };
 }
 
-// 会場詳細モーダル。その会場の現場を、今日を境に過去・今後に分けて一覧表示する。
-// 項目をタップすると現場詳細(openSiteModal)へ、「会場マニュアル」ボタンは専用ページ
+// 会場詳細ページ(#/venue/:venue)。その会場の現場を、今日を境に過去・今後に分けて一覧表示する。
+// 項目をタップすると現場詳細(#/site/:date/:site)へ、「会場マニュアル」ボタンは専用ページ
 // (現時点では機能公開設定「準備中」)へ遷移する。
-async function openVenueModal(venue){
+// 会場詳細(チーフ以上)。#/venue/:venue のフルページ。
+async function pageVenueDetail(app, hash){
+  if(!has('sites_view')){ notFound(app); return; }
+  const venue = decodeURIComponent(hash.split('/')[2] || '');
+  if(!venue){ notFound(app); return; }
   const canRename = has('site_manage'); // 会場名の変更・マニュアル有無フラグの編集(手配者以上)
+  app.innerHTML = `<div class="page-back-row"><a href="#/venues" class="btn ghost sm">${icon('arrowLeft',{size:13})} 会場一覧へ戻る</a></div>
+    <h2>${icon('mapPin')} ${h(venue)}</h2>
+    <div class="card" id="venue-detail-card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>`;
+  const cardEl = $('#venue-detail-card');
   let data;
   try{ data = await api(`/venue-history?venue=${encodeURIComponent(venue)}`); }
-  catch(e){ popup(e.message, 'error'); return; }
+  catch(e){ cardEl.innerHTML = `<div class="msg err">${h(e.message)}</div>`; return; }
   const item = r => `<button type="button" class="btn ghost sm venue-hist-item" data-date="${r.date}" data-site="${h(r.site)}" style="display:block;width:100%;text-align:left;margin-bottom:4px;white-space:normal">
     ${h(r.date)} ${h(r.site)} <span class="muted">${r.cnt}名</span>${r.visited ? `<span class="visited-dot" title="行ったことがあります"></span>` : ''}
   </button>`;
-  modal(`<h3>${icon('mapPin',{size:'15px'})} ${h(venue)}</h3>
+  cardEl.innerHTML = `
     <div class="row" style="gap:8px;margin:2px 0 10px;flex-wrap:wrap;align-items:center">
       <a href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(venue)}" target="_blank" class="btn ghost sm">${icon('mapPin',{size:'13px'})} 地図で見る</a>
       <button type="button" class="btn ghost sm" id="venue-manual-btn">${icon('bookOpen',{size:'13px'})} 会場マニュアル</button>
@@ -5169,16 +5220,16 @@ async function openVenueModal(venue){
     </div>` : ''}
     ${data.past.length ? `<div class="section-label" style="margin-top:6px">${icon('arrowLeft',{size:'10px'})} 過去の公演</div><div>${data.past.map(item).join('')}</div>` : ''}
     ${data.future.length ? `<div class="section-label" style="margin-top:12px">今後の公演 ${icon('arrowRight',{size:'10px'})}</div><div>${data.future.map(item).join('')}</div>` : ''}
-    ${(!data.past.length && !data.future.length) ? '<div class="muted">この会場の現場情報はまだありません</div>' : ''}`);
-  document.querySelectorAll('#modal-layer .venue-hist-item').forEach(el => {
-    el.onclick = () => { closeModal(); openSiteModal(el.dataset.date, el.dataset.site); };
+    ${(!data.past.length && !data.future.length) ? '<div class="muted">この会場の現場情報はまだありません</div>' : ''}`;
+  document.querySelectorAll('#venue-detail-card .venue-hist-item').forEach(el => {
+    el.onclick = () => goTo('#/site/' + el.dataset.date + '/' + encodeURIComponent(el.dataset.site));
   });
   const manualBtn = $('#venue-manual-btn');
-  if(manualBtn) manualBtn.onclick = () => { closeModal(); goTo('#/venue-manual/' + encodeURIComponent(venue)); };
+  if(manualBtn) manualBtn.onclick = () => goTo('#/venue-manual/' + encodeURIComponent(venue));
   const membersBtn = $('#venue-members-btn');
   if(membersBtn) membersBtn.onclick = () => openVenueMemberList(venue);
   const renameBtn = $('#venue-rename-btn');
-  if(renameBtn) renameBtn.onclick = (e) => { e.stopPropagation(); openVenueBulkRename([venue], () => openVenueModal(venue)); };
+  if(renameBtn) renameBtn.onclick = (e) => { e.stopPropagation(); openVenueBulkRename([venue], () => pageVenueDetail(app, hash)); };
   const manualFlag = $('#venue-manual-flag');
   if(manualFlag) manualFlag.onchange = async () => {
     const hasManual = manualFlag.checked;
@@ -5240,8 +5291,8 @@ async function openMemberVisitedList(title, iconName, apiPath, uid, emptyMsg, da
   let rows;
   try{ rows = await api(`${apiPath}?uid=${uid}`); }
   catch(e){ popup(e.message, 'error'); return; }
-  // 一覧・ランキングの閲覧自体は誰でもできるが、タップした先の会場/公演の詳細(openVenueModal/
-  // openArtistModal)はsites_view権限(チーフ以上)に限るため、権限が無い人には遷移させない
+  // 一覧・ランキングの閲覧自体は誰でもできるが、タップした先の会場/公演の詳細(pageVenueDetail/
+  // pageArtistDetail)はsites_view権限(チーフ以上)に限るため、権限が無い人には遷移させない
   // (押せる見た目にして権限エラーを出すより、押せないことが分かる表示にする)。
   const canOpenDetail = has('sites_view');
   modal(`<h3>${icon(iconName,{size:'15px'})} ${title}</h3>
@@ -5260,11 +5311,11 @@ async function openMemberVisitedList(title, iconName, apiPath, uid, emptyMsg, da
 }
 // 個人が行ったことのある会場一覧。タップで会場詳細へ。
 function openMemberVenueList(uid, name){
-  return openMemberVisitedList(`${h(name)} さんが行った会場`, 'mapPin', '/member-venues', uid, 'まだ会場の記録がありません', 'venue', openVenueModal);
+  return openMemberVisitedList(`${h(name)} さんが行った会場`, 'mapPin', '/member-venues', uid, 'まだ会場の記録がありません', 'venue', v => goTo('#/venue/' + encodeURIComponent(v)));
 }
 // 個人が行ったことのある公演一覧(準備中)。タップで公演詳細へ。
 function openMemberArtistList(uid, name){
-  return openMemberVisitedList(`${h(name)} さんが行った公演`, 'megaphone', '/member-artists', uid, 'まだ公演の記録がありません', 'artist', openArtistModal);
+  return openMemberVisitedList(`${h(name)} さんが行った公演`, 'megaphone', '/member-artists', uid, 'まだ公演の記録がありません', 'artist', a => goTo('#/artist/' + encodeURIComponent(a)));
 }
 
 // 会場マニュアルの写真/動画URL。<img>/<video>のsrcはAuthorizationヘッダーを送れないため、
@@ -5884,7 +5935,7 @@ async function pageArtists(app){
             <span class="st-site-cnt">${a.dateCnt}日</span>
           </button>
         </div>`).join('') : `<div class="muted" style="padding:20px 0;text-align:center">該当する公演はありません</div>`;
-      listEl.querySelectorAll('.artist-item').forEach(b => b.onclick = () => openArtistModal(b.dataset.artist));
+      listEl.querySelectorAll('.artist-item').forEach(b => b.onclick = () => goTo('#/artist/' + encodeURIComponent(b.dataset.artist)));
       if(canRename){
         listEl.querySelectorAll('.st-site-check').forEach(cb => cb.onclick = (e) => {
           e.stopPropagation();
@@ -5937,7 +5988,7 @@ async function pageArtists(app){
           <span class="st-site-cnt">${a.dateCnt}日</span>
         </button>
       </div>`).join('');
-    listEl.querySelectorAll('.artist-item').forEach(b => b.onclick = () => openArtistModal(b.dataset.artist));
+    listEl.querySelectorAll('.artist-item').forEach(b => b.onclick = () => goTo('#/artist/' + encodeURIComponent(b.dataset.artist)));
     listEl.querySelectorAll('.folder-item').forEach(b => b.onclick = () => { st.openFolder = b.dataset.folder; st.selected = new Set(); renderList(); renderBulkBar(); renderFolderBar(); });
     if(canRename){
       listEl.querySelectorAll('.st-site-check').forEach(cb => cb.onclick = (e) => {
@@ -6188,29 +6239,37 @@ function openArtistBulkRename(artists, onDone){
   };
 }
 
-// 公演詳細モーダル。過去・今後の公演を今日を境に分けて表示する(会場詳細と同じ形式)。
-async function openArtistModal(artist){
+// 公演詳細(チーフ以上、準備中機能)。#/artist/:artist のフルページ。過去・今後の公演を
+// 今日を境に分けて表示する(会場詳細と同じ形式)。
+async function pageArtistDetail(app, hash){
+  if(!has('sites_view')){ notFound(app); return; }
+  const artist = decodeURIComponent(hash.split('/')[2] || '');
+  if(!artist){ notFound(app); return; }
   const canRename = has('site_manage'); // 公演名の変更(手配者以上)
+  app.innerHTML = `<div class="page-back-row"><a href="#/artists" class="btn ghost sm">${icon('arrowLeft',{size:13})} 公演一覧へ戻る</a></div>
+    <h2>${icon('megaphone')} ${h(artist)}</h2>
+    <div class="card" id="artist-detail-card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>`;
+  const cardEl = $('#artist-detail-card');
   let data;
   try{ data = await api(`/artist-history?artist=${encodeURIComponent(artist)}`); }
-  catch(e){ popup(e.message, 'error'); return; }
+  catch(e){ cardEl.innerHTML = `<div class="msg err">${h(e.message)}</div>`; return; }
   const item = r => `<button type="button" class="btn ghost sm artist-hist-item" data-date="${r.date}" data-site="${h(r.site)}" style="display:block;width:100%;text-align:left;margin-bottom:4px;white-space:normal">
     ${h(r.date)} ${h(r.site)}${r.venue?` <span class="muted">(${h(r.venue)})</span>`:''} <span class="muted">${r.cnt}名</span>${r.visited ? `<span class="visited-dot" title="行ったことがあります"></span>` : ''}
   </button>`;
-  modal(`<h3>${icon('megaphone',{size:'15px'})} ${h(artist)}</h3>
+  cardEl.innerHTML = `
     <div class="row" style="gap:8px;margin:2px 0 10px">
       <button type="button" class="btn ghost sm" id="artist-members-btn">${icon('users',{size:'13px'})} メンバーリスト</button>
       ${canRename ? `<button type="button" class="btn ghost sm" id="artist-rename-btn">${icon('edit',{size:'13px'})} 名前を変更</button>` : ''}
     </div>
     ${data.past.length ? `<div class="section-label" style="margin-top:6px">${icon('arrowLeft',{size:'10px'})} 過去の公演</div><div>${data.past.map(item).join('')}</div>` : ''}
     ${data.future.length ? `<div class="section-label" style="margin-top:12px">今後の公演 ${icon('arrowRight',{size:'10px'})}</div><div>${data.future.map(item).join('')}</div>` : ''}
-    ${(!data.past.length && !data.future.length) ? '<div class="muted">この公演の現場情報はまだありません</div>' : ''}`);
+    ${(!data.past.length && !data.future.length) ? '<div class="muted">この公演の現場情報はまだありません</div>' : ''}`;
   const membersBtn = $('#artist-members-btn');
   if(membersBtn) membersBtn.onclick = () => openArtistMemberList(artist);
   const renameBtn = $('#artist-rename-btn');
-  if(renameBtn) renameBtn.onclick = (e) => { e.stopPropagation(); openArtistBulkRename([artist], () => openArtistModal(artist)); };
-  document.querySelectorAll('#modal-layer .artist-hist-item').forEach(el => {
-    el.onclick = () => { closeModal(); openSiteModal(el.dataset.date, el.dataset.site); };
+  if(renameBtn) renameBtn.onclick = (e) => { e.stopPropagation(); openArtistBulkRename([artist], () => pageArtistDetail(app, hash)); };
+  document.querySelectorAll('#artist-detail-card .artist-hist-item').forEach(el => {
+    el.onclick = () => goTo('#/site/' + el.dataset.date + '/' + encodeURIComponent(el.dataset.site));
   });
 }
 
@@ -6425,7 +6484,7 @@ function renderMatrixTable(dates, rows, opts={}){
 // マトリックス表内の現場セルタップで現場詳細を開く(呼び出し元のコンテナ要素に対して結線する)
 function wireMatrixCellClicks(container){
   container.querySelectorAll('.cell-site-link').forEach(td => td.onclick = () => {
-    if(td.dataset.site) openSiteModal(td.dataset.date, td.dataset.site);
+    if(td.dataset.site) goTo('#/site/' + td.dataset.date + '/' + encodeURIComponent(td.dataset.site));
   });
 }
 
