@@ -1,4 +1,4 @@
-// RB事業2課 スケジュール管理 - Cloudflare Worker (API + 静的配信 + Cron)
+// スケジュールアプリ - Cloudflare Worker (API + 静的配信 + Cron)
 // xlsxのバイト列パース(zip展開・XML解析)は src/lib/xlsxParser.ts に切り出している
 // (env/DBに依存しない純粋なロジックのみ。2026年8月、バックエンド部分TypeScript化の第一弾)。
 import { parseXlsxBuffer } from './lib/xlsxParser.ts';
@@ -129,9 +129,9 @@ const APP_STRUCTURE_PAGES = [
   { hash: '#/member-summary/search', name: '個人の年間サマリー(検索)', role: 'member_summary_view権限者(手配者以上)', desc: 'メンバー一覧・氏名/登録番号検索から、年間サマリーを見たい対象を選ぶ入口画面。' },
   { hash: '#/member-summary/:uid', name: '個人の年間サマリー', role: 'member_summary_view権限者(手配者以上)', desc: '対象メンバーの、年度単位(12月始まり〜翌年11月)の月別勤務日数・勤務時間・残業時間・給料(site_pay権限がある場合のみ)の推移とランク進捗を表示。自由記述の備考欄を時系列で確認・追記できる。' },
   { hash: '#/report', name: '新人報告', role: '全員', desc: '新人の1次報告(印象・所感等)を提出する。' },
-  { hash: '#/reports', name: '報告一覧', role: '全員', desc: '提出済みの新人報告一覧。獲得課バッジを表示。' },
+  { hash: '#/reports', name: '報告一覧', role: '全員', desc: '提出済みの新人報告一覧。獲得課バッジを表示。提出者の所属課(1課/2課)で内容を分けており、自分の所属課の分だけ閲覧可能(管理者は両課とも閲覧可能)。' },
   { hash: '#/draft', name: 'ドラフト', role: '2次チェック権限者', desc: '2次チェックで「あげる」判定された新人の一覧。' },
-  { hash: '#/blacklist', name: 'ブラックリスト', role: 'ブラックリスト管理権限者', desc: '要注意人物の登録・評価一覧。登録済みバッジを表示。' },
+  { hash: '#/blacklist', name: 'ブラックリスト', role: 'ブラックリスト管理権限者', desc: '要注意人物の登録・評価一覧。登録済みバッジを表示。登録者の所属課(1課/2課)で内容を分けており、自分の所属課の分だけ閲覧可能(管理者は両課とも閲覧可能)。' },
   { hash: '#/report-export', name: 'スプレッドシート貼付用コピー', role: 'admin', desc: '新人報告・ブラックリストを期間指定してタブ区切りテキストでコピーする。' },
   { hash: '#/admin', name: 'アカウント管理', role: 'account_manage権限者', desc: 'アカウントの新規作成・編集・停止・削除。複数選択して一括停止/復活が可能。全データ閲覧(users/schedule/history/reports/blacklist/notifications)は件数上限なしの全件を表示・CSV出力する。ログインセッションの一覧は#/handler-statusへ移設した。' },
   { hash: '#/admin-settings', name: 'システム設定', role: 'system_settings権限者', desc: 'PIN、GAS連携トークン、通知設定、時給設定、メンテナンスモード等の各種設定。' },
@@ -251,10 +251,10 @@ const APP_STRUCTURE_API_GROUPS = [
     ['POST', '/daicho/reimport-from-archive', '台帳保管に保存済みのファイルから再取込(再アップロード不要。常に手動実行)'],
   ]},
   { title: '新人報告・ブラックリスト', rows: [
-    ['POST/GET', '/reports', '新人報告の提出・一覧取得(acquired_ka含む)。POST時にrookie_eval_idを渡すと、新人リストの評価(rookie_quick_evals)にreport_idを紐付ける'],
+    ['POST/GET', '/reports', '新人報告の提出・一覧取得(acquired_ka含む)。POST時にrookie_eval_idを渡すと、新人リストの評価(rookie_quick_evals)にreport_idを紐付ける。GETは提出者の所属課(ka)で絞り込み、管理者以外は自分の所属課の分だけ返す'],
     ['PATCH', '/reports/:id', '2次チェックの記入'],
     ['DELETE', '/reports/:id', '新人報告の削除(手配者以上)'],
-    ['GET/POST', '/blacklist', 'ブラックリストの取得・登録(matched_ka含む)'],
+    ['GET/POST', '/blacklist', 'ブラックリストの取得・登録(matched_ka含む)。GETは登録者の所属課(ka)で絞り込み、管理者以外は自分の所属課の分だけ返す'],
   ]},
   { title: 'システム設定・通知', rows: [
     ['GET', '/dashboard', '管理者ダッシュボード(#/dashboard)の全データ。cron4種の最終実行日、承認待ち件数(新人リストの未評価件数を含む)、当月実績と前月比、直近6ヶ月の推移、当月の日別配置人数、ランク構成、気になる人、データの不備、給与確定状況をまとめて返す'],
@@ -2286,11 +2286,15 @@ async function notify(env, userIds, type, message, link = '') {
     newlyNotified.push(id);
   }
   // プッシュ送信は失敗してもアプリ内お知らせの保存自体には影響させない
-  if (newlyNotified.length) sendPushToUsers(env, newlyNotified, 'RB事業2課', message, link).catch(() => {});
+  if (newlyNotified.length) sendPushToUsers(env, newlyNotified, 'スケジュールアプリ', message, link).catch(() => {});
 }
 
-async function notifyChiefs(env, type, message, link = '') {
-  const rows = (await env.DB.prepare("SELECT id FROM users WHERE role!='member'").all()).results;
+// ka指定時は、その課のチーフ以上+管理者(全課閲覧可)だけに絞る(新人報告・ブラックリストは
+// 課ごとに閲覧を分けているため、閲覧できない課のチーフにまで通知が飛ばないようにする)。
+async function notifyChiefs(env, type, message, link = '', ka = null) {
+  const rows = ka
+    ? (await env.DB.prepare("SELECT id FROM users WHERE role!='member' AND (role='admin' OR ka=?)").bind(ka).all()).results
+    : (await env.DB.prepare("SELECT id FROM users WHERE role!='member'").all()).results;
   await notify(env, rows.map(r => r.id), type, message, link);
 }
 
@@ -2507,7 +2511,7 @@ async function api(req, env, url) {
     ).bind(u.id, fromDate, toDate).all()).results;
     const events = rows.map(r => scheduleRowToIcsEvent(u.id, r)).join('\r\n');
     const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//RB Jigyou 2ka//Schedule//JA', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH',
-      `X-WR-CALNAME:${icsEscape(u.name + 'のスケジュール(RB事業2課)')}`, events, 'END:VCALENDAR'].filter(Boolean).join('\r\n');
+      `X-WR-CALNAME:${icsEscape(u.name + 'のスケジュール')}`, events, 'END:VCALENDAR'].filter(Boolean).join('\r\n');
     return new Response(ics, { headers: { 'Content-Type': 'text/calendar; charset=utf-8' } });
   }
 
@@ -5984,26 +5988,30 @@ async function api(req, env, url) {
       plan: isChief ? (body.plan || '') : '',
       checker: isChief ? me.name : '',
       next_site: body.next_site || '', next_date: body.next_date || '',
-      status: isChief ? 'checked' : 'pending'
+      status: isChief ? 'checked' : 'pending',
+      ka: me.ka || ''
     };
     if (!r.candidate_name) return ERR('獲得候補者名は必須です');
     const ins = await env.DB.prepare(
-      'INSERT INTO reports(ts,reporter_id,reporter_name,candidate_name,candidate_grade,first_chief,first_note,s_motivation,s_response,s_total,draft,plan,checker,next_site,next_date,status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'
-    ).bind(r.ts, r.reporter_id, r.reporter_name, r.candidate_name, r.candidate_grade, r.first_chief, r.first_note, r.s_motivation, r.s_response, r.s_total, r.draft, r.plan, r.checker, r.next_site, r.next_date, r.status).run();
+      'INSERT INTO reports(ts,reporter_id,reporter_name,candidate_name,candidate_grade,first_chief,first_note,s_motivation,s_response,s_total,draft,plan,checker,next_site,next_date,status,ka) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'
+    ).bind(r.ts, r.reporter_id, r.reporter_name, r.candidate_name, r.candidate_grade, r.first_chief, r.first_note, r.s_motivation, r.s_response, r.s_total, r.draft, r.plan, r.checker, r.next_site, r.next_date, r.status, r.ka).run();
     const newReportId = ins.meta && ins.meta.last_row_id;
     // 新人リストの軽い評価から引き上げた場合、その評価にreport_idを紐付ける(遡り確認用)
     if (body.rookie_eval_id && newReportId) {
       await env.DB.prepare('UPDATE rookie_quick_evals SET report_id=? WHERE id=?').bind(newReportId, Number(body.rookie_eval_id)).run();
     }
-    await notifyChiefs(env, 'report', `📝 新人報告:${r.candidate_name}(報告者:${me.name})${r.status === 'pending' ? ' — 2次チェックをお願いします' : ''}`, newReportId ? `#/reports?open=${newReportId}` : '');
+    await notifyChiefs(env, 'report', `📝 新人報告:${r.candidate_name}(報告者:${me.name})${r.status === 'pending' ? ' — 2次チェックをお願いします' : ''}`, newReportId ? `#/reports?open=${newReportId}` : '', r.ka);
     await rookieNotify(env, r);
     try { await matchNameAgainstFullHistory(env, r.candidate_name); } catch (e) {}
     return J({ ok: 1 });
   }
-  // 新人報告一覧: 1次(報告内容)は全員(メンツ含む)が閲覧可能。2次の編集はチーフ以上のみ(下のPATCHで制限)
+  // 新人報告一覧: 1次(報告内容)は全員(メンツ含む)が閲覧可能。2次の編集はチーフ以上のみ(下のPATCHで制限)。
+  // 1課/2課で内容を分けており、自分の所属課の分だけ閲覧できる(所属未設定の古いデータはkaが空のため
+  // 誰からも見える)。管理者は課を問わず全件閲覧できる。
   if (method === 'GET' && path === '/reports') {
     const rows = (await env.DB.prepare('SELECT * FROM reports ORDER BY id DESC').all()).results;
-    return J(rows);
+    const visible = me.role === 'admin' ? rows : (rows as any[]).filter(r => !r.ka || r.ka === me.ka);
+    return J(visible);
   }
   if ((mm = path.match(/^\/reports\/(\d+)$/)) && method === 'PATCH') {
     if (!has(me, 'report_check')) return ERR('2次チェックの記入には権限が必要です', 403);
@@ -6029,9 +6037,13 @@ async function api(req, env, url) {
   }
 
   // ---- ブラックリスト(提出・閲覧ともチーフ以上、または個別権限)----
+  // 新人報告と同様、1課/2課で内容を分けており、自分の所属課の分だけ閲覧できる(古いデータでkaが
+  // 空の場合は誰からも見える)。管理者は課を問わず全件閲覧できる。
   if (method === 'GET' && path === '/blacklist') {
     if (!has(me, 'blacklist_manage')) return ERR('ページが見つかりません', 404);
-    return J((await env.DB.prepare('SELECT * FROM blacklist ORDER BY id DESC').all()).results);
+    const rows = (await env.DB.prepare('SELECT * FROM blacklist ORDER BY id DESC').all()).results;
+    const visible = me.role === 'admin' ? rows : (rows as any[]).filter(r => !r.ka || r.ka === me.ka);
+    return J(visible);
   }
   if (method === 'POST' && path === '/blacklist') {
     if (!has(me, 'blacklist_manage')) return ERR('ページが見つかりません', 404);
@@ -6039,10 +6051,10 @@ async function api(req, env, url) {
     const sc = v => { const n = Number(v); return (n >= 1 && n <= 5) ? n : null; };
     const talk = sc(body.s_talk), dress = sc(body.s_dress), groom = sc(body.s_groom), late = sc(body.s_late), work = sc(body.s_work);
     await env.DB.prepare(
-      'INSERT INTO blacklist(ts,date,reporter,name,s_talk,s_dress,s_groom,s_late,s_work,reason,added_by) VALUES(?,?,?,?,?,?,?,?,?,?,?)'
+      'INSERT INTO blacklist(ts,date,reporter,name,s_talk,s_dress,s_groom,s_late,s_work,reason,added_by,ka) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)'
     ).bind(jstTs(), body.date || jstDate(), body.reporter || me.name, body.name,
       talk, dress, groom, late, work,
-      body.reason || '', me.name).run();
+      body.reason || '', me.name, me.ka || '').run();
     try {
       const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
       if (admins.length) await notify(env, admins.map(a => a.id), 'blacklist', `⚠️ ブラックリストに登録:${body.name}(登録者:${me.name})`, '#/blacklist');
@@ -6061,8 +6073,8 @@ async function api(req, env, url) {
       // 500ms前後で終わるため上限を設けない。sessionsは「ログイン中・編集履歴」画面へ移設した)。
       schedule: "SELECT u.name AS 氏名, s.date AS 日付, s.slot AS 枠, s.type AS 種別, s.site AS 現場名, s.venue AS 会場, s.tin AS 'IN', s.tout AS 'OUT', s.hours AS 時間, s.overtime AS 時間外, s.pay AS 給与, s.note AS 備考, COALESCE(d.plan,'') AS 育成計画 FROM schedule s JOIN users u ON u.id=s.user_id LEFT JOIN dev_plan d ON d.user_id=s.user_id AND d.date=s.date ORDER BY s.date DESC, s.slot",
       history: "SELECT h.ts AS 日時, COALESCE(e.name, CASE WHEN h.editor_id=0 THEN 'スプレッドシート' ELSE '不明' END) AS 編集者, t.name AS 対象, h.date AS 対象日, h.before_json AS 変更前, h.after_json AS 変更後 FROM schedule_history h LEFT JOIN users e ON e.id=h.editor_id LEFT JOIN users t ON t.id=h.target_id ORDER BY h.id DESC",
-      reports: "SELECT ts AS 日時, reporter_name AS 報告者, candidate_name AS 候補者, candidate_grade AS 学年, first_chief AS '1次_連絡チーフ', first_note AS '1次_所感', s_motivation AS やる気, s_response AS 受け答え, s_total AS 総合点, draft AS ドラフト, plan AS 育成計画, checker AS チェック者, next_site AS 次回現場, next_date AS 次回日付, status AS 状態 FROM reports ORDER BY id DESC",
-      blacklist: "SELECT ts AS 登録日時, date AS 日付, reporter AS 報告者, name AS 名前, s_talk AS 会話, s_dress AS 服装, s_groom AS 身なり, s_late AS 遅刻, s_work AS 業務, reason AS 理由, added_by AS 登録者 FROM blacklist ORDER BY id DESC",
+      reports: "SELECT ts AS 日時, reporter_name AS 報告者, ka AS 所属課, candidate_name AS 候補者, candidate_grade AS 学年, first_chief AS '1次_連絡チーフ', first_note AS '1次_所感', s_motivation AS やる気, s_response AS 受け答え, s_total AS 総合点, draft AS ドラフト, plan AS 育成計画, checker AS チェック者, next_site AS 次回現場, next_date AS 次回日付, status AS 状態 FROM reports ORDER BY id DESC",
+      blacklist: "SELECT ts AS 登録日時, date AS 日付, reporter AS 報告者, name AS 名前, ka AS 所属課, s_talk AS 会話, s_dress AS 服装, s_groom AS 身なり, s_late AS 遅刻, s_work AS 業務, reason AS 理由, added_by AS 登録者 FROM blacklist ORDER BY id DESC",
       notifications: "SELECT n.ts AS 日時, u.name AS 宛先, n.message AS 内容, CASE n.read WHEN 1 THEN '既読' ELSE '未読' END AS 状態 FROM notifications n JOIN users u ON u.id=n.user_id ORDER BY n.id DESC",
       sessions: "SELECT u.name AS 氏名, u.regno AS 登録番号, CASE s.handler WHEN 1 THEN '手配モード中' ELSE '' END AS 手配, s.last_page AS 最後に見ていたページ, datetime(s.last_seen/1000,'unixepoch','+9 hours') AS 最終アクセス, datetime(s.created/1000,'unixepoch','+9 hours') AS ログイン日時 FROM sessions s JOIN users u ON u.id=s.user_id ORDER BY s.last_seen DESC"
     };
@@ -6126,7 +6138,7 @@ async function api(req, env, url) {
     const jst = new Date(Date.now() + 9 * 3600 * 1000);
     return J({
       meta: {
-        title: 'RB事業2課 スケジュール管理システム',
+        title: 'スケジュールアプリ',
         generated: jst.toISOString().slice(0, 10),
         stack: ['Cloudflare Workers', 'D1 (SQLite互換)', 'R2', 'バックエンド: TypeScript(wrangler内蔵esbuildでビルド)', 'フロントエンド: Vanilla JavaScript(ビルド不要・単一ファイル構成)'],
         files: {

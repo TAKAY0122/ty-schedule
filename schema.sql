@@ -116,7 +116,8 @@ CREATE TABLE IF NOT EXISTS reports(
   next_site TEXT DEFAULT '',             -- 次回現場名(任意)
   next_date TEXT DEFAULT '',             -- 次回日付(任意)
   status TEXT DEFAULT 'pending',         -- pending(2次未) / checked
-  acquired_ka TEXT DEFAULT ''            -- 獲得課(1課/2課等)。空でなければ既にアプリ登録済み=新人共有から除外
+  acquired_ka TEXT DEFAULT '',           -- 獲得課(1課/2課等)。空でなければ既にアプリ登録済み=新人共有から除外
+  ka TEXT DEFAULT ''                     -- 提出者の所属課(1課/2課)。閲覧を課ごとに分けるための列(空なら誰でも閲覧可)
 );
 
 CREATE TABLE IF NOT EXISTS blacklist(
@@ -132,7 +133,8 @@ CREATE TABLE IF NOT EXISTS blacklist(
   s_work INTEGER,                        -- 業務(1-5)
   reason TEXT DEFAULT '',                -- 理由
   added_by TEXT DEFAULT '',              -- 登録者(ログインユーザー)
-  matched_ka TEXT DEFAULT ''             -- アプリに登録されている場合の所属課。空でなければブラックリスト共有から除外
+  matched_ka TEXT DEFAULT '',            -- アプリに登録されている場合の所属課。空でなければブラックリスト共有から除外
+  ka TEXT DEFAULT ''                     -- 登録者の所属課(1課/2課)。閲覧を課ごとに分けるための列(空なら誰でも閲覧可)
 );
 
 CREATE TABLE IF NOT EXISTS notifications(

@@ -1,4 +1,4 @@
-/* RB事業2課 スケジュール管理 SPA */
+/* スケジュールアプリ SPA */
 'use strict';
 const $ = s => document.querySelector(s);
 const h = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -2186,7 +2186,7 @@ function renderLogin(err){
   clearTimers();
   document.getElementById('root').innerHTML = `
   <div class="login-wrap"><div class="login-card">
-    <h1>RB事業2課</h1><div class="sub">SCHEDULE MANAGEMENT</div>
+    <h1>スケジュールアプリ</h1><div class="sub">SCHEDULE MANAGEMENT</div>
     ${err?`<div class="msg err">${h(err)}</div>`:''}
     <input id="l-regno" placeholder="登録番号" autocomplete="username">
     <input id="l-pw" type="password" placeholder="パスワード" autocomplete="current-password">
@@ -2521,7 +2521,7 @@ function renderShell(hash){
   document.getElementById('root').innerHTML = `
   <header>
     <button class="menu-btn" id="menu-btn" aria-label="メニュー">${icon('menu',{size:'12px'})}</button>
-    <a href="#/home" class="brand" id="brand-home">${icon('home',{size:'14px'})}<span class="brand-text">RB事業2課<small>SCHEDULE</small></span></a>
+    <a href="#/home" class="brand" id="brand-home">${icon('home',{size:'14px'})}<span class="brand-text">スケジュールアプリ<small>SCHEDULE</small></span></a>
     <div class="cur-page">${h(curName)}</div>
     <div class="hright">
       <button class="pin-btn ${ME.handler===1?'active':''}" id="pin-btn" title="${ME.handler===1?'手配者モードを終了':'手配者モードに入る'}">${ME.handler===1?icon('unlock'):icon('key')}</button>
@@ -3700,7 +3700,7 @@ async function pageDashboard(app){
     <div class="ops-head">
       <div class="ops-head-l">
         <div class="ops-title">${icon('gauge')} <span>システム計器盤</span></div>
-        <div class="ops-sub">RB事業2課 スケジュール管理システム / ${h(today)}</div>
+        <div class="ops-sub">スケジュールアプリ / ${h(today)}</div>
       </div>
       <div class="ops-clock"><span id="ops-clock">--:--:--</span><em>JST</em></div>
     </div>
@@ -7545,20 +7545,27 @@ function pageReportForm(app){
 async function pageReports(app, hash){
   const rows = await api('/reports');
   const acqBadge = ka => ka ? `<span class="tag acquired" title="既にアプリに登録済み">${icon('checkCircle')} ${h(ka)}獲得</span>` : '';
+  const isAdmin = ME.role === 'admin';
+  const kaTag = ka => ka ? `<span class="tag" style="background:#eef1f6;color:#3a4a63;border:1px solid #ccd6e6">${h(ka)}</span>` : '<span class="muted">—</span>';
+  const scopeNote = isAdmin
+    ? `<div class="muted" style="font-size:12.5px;margin-bottom:10px">1課・2課の新人報告をまとめて表示しています。</div>`
+    : (ME.ka ? `<div class="muted" style="font-size:12.5px;margin-bottom:10px">${h(ME.ka)}の新人報告のみ表示しています。</div>` : '');
   app.innerHTML = `
   <h2>新人報告一覧</h2>
   <div class="card">
+    ${scopeNote}
     <table class="list pc-only">
-    <tr><th>日時</th><th>報告者</th><th>候補者</th><th>学年</th><th>状態</th><th>ドラフト</th><th>チェック者</th></tr>
+    <tr><th>日時</th><th>報告者</th>${isAdmin?'<th>所属課</th>':''}<th>候補者</th><th>学年</th><th>状態</th><th>ドラフト</th><th>チェック者</th></tr>
     ${rows.map(r=>`<tr class="click" data-id="${r.id}">
-      <td>${h(r.ts)}</td><td>${h(r.reporter_name)}</td><td><b>${h(r.candidate_name)}</b></td><td>${h(r.candidate_grade)}</td>
+      <td>${h(r.ts)}</td><td>${h(r.reporter_name)}</td>${isAdmin?`<td>${kaTag(r.ka)}</td>`:''}<td><b>${h(r.candidate_name)}</b></td><td>${h(r.candidate_grade)}</td>
       <td><span class="tag ${r.status}">${r.status==='pending'?'2次未チェック':'チェック済'}</span> ${acqBadge(r.acquired_ka)}</td>
-      <td>${h(r.draft)}</td><td>${h(r.checker)}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">報告はまだありません</td></tr>'}
+      <td>${h(r.draft)}</td><td>${h(r.checker)}</td></tr>`).join('') || `<tr><td colspan="${isAdmin?8:7}" class="muted">報告はまだありません</td></tr>`}
     </table>
     <div class="cards sp-only">
     ${rows.map(r=>`<div class="dcard clickable" data-id="${r.id}">
       <div class="dcard-head"><span class="dcard-title">${h(r.candidate_name)}</span><span class="tag ${r.status}">${r.status==='pending'?'2次未チェック':'チェック済'}</span></div>
       ${r.acquired_ka?`<div class="drow"><span class="dk">状態</span><span class="dv">${acqBadge(r.acquired_ka)}</span></div>`:''}
+      ${isAdmin?`<div class="drow"><span class="dk">所属課</span><span class="dv">${kaTag(r.ka)}</span></div>`:''}
       <div class="drow"><span class="dk">報告者</span><span class="dv">${h(r.reporter_name)}</span></div>
       <div class="drow"><span class="dk">学年</span><span class="dv">${h(r.candidate_grade)||'—'}</span></div>
       ${r.draft?`<div class="drow"><span class="dk">ドラフト</span><span class="dv">${h(r.draft)}</span></div>`:''}
@@ -7586,6 +7593,7 @@ function openReport(r){
   <dl class="kv">
     <dt>タイムスタンプ</dt><dd>${h(r.ts)}</dd>
     <dt>報告者名</dt><dd>${h(r.reporter_name)}</dd>
+    ${ME.role==='admin'?`<dt>所属課</dt><dd>${h(r.ka)||'—'}</dd>`:''}
     <dt>獲得候補者名</dt><dd><b>${h(r.candidate_name)}</b></dd>
     <dt>学年</dt><dd>${h(r.candidate_grade)}</dd>
     <dt>次回現場</dt><dd>${h(r.next_date)} ${h(r.next_site)}</dd>
@@ -7708,9 +7716,14 @@ async function pageDraft(app){
 async function pageBlacklist(app, hash){
   if(!has('blacklist_manage')){ notFound(app); return; }
   const canSiteLog = LV[ME.role] >= 2; // 過去の現場を見る(名前一致検索)は手配者以上
+  const isAdmin = ME.role === 'admin';
   const rows = await api('/blacklist');
   const sc = id => `<select id="${id}" style="width:64px"><option value="">-</option>${[1,2,3,4,5].map(n=>`<option>${n}</option>`).join('')}</select>`;
   const scTh = ['会話','服装','身なり','遅刻','業務'];
+  const kaTag = ka => ka ? `<span class="tag" style="background:#eef1f6;color:#3a4a63;border:1px solid #ccd6e6">${h(ka)}</span>` : '<span class="muted">—</span>';
+  const scopeNote = isAdmin
+    ? `<div class="muted" style="font-size:12.5px;margin-bottom:10px">1課・2課のブラックリストをまとめて表示しています。</div>`
+    : (ME.ka ? `<div class="muted" style="font-size:12.5px;margin-bottom:10px">${h(ME.ka)}のブラックリストのみ表示しています。</div>` : '');
   app.innerHTML = `
   <h2>ブラックリスト</h2>
   <div class="card">
@@ -7729,13 +7742,14 @@ async function pageBlacklist(app, hash){
     <div class="row" style="margin-top:14px"><button class="btn danger" id="b-add">提出する</button><span id="b-msg"></span></div>
   </div>
   <div class="card">
+    ${scopeNote}
     <div class="sched-wrap pc-only"><table class="list">
-    <tr><th>提出日時</th><th>日付</th><th>報告者</th><th>名前</th>${scTh.map(t=>`<th>${t}</th>`).join('')}<th>理由</th><th>登録者</th><th>状態</th><th></th></tr>
+    <tr><th>提出日時</th><th>日付</th><th>報告者</th><th>名前</th>${scTh.map(t=>`<th>${t}</th>`).join('')}<th>理由</th><th>登録者</th>${isAdmin?'<th>所属課</th>':''}<th>状態</th><th></th></tr>
     ${rows.map(r=>`<tr class="click" data-id="${r.id}">
       <td>${h(r.ts)}</td><td>${h(r.date)}</td><td>${h(r.reporter)}</td><td><b>${h(r.name)}</b></td>
       <td class="c">${r.s_talk??''}</td><td class="c">${r.s_dress??''}</td><td class="c">${r.s_groom??''}</td><td class="c">${r.s_late??''}</td><td class="c">${r.s_work??''}</td>
-      <td>${h(r.reason)}</td><td>${h(r.added_by)}</td><td>${matchedBadge(r.matched_ka)}</td>
-      <td>${canSiteLog?`<button class="btn ghost sm icon-btn bl-sitelog" data-name="${h(r.name)}" title="過去の現場を見る">${icon('stadium')}</button>`:''}</td></tr>`).join('') || '<tr><td colspan="13" class="muted">登録はありません</td></tr>'}
+      <td>${h(r.reason)}</td><td>${h(r.added_by)}</td>${isAdmin?`<td>${kaTag(r.ka)}</td>`:''}<td>${matchedBadge(r.matched_ka)}</td>
+      <td>${canSiteLog?`<button class="btn ghost sm icon-btn bl-sitelog" data-name="${h(r.name)}" title="過去の現場を見る">${icon('stadium')}</button>`:''}</td></tr>`).join('') || `<tr><td colspan="${isAdmin?14:13}" class="muted">登録はありません</td></tr>`}
     </table></div>
     <div class="cards sp-only">
     ${rows.map(r=>{
@@ -7743,6 +7757,7 @@ async function pageBlacklist(app, hash){
       return `<div class="dcard clickable" data-id="${r.id}">
       <div class="dcard-head"><span class="dcard-title">${h(r.name)}</span><span class="dcard-sub">${h(r.date)}</span></div>
       ${r.matched_ka?`<div class="drow"><span class="dk">状態</span><span class="dv">${matchedBadge(r.matched_ka)}</span></div>`:''}
+      ${isAdmin?`<div class="drow"><span class="dk">所属課</span><span class="dv">${kaTag(r.ka)}</span></div>`:''}
       <div class="drow"><span class="dk">報告者</span><span class="dv">${h(r.reporter)}</span></div>
       ${sc2.length?`<div class="drow"><span class="dk">評価</span><span class="dv"><div class="dscore">${sc2.map(x=>`<span>${x[0]} ${x[1]}</span>`).join('')}</div></span></div>`:''}
       ${r.reason?`<div class="drow"><span class="dk">理由</span><span class="dv">${h(r.reason)}</span></div>`:''}
@@ -7790,6 +7805,7 @@ function openBlacklistEntry(r, canSiteLog){
     <dt>対象日付</dt><dd>${h(r.date)}</dd>
     <dt>報告者</dt><dd>${h(r.reporter)}</dd>
     <dt>名前</dt><dd><b>${h(r.name)}</b></dd>
+    ${ME.role==='admin'?`<dt>所属課</dt><dd>${h(r.ka)||'—'}</dd>`:''}
     ${sc2.length?`<dt>評価</dt><dd>${sc2.map(x=>`${x[0]} ${x[1]}`).join(' / ')}</dd>`:''}
     <dt>理由</dt><dd>${h(r.reason)||'—'}</dd>
     <dt>登録者</dt><dd>${h(r.added_by)}</dd>
@@ -7810,7 +7826,8 @@ async function pageReportExport(app){
     [reports, blacklist] = await Promise.all([api('/reports'), api('/blacklist')]);
   }catch(e){ app.innerHTML = `<h2>${icon('paperclip')} スプレッドシート貼り付け用にコピー</h2><div class="card"><div class="msg err">${h(e.message)}</div></div>`; return; }
 
-  const st = PAGE_STATE.reportExport || (PAGE_STATE.reportExport = { rFrom:'', rTo:'', bFrom:'', bTo:'' });
+  const st = PAGE_STATE.reportExport || (PAGE_STATE.reportExport = { rFrom:'', rTo:'', bFrom:'', bTo:'', rKa:'', bKa:'' });
+  const kaOpts = sel => `<option value="">全課</option>${['1課','2課'].map(k=>`<option ${sel===k?'selected':''}>${k}</option>`).join('')}`;
 
   app.innerHTML = `
   <h2 style="margin-bottom:4px">${icon('paperclip')} スプレッドシート貼り付け用にコピー</h2>
@@ -7820,6 +7837,7 @@ async function pageReportExport(app){
     <div class="row" style="gap:10px;flex-wrap:wrap;align-items:center">
       <label>開始日 <input type="date" id="rex-from" value="${h(st.rFrom)}"></label>
       <label>終了日 <input type="date" id="rex-to" value="${h(st.rTo)}"></label>
+      <label>対象課 <select id="rex-ka">${kaOpts(st.rKa)}</select></label>
       <button class="btn gold sm" id="rex-copy">コピーする</button>
       <span class="muted" id="rex-msg"></span>
     </div>
@@ -7831,14 +7849,15 @@ async function pageReportExport(app){
     <div class="row" style="gap:10px;flex-wrap:wrap;align-items:center">
       <label>開始日 <input type="date" id="bex-from" value="${h(st.bFrom)}"></label>
       <label>終了日 <input type="date" id="bex-to" value="${h(st.bTo)}"></label>
+      <label>対象課 <select id="bex-ka">${kaOpts(st.bKa)}</select></label>
       <button class="btn gold sm" id="bex-copy">コピーする</button>
       <span class="muted" id="bex-msg"></span>
     </div>
   </div>`;
 
   $('#rex-copy').onclick = () => {
-    const from = $('#rex-from').value, to = $('#rex-to').value;
-    st.rFrom = from; st.rTo = to;
+    const from = $('#rex-from').value, to = $('#rex-to').value, ka = $('#rex-ka').value;
+    st.rFrom = from; st.rTo = to; st.rKa = ka;
     // ts は "07/11 20:18" のような "MM/DD HH:mm" 形式。日付比較のため年をつけて正規化する
     const inRange = ts => {
       if(!from && !to) return true;
@@ -7850,7 +7869,7 @@ async function pageReportExport(app){
       if(to && d > to) return false;
       return true;
     };
-    const targets = reports.filter(r => inRange(r.ts));
+    const targets = reports.filter(r => inRange(r.ts) && (!ka || r.ka === ka));
     if(!targets.length){ $('#rex-msg').textContent = '対象の報告がありません'; return; }
     const clean = s => String(s??'').replace(/[\t\n\r]+/g,' ').trim();
     const lines = targets.map(r => [
@@ -7869,10 +7888,10 @@ async function pageReportExport(app){
   };
 
   $('#bex-copy').onclick = () => {
-    const from = $('#bex-from').value, to = $('#bex-to').value;
-    st.bFrom = from; st.bTo = to;
+    const from = $('#bex-from').value, to = $('#bex-to').value, ka = $('#bex-ka').value;
+    st.bFrom = from; st.bTo = to; st.bKa = ka;
     const inRange = d => (!from || d >= from) && (!to || d <= to);
-    const targets = blacklist.filter(r => inRange(String(r.date||'')));
+    const targets = blacklist.filter(r => inRange(String(r.date||'')) && (!ka || r.ka === ka));
     if(!targets.length){ $('#bex-msg').textContent = '対象の登録がありません'; return; }
     const mark = n => n == null ? '' : (n <= 2 ? '×' : n === 3 ? '△' : '〇');
     const clean = s => String(s??'').replace(/[\t\n\r]+/g,' ').trim();
