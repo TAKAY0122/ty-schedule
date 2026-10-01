@@ -10948,13 +10948,13 @@ async function pageAdminSettings(app){
         <div style="font-weight:700;flex:1">${p.effective_from==='1900-01-01'?'旧時給（〜2025/9）':h(p.effective_from)+' 〜（改定）'}</div>
         ${sorted.length>1?`<button type="button" class="btn ghost xs wage-period-del" data-ef="${h(p.effective_from)}">削除</button>`:''}
       </div>
-      <table class="wage-tbl">
+      <div class="wage-tbl-wrap"><table class="wage-tbl">
         <tr><th>ランク</th><th>案内料金</th><th>搬入出料金</th><th>ケータリング料金</th></tr>
         ${['A','B','C','D','E'].map(rk=>{const g=(p.rates[rk]||{}).guide||0,l=(p.rates[rk]||{}).load||0,c=(p.rates[rk]||{}).cat||0;return `<tr><td>${rk}</td>
           <td><input type="number" class="wage-in" data-ef="${h(p.effective_from)}" data-rank="${rk}" data-kind="guide" value="${g}"></td>
           <td><input type="number" class="wage-in" data-ef="${h(p.effective_from)}" data-rank="${rk}" data-kind="load" value="${l}"></td>
           <td><input type="number" class="wage-in" data-ef="${h(p.effective_from)}" data-rank="${rk}" data-kind="cat" value="${c}"></td></tr>`;}).join('')}
-      </table>`).join('');
+      </table></div>`).join('');
     el.querySelectorAll('.wage-period-del').forEach(b => b.onclick = async () => {
       const ef = b.dataset.ef;
       if(!confirm(`${ef} 〜 の改定を削除します。この期間に該当する現場の給与は、次に古い改定の時給で計算されるようになります。よろしいですか？`)) return;

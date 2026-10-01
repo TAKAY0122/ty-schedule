@@ -797,8 +797,9 @@ tr.stat-row-clickable.stat-row-sel{background:#eef3fb}
 .adm-body{padding:12px 14px;animation:fadeInUp .2s ease}
 
 /* ===== 時給設定テーブル ===== */
-.wage-tbl{width:100%;border-collapse:collapse;font-size:13px;max-width:420px}
-.wage-tbl th,.wage-tbl td{border:1px solid var(--line);padding:5px 8px;text-align:center}
+.wage-tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:560px}
+.wage-tbl{width:100%;border-collapse:collapse;font-size:13px}
+.wage-tbl th,.wage-tbl td{border:1px solid var(--line);padding:5px 8px;text-align:center;white-space:nowrap}
 .wage-tbl th{background:var(--ink);color:#f3f1ea}
 .wage-in{width:96px;padding:5px;text-align:right;border:1px solid var(--line);border-radius:6px}
 
