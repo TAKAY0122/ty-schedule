@@ -10819,14 +10819,14 @@ async function pageAdminSettings(app){
     <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
       <div style="font-weight:700;margin-bottom:8px">${icon('clipboardList')} 業務名 → 料金区分の対応表</div>
       <div class="muted" style="margin-bottom:8px">台帳の「業務名」列に入っている値ごとに、どの料金で計算されるかを設定します。ここに無い業務名は「案内料金(最低5時間)」として扱われます。対象外(無給)にしたい業務名は、下の一覧に「対象外(給与計算なし)」として明示的に登録してください。</div>
-      <table class="wage-tbl" style="max-width:640px">
+      <div class="wage-tbl-wrap" style="max-width:640px"><table class="wage-tbl">
         <tr><th>業務名</th><th>料金区分</th><th></th></tr>
         ${Object.entries(dutyMap).map(([duty,seg])=>`<tr>
           <td>${h(duty)}</td>
           <td><select class="duty-seg-select" data-duty="${h(duty)}">${Object.entries(DUTY_SEG_LABELS).map(([k,l])=>`<option value="${k}" ${k===seg?'selected':''}>${h(l)}</option>`).join('')}</select></td>
           <td><button class="btn ghost xs duty-del" data-duty="${h(duty)}">削除</button></td>
         </tr>`).join('') || '<tr><td colspan="3" class="muted">登録されていません</td></tr>'}
-      </table>
+      </table></div>
       <div class="row" style="margin-top:10px;gap:6px;align-items:center;flex-wrap:wrap">
         <input id="duty-new-name" placeholder="新しい業務名(例:誘導)" style="flex:1;min-width:140px">
         <select id="duty-new-seg">${Object.entries(DUTY_SEG_LABELS).map(([k,l])=>`<option value="${k}">${h(l)}</option>`).join('')}</select>
