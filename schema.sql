@@ -184,11 +184,11 @@ INSERT OR IGNORE INTO settings(key, value) VALUES('handler_pin', '111111');
 -- スプレッドシート連携(GAS)用の取り込みトークン。管理者画面で再発行可能
 INSERT OR IGNORE INTO settings(key, value) VALUES('import_token', 'CHANGE-ME-IMPORT-TOKEN-0001');
 
--- 時給テーブル(効力発生日つき・編集可)。kind: guide=案内料金 / load=搬入出料金
+-- 時給テーブル(効力発生日つき・編集可)。kind: guide=案内料金 / load=搬入出料金 / cat=ケータリング料金
 CREATE TABLE IF NOT EXISTS wage_rates(
   effective_from TEXT NOT NULL,   -- この日以降に適用(YYYY-MM-DD)
   rank TEXT NOT NULL,             -- A〜E
-  kind TEXT NOT NULL,             -- guide / load
+  kind TEXT NOT NULL,             -- guide / load / cat
   amount INTEGER NOT NULL,
   PRIMARY KEY(effective_from, rank, kind)
 );
@@ -199,25 +199,34 @@ INSERT OR IGNORE INTO wage_rates(effective_from,rank,kind,amount) VALUES
  ('1900-01-01','C','guide',1140),('1900-01-01','C','load',1240),
  ('1900-01-01','D','guide',1130),('1900-01-01','D','load',1230),
  ('1900-01-01','E','guide',1120),('1900-01-01','E','load',1120);
--- 改定時給(2025/10〜)
+-- 改定時給(2025/10/16〜。出典:「お知らせ」賃金改定文書。migrate-historical-wages.sqlと同じ値)
 INSERT OR IGNORE INTO wage_rates(effective_from,rank,kind,amount) VALUES
- ('2025-10-01','A','guide',1220),('2025-10-01','A','load',1320),
- ('2025-10-01','B','guide',1210),('2025-10-01','B','load',1310),
- ('2025-10-01','C','guide',1200),('2025-10-01','C','load',1300),
- ('2025-10-01','D','guide',1190),('2025-10-01','D','load',1290),
- ('2025-10-01','E','guide',1180),('2025-10-01','E','load',1280);
+ ('2025-10-16','A','guide',1220),('2025-10-16','A','load',1320),
+ ('2025-10-16','B','guide',1210),('2025-10-16','B','load',1310),
+ ('2025-10-16','C','guide',1200),('2025-10-16','C','load',1300),
+ ('2025-10-16','D','guide',1190),('2025-10-16','D','load',1290),
+ ('2025-10-16','E','guide',1180),('2025-10-16','E','load',1230);
+-- 改定時給(2026/10/1〜。出典:「お知らせ」賃金改定文書。ケータリング(ランナー)料金=搬入出料金と同額)
+INSERT OR IGNORE INTO wage_rates(effective_from,rank,kind,amount) VALUES
+ ('2026-10-01','A','guide',1280),('2026-10-01','A','load',1380),('2026-10-01','A','cat',1380),
+ ('2026-10-01','B','guide',1270),('2026-10-01','B','load',1370),('2026-10-01','B','cat',1370),
+ ('2026-10-01','C','guide',1260),('2026-10-01','C','load',1360),('2026-10-01','C','cat',1360),
+ ('2026-10-01','D','guide',1250),('2026-10-01','D','load',1350),('2026-10-01','D','cat',1350),
+ ('2026-10-01','E','guide',1240),('2026-10-01','E','load',1290),('2026-10-01','E','cat',1290);
 
 -- 業務名 → 料金区分の対応表(編集可)。seg: g5=案内料金(最低5h) / l3=搬入出料金(最低3h) /
--- lg,gl,lgl=時間帯分割 / skip=給与計算対象外
+-- c5=ケータリング料金(最低5h) / lg,gl,lgl=時間帯分割 / skip=給与計算対象外。
+-- ここに無い業務名はg5(案内料金)扱いになる(calcPay()参照)ため、対象外にしたい業務名は
+-- 必ずskipとして明示的に登録すること。
 CREATE TABLE IF NOT EXISTS duty_map(
   duty TEXT PRIMARY KEY,
   seg TEXT NOT NULL
 );
 INSERT OR IGNORE INTO duty_map(duty,seg) VALUES
- ('案内','g5'),('受付・案内','g5'),('準備','g5'),('本部付','g5'),('制作補助','g5'),('運営補助','g5'),('雑務','g5'),
+ ('案内','g5'),('受付・案内','g5'),('準備','g5'),('本部付','g5'),('制作補助','g5'),('運営補助','g5'),('雑務','g5'),('楽屋受付','g5'),
  ('準備・設営','l3'),('搬入','l3'),('搬出','l3'),('機材搬入','l3'),('機材搬出','l3'),('ステージハンド','l3'),
  ('搬入・案内','lg'),('案内・搬出','gl'),('パッケージ','lgl'),
- ('ケータリング','skip'),('物品販売','skip');
+ ('ケータリング','c5'),('物品販売','skip');
 
 -- 取り込んだ台帳(元Excel)の保管インデックス。実ファイルはR2に保存し、ここはメタ情報のみ。
 CREATE TABLE IF NOT EXISTS daicho_archive(

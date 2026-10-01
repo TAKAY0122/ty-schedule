@@ -468,15 +468,17 @@ const CURRENT_UPDATE_VERSION = 13;
 const pub = u => ({ id: u.id, regno: u.regno, name: u.name, role: u.role, rank: u.rank, ka: u.ka, han: u.han, station: u.station, skills: u.skills, manager_id: u.manager_id, suspended: u.suspended ? 1 : 0, must_change: u.must_change ? 1 : 0, extra_perms: getPerms(u), revoked_perms: getRevokedPerms(u), notify_rookie: u.notify_rookie === null || u.notify_rookie === undefined ? null : (u.notify_rookie ? 1 : 0), is_manager: u.is_manager ? 1 : 0, manner_done: u.manner_done ? 1 : 0, team2_done: u.team2_done ? 1 : 0, su_done: u.su_done ? 1 : 0, graduate_flag: u.graduate_flag ? 1 : 0, promotion_pending_date: u.promotion_pending_date || null, promotion_pending_rank: u.promotion_pending_rank || null, needsUpdateNotice: !u.must_change && (u.seen_update_version || 0) < CURRENT_UPDATE_VERSION, seenUpdateVersion: u.seen_update_version || 0, currentUpdateVersion: CURRENT_UPDATE_VERSION });
 
 // ===== 給与計算 (RB事業2課ルール) =====
-// 業務名 → 計算区分。 g5=案内料金(最低5h) / l3=搬入出料金(最低3h) / lg,gl,lgl=時間帯分割 / skip=対象外
+// 業務名 → 計算区分。 g5=案内料金(最低5h) / l3=搬入出料金(最低3h) / c5=ケータリング料金(最低5h) /
+// lg,gl,lgl=時間帯分割 / skip=対象外。duty_mapに無い業務名は案内料金(g5)扱いとする
+// (「明示的に対象外にしたい業務名だけをskipとして登録する」方針。2026年10月、ユーザーより指示)
 const DUTY_MAP = {
-  '案内':'g5','受付・案内':'g5','準備':'g5','本部付':'g5','制作補助':'g5','運営補助':'g5','雑務':'g5',
+  '案内':'g5','受付・案内':'g5','準備':'g5','本部付':'g5','制作補助':'g5','運営補助':'g5','雑務':'g5','楽屋受付':'g5',
   '準備・設営':'l3','搬入':'l3','搬出':'l3','機材搬入':'l3','機材搬出':'l3','ステージハンド':'l3',
   '搬入・案内':'lg','案内・搬出':'gl','パッケージ':'lgl',
-  'ケータリング':'skip','物品販売':'skip',
+  'ケータリング':'c5','物品販売':'skip',
 };
 // duty-map編集APIでの入力チェック用。有効な料金区分コードの一覧。
-const DUTY_SEG_LABELS_BACKEND = { g5:1, l3:1, lg:1, gl:1, lgl:1, skip:1 };
+const DUTY_SEG_LABELS_BACKEND = { g5:1, l3:1, c5:1, lg:1, gl:1, lgl:1, skip:1 };
 const PAY_RANKS = ['A','B','C','D','E'];
 function rankLetter(r){ const m = String(r || '').match(/[A-Ea-e]/); return m ? m[0].toUpperCase() : ''; }
 // 登録番号の帯から拠点(大阪/京都)を判定する。300000〜349999=大阪、350000〜399999=京都。
@@ -513,7 +515,7 @@ async function loadDutyMap(env){
 // dutyMapは業務名→料金区分のマップ(loadDutyMapで取得したもの)。省略時はコード内蔵のDUTY_MAPを使う。
 function calcPay({ rank, date, tin, tout, duty, loadEnd, showEnd, multi }, resolve, dutyMap){
   const R = rankLetter(rank);
-  const seg = (dutyMap || DUTY_MAP)[duty] || (duty ? 'skip' : 'g5'); // 未知の業務名は対象外、業務名空は案内扱い
+  const seg = (dutyMap || DUTY_MAP)[duty] || 'g5'; // 未登録の業務名(業務名が空の場合も含む)は案内料金(g5)扱い
   const m = t => { const x = String(t == null ? '' : t).match(/^(\d{1,2}):(\d{2})$/); return x ? Number(x[1]) * 60 + Number(x[2]) : null; };
   let IN = m(tin), OUT = m(tout);
   if (IN == null || OUT == null) return { hours: 0, overtime: 0, night: 0, pay: 0 };
@@ -521,24 +523,28 @@ function calcPay({ rank, date, tin, tout, duty, loadEnd, showEnd, multi }, resol
   const H = x => x / 60, total = H(OUT - IN);
   // 対象外(業務 or ランク)
   if (seg === 'skip' || !PAY_RANKS.includes(R)) return { hours: Math.round(total * 100) / 100, overtime: Math.round(Math.max(0, total - 9) * 100) / 100, night: 0, pay: 0 };
-  const gw = resolve(R, 'guide', date) || 0, lw = resolve(R, 'load', date) || 0;
+  const gw = resolve(R, 'guide', date) || 0, lw = resolve(R, 'load', date) || 0, cw = resolve(R, 'cat', date) || 0;
   let LE = m(loadEnd), SE = m(showEnd);
   if (LE != null && LE < IN) LE += 1440;
   if (SE != null && SE < IN) SE += 1440;
-  let base = 0;
-  if (seg === 'g5' || seg === 'l3') {
-    const main = seg[0] === 'l' ? lw : gw, min = Number(seg[1]);
+  let base = 0, tailRate = gw; // 深夜・時間外手当は「従事している作業」の延長料金を使う(終業間際の区分の時給で判定)
+  if (seg === 'g5' || seg === 'l3' || seg === 'c5') {
+    const main = seg === 'l3' ? lw : seg === 'c5' ? cw : gw, min = Number(seg[1]);
     base = Math.max(total, min) * main;
+    tailRate = main;
   } else if (seg === 'lg') {
     base = (LE == null) ? total * gw : H(LE - IN) * lw + H(OUT - LE) * gw;
+    tailRate = gw; // lgは末尾が常に案内
   } else if (seg === 'gl') {
     base = (SE == null) ? total * gw : H(SE - IN) * gw + H(OUT - SE) * lw;
+    tailRate = (SE == null) ? gw : lw; // glは末尾が常に搬出(時間帯未指定時は全体を案内として扱うフォールバックに合わせる)
   } else if (seg === 'lgl') {
     base = (LE == null || SE == null) ? total * gw : H(LE - IN) * lw + H(SE - LE) * gw + H(OUT - SE) * lw;
+    tailRate = (LE == null || SE == null) ? gw : lw; // lglは末尾が常に搬出
   }
   const OT = Math.max(0, total - 13);          // 給与の超過手当(13時間超)は変更なし
   const night = OUT >= 1320 ? H(OUT - 1320) : 0;
-  const pay = Math.round(base + OT * gw * 0.25 + night * gw * 0.25 + (multi ? 500 : 0));
+  const pay = Math.round(base + OT * tailRate * 0.25 + night * tailRate * 0.25 + (multi ? 500 : 0));
   const otDisp = Math.max(0, total - 9);       // スケジュール表示の残業は9時間超
   return { hours: Math.round(total * 100) / 100, overtime: Math.round(otDisp * 100) / 100, night: Math.round(night * 100) / 100, pay };
 }
@@ -2949,9 +2955,10 @@ async function api(req, env, url) {
     const list = Array.isArray(body.rates) ? body.rates : [];
     let n = 0;
     for (const r of list) {
-      const ef = String(r.effective_from || '').trim(), rk = String(r.rank || '').trim(), kd = (r.kind === 'load' ? 'load' : 'guide');
+      const ef = String(r.effective_from || '').trim(), rk = String(r.rank || '').trim();
+      const kd = ['guide', 'load', 'cat'].includes(r.kind) ? r.kind : null;
       const amt = Math.round(Number(r.amount));
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(ef) || !rk || !Number.isFinite(amt) || amt < 0) continue;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(ef) || !rk || !kd || !Number.isFinite(amt) || amt < 0) continue;
       await env.DB.prepare('INSERT INTO wage_rates(effective_from,rank,kind,amount) VALUES(?,?,?,?) ON CONFLICT(effective_from,rank,kind) DO UPDATE SET amount=excluded.amount').bind(ef, rk, kd, amt).run();
       n++;
     }

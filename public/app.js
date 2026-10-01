@@ -274,6 +274,7 @@ const FEATURE_KEYS = Object.keys(FEATURE_LABELS);
 const DUTY_SEG_LABELS = {
   g5: '案内料金(最低5時間)',
   l3: '搬入出料金(最低3時間)',
+  c5: 'ケータリング料金(最低5時間)',
   lg: '搬入→案内(時間帯で分割計算)',
   gl: '案内→搬出(時間帯で分割計算)',
   lgl: '搬入→案内→搬出(時間帯で分割計算)',
@@ -10817,7 +10818,7 @@ async function pageAdminSettings(app){
 
     <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--line)">
       <div style="font-weight:700;margin-bottom:8px">${icon('clipboardList')} 業務名 → 料金区分の対応表</div>
-      <div class="muted" style="margin-bottom:8px">台帳の「業務名」列に入っている値ごとに、どの料金で計算されるかを設定します。ここに無い業務名は「対象外(給与計算なし)」として扱われます。</div>
+      <div class="muted" style="margin-bottom:8px">台帳の「業務名」列に入っている値ごとに、どの料金で計算されるかを設定します。ここに無い業務名は「案内料金(最低5時間)」として扱われます。対象外(無給)にしたい業務名は、下の一覧に「対象外(給与計算なし)」として明示的に登録してください。</div>
       <table class="wage-tbl" style="max-width:640px">
         <tr><th>業務名</th><th>料金区分</th><th></th></tr>
         ${Object.entries(dutyMap).map(([duty,seg])=>`<tr>
@@ -10948,10 +10949,11 @@ async function pageAdminSettings(app){
         ${sorted.length>1?`<button type="button" class="btn ghost xs wage-period-del" data-ef="${h(p.effective_from)}">削除</button>`:''}
       </div>
       <table class="wage-tbl">
-        <tr><th>ランク</th><th>案内料金</th><th>搬入出料金</th></tr>
-        ${['A','B','C','D','E'].map(rk=>{const g=(p.rates[rk]||{}).guide||0,l=(p.rates[rk]||{}).load||0;return `<tr><td>${rk}</td>
+        <tr><th>ランク</th><th>案内料金</th><th>搬入出料金</th><th>ケータリング料金</th></tr>
+        ${['A','B','C','D','E'].map(rk=>{const g=(p.rates[rk]||{}).guide||0,l=(p.rates[rk]||{}).load||0,c=(p.rates[rk]||{}).cat||0;return `<tr><td>${rk}</td>
           <td><input type="number" class="wage-in" data-ef="${h(p.effective_from)}" data-rank="${rk}" data-kind="guide" value="${g}"></td>
-          <td><input type="number" class="wage-in" data-ef="${h(p.effective_from)}" data-rank="${rk}" data-kind="load" value="${l}"></td></tr>`;}).join('')}
+          <td><input type="number" class="wage-in" data-ef="${h(p.effective_from)}" data-rank="${rk}" data-kind="load" value="${l}"></td>
+          <td><input type="number" class="wage-in" data-ef="${h(p.effective_from)}" data-rank="${rk}" data-kind="cat" value="${c}"></td></tr>`;}).join('')}
       </table>`).join('');
     el.querySelectorAll('.wage-period-del').forEach(b => b.onclick = async () => {
       const ef = b.dataset.ef;
@@ -10974,7 +10976,7 @@ async function pageAdminSettings(app){
       if(wageData.periods.some(p=>p.effective_from===ef)){ msg.textContent = 'その日付は既に登録されています'; return; }
       const base = [...wageData.periods].sort((a,b)=>a.effective_from.localeCompare(b.effective_from)).pop();
       const rates = {};
-      for(const rk of ['A','B','C','D','E']) rates[rk] = { guide:(base&&base.rates[rk]||{}).guide||0, load:(base&&base.rates[rk]||{}).load||0 };
+      for(const rk of ['A','B','C','D','E']) rates[rk] = { guide:(base&&base.rates[rk]||{}).guide||0, load:(base&&base.rates[rk]||{}).load||0, cat:(base&&base.rates[rk]||{}).cat||0 };
       wageData.periods.push({ effective_from: ef, rates });
       msg.textContent = '';
       $('#wage-new-ef').value = '';
