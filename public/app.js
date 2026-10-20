@@ -83,6 +83,7 @@ const ICONS = {
   alignCenter:'<path d="M21 6H3M17 12H7M19 18H5"/>',
   alignRight:'<path d="M21 6H3M21 12H9M21 18H7"/>',
   minus:'<path d="M5 12h14"/>',
+  folder:'<path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/>',
 };
 // icon('home')のように呼び、絵文字の代わりに使える線画SVGを返す。sizeとcolorは省略可(currentColorを継承)
 function icon(name, opt={}){
@@ -3633,10 +3634,11 @@ async function pageDashboard(app){
     daicho: has('import_data') ? '#/import' : null,
     schedSources: has('wage_settings') ? '#/sched-sources' : null,
     notify: has('wage_settings') ? '#/admin-settings' : null,
+    drivePoll: has('import_data') ? '#/import' : null,
   };
   // wrangler.tomlのcron設定と対応する起動タイミング(毎時何分か)
-  const jobMin = { daicho: 0, schedSources: 5, rankPromotion: 10, notify: 15, rankCache: 20 };
-  const jobShort = { daicho: '台帳取込', schedSources: '予定表取込', rankPromotion: 'ランク昇格', notify: 'リマインド', rankCache: 'ランキング集計' };
+  const jobMin = { daicho: 0, schedSources: 5, rankPromotion: 10, notify: 15, rankCache: 20, drivePoll: 25 };
+  const jobShort = { daicho: '台帳取込', schedSources: '予定表取込', rankPromotion: 'ランク昇格', notify: 'リマインド', rankCache: 'ランキング集計', drivePoll: 'ドライブ取込' };
 
   const trend = data.trend || [];
   const trendShort = trend.map(t => ({ ...t, short: Number(t.ym.slice(5)) + '月' }));
@@ -7950,6 +7952,18 @@ async function pageImport(app, hash){
   </div>
   ${canReloadSettings ? `
   <div class="card" style="margin-top:16px">
+    <h3 style="margin-bottom:8px">${icon('folder')} 共有ドライブフォルダからの自動取込</h3>
+    <div class="muted" style="margin-bottom:12px">登録した共有ドライブのフォルダを<b>毎日深夜1時に自動確認</b>し、新しく追加された台帳スプレッドシートを見つけたら自動で仮取込します。そのうえで、下の「台帳の深夜自動再取り込み」(朝7時)で確定版として取り込まれます。フォルダの共有設定は「リンクを知る全員が閲覧者」にしておいてください。</div>
+    <div id="drive-folder-list" class="muted">読み込み中…</div>
+    <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap;align-items:center">
+      <input id="df-url" placeholder="https://drive.google.com/drive/folders/..." style="flex:1 1 280px;min-width:0">
+      <input id="df-label" placeholder="管理用の名前(任意)" style="flex:0 1 160px;min-width:0">
+      <button class="btn gold sm" id="df-add">追加</button>
+    </div>
+    <div id="df-msg" class="muted" style="margin-top:6px"></div>
+  </div>` : ''}
+  ${canReloadSettings ? `
+  <div class="card" style="margin-top:16px">
     <h3 style="margin-bottom:8px">${icon('moon')} 台帳の深夜自動再取り込み</h3>
     <div class="muted" style="margin-bottom:10px">上記で「URLを保存する」にチェックして取り込んだ台帳URLを、<b>設定した時刻に自動で再取り込み</b>します。手動取り込みが「事前の仮確認」、この自動処理が「その日の夜に確定版で上書き(不在者の休暇化を含む)」という運用です。</div>
     <div class="muted" style="margin-bottom:12px">この夜間取り込みが完了すると、保存済みURLは<b>使い切りとして自動的に削除</b>されます(1URL=1日分のデータのため)。<b>翌日以降も自動で取り込ませたい場合は、その日ごとに新しいURLを保存し直してください。</b>またR2台帳は<b>同じファイルの古いバージョンが削除され、最新版1件だけが残ります</b>。</div>
@@ -7977,6 +7991,15 @@ async function pageImport(app, hash){
     </label>
     <button class="btn gold sm" id="xl-import-btn" disabled>${icon('play',{size:'13px'})} 選択したファイルを取り込む</button>
     <div id="xl-import-msg" class="muted" style="margin-top:10px"></div>
+  </div>` : ''}
+  ${ME.role === 'admin' ? `
+  <div class="card" style="margin-top:16px;border-color:#e0b840">
+    <h3 style="margin-bottom:8px">${icon('alertTriangle')} 【一時作業】集合時間ベースの給与再計算</h3>
+    <div class="muted" style="margin-bottom:12px">2026-10-01以降の給与の起算点を「開始時間」から「集合時間」へ変更したことに伴い、既に取り込み済みの
+    2026-10-01以降分を、保管済みの台帳原本から再計算します。<b>1回だけ実行してください。</b>実行すると、保管済みの台帳Excel原本(2026-09-25以降に取り込んだもの)を
+    新しいロジックで再度読み込み、該当するスケジュール・給与を上書きします。</div>
+    <button class="btn danger sm" id="recalc-meet-btn">${icon('refresh',{size:'13px'})} 再計算を実行</button>
+    <div id="recalc-meet-msg" class="muted" style="margin-top:10px"></div>
   </div>` : ''}`;
 
   const renderNsk = (list) => {
@@ -8074,6 +8097,54 @@ async function pageImport(app, hash){
   };
 
   if(canReloadSettings){
+    // ---- 共有ドライブフォルダ(台帳の自動取込元)の一覧・追加・編集・削除 ----
+    const renderDriveFolders = (folders) => {
+      const el = $('#drive-folder-list'); if(!el) return;
+      el.innerHTML = !folders.length ? 'まだ登録されていません。下のフォームからフォルダURLを追加してください。' :
+        folders.map(f => `<div class="imp-saved-row" data-id="${f.id}" style="display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap">
+          <span style="flex:1 1 auto;min-width:0">
+            <span style="font-weight:600">${h(f.label || '(名前未設定)')}</span>
+            <span class="muted" style="font-size:11px;font-family:monospace;display:block;word-break:break-all">${h(f.url)}</span>
+            <span class="muted" style="font-size:11px;display:block">${f.last_cursor_time ? `前回確認: ${h(f.last_cursor_time)}` : '初回確認待ち(次回のポーリングでベースラインを記録します)'}</span>
+          </span>
+          <button class="btn ghost xs df-edit" data-id="${f.id}" style="display:inline-block;width:auto">編集</button>
+          <button class="btn ghost xs df-del" data-id="${f.id}" style="display:inline-block;width:auto">削除</button>
+        </div>`).join('');
+      el.querySelectorAll('.df-edit').forEach(b => b.onclick = async () => {
+        const f = folders.find(x => String(x.id) === b.dataset.id); if(!f) return;
+        const newUrl = prompt('フォルダURLを編集', f.url); if(newUrl === null) return;
+        const newLabel = prompt('管理用の名前を編集(空欄可)', f.label || ''); if(newLabel === null) return;
+        await withLoading(b, async () => {
+          try{ await api(`/drive-folders/${f.id}`,{method:'PUT',body:{url:newUrl.trim(),label:newLabel.trim()}}); popup('更新しました'); loadDriveFolders(); }
+          catch(e){ popup(e.message,'error'); }
+        });
+      });
+      el.querySelectorAll('.df-del').forEach(b => b.onclick = async () => {
+        if(!confirm('このフォルダを削除しますか？\n\n※既に取り込んだ台帳データには影響しません。今後このフォルダの自動監視だけが止まります。')) return;
+        await withLoading(b, async () => {
+          try{ await api(`/drive-folders/${b.dataset.id}`,{method:'DELETE'}); popup('削除しました'); loadDriveFolders(); }
+          catch(e){ popup(e.message,'error'); }
+        });
+      });
+    };
+    const loadDriveFolders = () => { api('/drive-folders').then(d => renderDriveFolders(d.folders || [])).catch(()=>{ const el=$('#drive-folder-list'); if(el) el.textContent='読み込みに失敗しました'; }); };
+    loadDriveFolders();
+    const dfAdd = $('#df-add');
+    if(dfAdd) dfAdd.onclick = async () => {
+      const url = $('#df-url').value.trim();
+      const label = $('#df-label').value.trim();
+      if(!url){ $('#df-msg').innerHTML = '<span class="msg err">フォルダURLを入力してください</span>'; return; }
+      await withLoading(dfAdd, async () => {
+        try{
+          await api('/drive-folders',{method:'POST',body:{url,label}});
+          $('#df-url').value=''; $('#df-label').value='';
+          $('#df-msg').textContent='';
+          popup('フォルダを追加しました');
+          loadDriveFolders();
+        }catch(e){ $('#df-msg').innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
+      });
+    };
+
     const dr = $('#dr-save');
     if(dr) dr.onclick = async () => {
       const hour = Number($('#dr-hour').value);
@@ -8291,6 +8362,20 @@ async function pageImport(app, hash){
       });
     };
   }
+
+  const recalcBtn = $('#recalc-meet-btn');
+  if(recalcBtn) recalcBtn.onclick = async () => {
+    if(!confirm('2026-10-01以降の給与を、集合時間ベースで再計算します。\n\n保管済みの台帳原本(2026-09-25以降に取り込んだもの)を再度読み込み、該当するスケジュール・給与を上書きします。1回だけ実行してください。よろしいですか？')) return;
+    $('#recalc-meet-msg').innerHTML = '<span class="spinner" style="width:13px;height:13px;border-width:2px;margin-right:5px"></span>再計算中…(保管ファイル数によって数十秒〜数分かかります)';
+    await withLoading(recalcBtn, async () => {
+      try{
+        const r = await api('/admin/recalc-meet-time', { method:'POST' });
+        $('#recalc-meet-msg').innerHTML = `<b>対象${r.count}件中 ${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}<br>` +
+          r.results.filter(x=>!x.ok).map(x=>`${icon('xCircle',{size:'12px'})} ${h(x.fileName||'')}: ${h(x.error)}`).join('<br>');
+        popup(`再計算が完了しました(${r.okCount}件成功)`);
+      }catch(e){ $('#recalc-meet-msg').innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
+    });
+  };
 }
 
 /* ===== ログイン中メンバー・編集履歴(handler_tools権限・専用ページ) ===== */

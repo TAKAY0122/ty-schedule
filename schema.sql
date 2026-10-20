@@ -243,6 +243,17 @@ CREATE TABLE IF NOT EXISTS daicho_archive(
   sheets INTEGER              -- 読み取ったシート数
 );
 
+-- 台帳スプレッドシートを入手する共有ドライブフォルダの一覧(深夜1時の自動ポーリング対象)。
+-- 1フォルダ=取引先等から日々新しい台帳ファイルが追加される共有ドライブのフォルダURL。
+CREATE TABLE IF NOT EXISTS drive_folders(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  url TEXT NOT NULL,              -- フォルダの共有URL(表示・編集用に元の形で保持)
+  folder_id TEXT NOT NULL,        -- urlから抽出したフォルダID(Drive API呼び出しに使用)
+  label TEXT DEFAULT '',          -- 管理用の表示名(任意)
+  last_cursor_time TEXT DEFAULT '', -- 前回ポーリング時点で確認済みの最新ファイルのcreatedTime(これより新しいファイルだけを次回「新規」とみなす)
+  created_at TEXT
+);
+
 -- 予定表(チーフ/手配者スケジュール表など)を自動取り込みする際、人単位で「前回取り込んだ内容」を
 -- 保存しておき、変わっていない人はスケジュールDBへの書き込みをスキップするためのテーブル。
 CREATE TABLE IF NOT EXISTS import_snapshots(

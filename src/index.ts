@@ -8,6 +8,7 @@ interface Env {
   DAICHO: R2Bucket;
   MANUALS: R2Bucket;
   ASSETS: Fetcher;
+  GOOGLE_API_KEY?: string; // Workersシークレット(共有ドライブフォルダ自動取込用、wrangler secret putで設定)
 }
 
 const J = (d, s = 200) => new Response(JSON.stringify(d), { status: s, headers: { 'content-type': 'application/json;charset=utf-8' } });
@@ -103,6 +104,7 @@ const APP_STRUCTURE_CRON = [
   { name: 'cronRankPromotion', desc: 'ランク昇格の適用(D→C自動昇格の予約日到来分)' },
   { name: 'cronNotify', desc: '新人報告リマインド' },
   { name: 'cronRankCache', desc: '「行った会場/公演」ランキング全員分集計のキャッシュ更新' },
+  { name: 'cronDrivePoll', desc: '共有ドライブフォルダの自動ポーリング(深夜1時、新規台帳スプレッドシートの発見・仮取込)' },
 ];
 const APP_STRUCTURE_PAGES = [
   { hash: '#/home', name: 'ホーム', role: '全員', desc: 'ログイン後の最初の画面。今日から1週間分の予定をスワイプで確認でき、未読通知・承認待ち件数、権限に応じたメニューショートカットを表示する。' },
@@ -480,6 +482,9 @@ const DUTY_MAP = {
 // duty-map編集APIでの入力チェック用。有効な料金区分コードの一覧。
 const DUTY_SEG_LABELS_BACKEND = { g5:1, l3:1, c5:1, lg:1, gl:1, lgl:1, skip:1 };
 const PAY_RANKS = ['A','B','C','D','E'];
+// 給与の起算点(IN時刻)を「開始時間」から「集合時間」に切り替える日(2026年10月、ユーザーより指示)。
+// これ以降の日付の台帳(フォーマットC)だけ集合時間列を優先する。parseFormatC参照。
+const MEET_TIME_PAY_FROM = '2026-10-01';
 function rankLetter(r){ const m = String(r || '').match(/[A-Ea-e]/); return m ? m[0].toUpperCase() : ''; }
 // 登録番号の帯から拠点(大阪/京都)を判定する。300000〜349999=大阪、350000〜399999=京都。
 // DBには保存せず、集計のたびに都度計算するだけ(既存データを変更しない、軽量な集計専用の判定)。
@@ -1520,12 +1525,42 @@ function findHeaderCols(line) {
     nameCol: idxOf('氏名'),
     rank: idxOf('ランク'),
     start: idxOf('開始時間'),
+    meet: idxOf('集合時間'),
     tend: idxOf('終了予定時間', '終了予定'),
     tout: idxOf('退勤時間'),
     late: idxOf('遅刻･欠勤', '遅刻・欠勤'),
     note: idxOf('備考'),
     org: idxOf('所属'),
   };
+}
+
+// ---- 共有ドライブフォルダ(台帳スプレッドシートの自動取込元)用ヘルパー ----
+// 共有URL(https://drive.google.com/drive/folders/<id>?...)からフォルダIDを取り出す
+function parseDriveFolderUrl(url) {
+  const m = String(url).match(/\/folders\/([a-zA-Z0-9_-]+)/);
+  return m ? m[1] : null;
+}
+
+// 指定フォルダ直下のGoogleスプレッドシートファイル一覧を取得する(作成日時昇順)。
+// 「リンクを知る全員が閲覧者」権限であればAPIキーのみで取得できる(OAuth不要)。
+// 共有ドライブ配下のフォルダも対象にするため supportsAllDrives / includeItemsFromAllDrives を付与する。
+async function fetchDriveFolderFiles(env, folderId) {
+  if (!env.GOOGLE_API_KEY) throw new Error('GOOGLE_API_KEY(Workersシークレット)が未設定です');
+  const q = `'${folderId}' in parents and trashed=false and mimeType='application/vnd.google-apps.spreadsheet'`;
+  const u = new URL('https://www.googleapis.com/drive/v3/files');
+  u.searchParams.set('q', q);
+  u.searchParams.set('fields', 'files(id,name,createdTime)');
+  u.searchParams.set('orderBy', 'createdTime');
+  u.searchParams.set('supportsAllDrives', 'true');
+  u.searchParams.set('includeItemsFromAllDrives', 'true');
+  u.searchParams.set('key', env.GOOGLE_API_KEY);
+  const resp = await fetch(u.toString());
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => '');
+    throw new Error(`Drive APIでの一覧取得に失敗しました(HTTP ${resp.status})。フォルダの共有設定が「リンクを知る全員が閲覧者」になっているか確認してください。${body.slice(0, 160)}`);
+  }
+  const data: any = await resp.json();
+  return (data.files || []) as { id: string, name: string, createdTime: string }[];
 }
 
 // ---- スプレッドシートURL取り込み用ヘルパー ----
@@ -1592,6 +1627,34 @@ async function fetchXlsxSheets(id) {
     throw new Error(`xlsxではない応答が返りました(共有設定を「リンクを知る全員が閲覧可」にしてください) [${head.slice(0, 60)}]`);
   }
   return parseXlsxBuffer(buf, headerTitle);
+}
+
+// fetchXlsxSheets()で取得済みの全シート(タブ)を解析して1つの行配列にまとめる。
+// シート名では判定せず、実際に登録番号の列を持つ(=社員データの表である)シートだけが
+// 結果的に件数を持つので、それ以外は自動的に0件になる。1シートずつtry-catchし、
+// あるシートの解析でエラーが起きても他のシートの取り込みが巻き添えにならないようにする。
+// スプレッドシートURL取込(手動・/import-from-url)と共有ドライブ自動取込(cronDrivePoll)の
+// 両方から共通で呼ばれる。
+function parseSheetsForImport(sheets, { format, fileDate, month, cfg, keywordMap }) {
+  let allRows = [];
+  const sheetReport = [];
+  for (const sh of sheets) {
+    const nm = sh.name || '';
+    const grid = sh.grid;
+    if (!grid || !grid.length) { sheetReport.push({ name: nm, count: 0, note: '空シート' }); continue; }
+    try {
+      const fmt = format && format !== 'auto' ? format : detectFormat(grid);
+      let parsed;
+      if (fmt === 'C') parsed = parseFormatC(grid, cfg, fileDate).rows;
+      else if (fmt === 'D') parsed = parseFormatD(grid, detectYmFromGrid(grid, month), keywordMap).rows; // シートに記載の年月を優先。無ければ対象月を使う
+      else parsed = parseFormatAB(grid, month, cfg, keywordMap).rows;
+      if (parsed && parsed.length) { allRows = allRows.concat(parsed); sheetReport.push({ name: nm, count: parsed.length }); }
+      else sheetReport.push({ name: nm, count: 0 });
+    } catch (e) {
+      sheetReport.push({ name: nm, count: 0, note: `解析エラー: ${e.message}` });
+    }
+  }
+  return { allRows, sheetReport };
 }
 
 // 台帳Excel(xlsxバイナリ)を解析し、パース結果(全シート分の行・シートごとの読み取り件数)を返す。
@@ -1979,7 +2042,10 @@ function parseFormatC(rows, cfg, fileDate) {
       if (/[（(]\s*2st\s*[)）]/i.test(duty)) { multi = 1; duty = duty.replace(/[（(]\s*2st\s*[)）]/ig, '').trim(); }
       const site = normalizeSiteName((cols.saimotsu >= 0 ? String(line[cols.saimotsu] || '').trim() : '') || meta.site || duty);
       const venueCell = (cols.venueCol >= 0 ? String(line[cols.venueCol] || '').trim() : '') || blockVenue;
-      const tin = normTime(line[cols.start]);
+      // 2026-10-01付の賃金改定で、給与の起算点が「開始時間」から「集合時間」に変更された。
+      // それ以降の日付は集合時間を優先し、欄が空の行だけ開始時間にフォールバックする
+      // (2026-09-30以前は、集合時間列があっても従来どおり開始時間のみを使う)。
+      const tin = (blockDate >= MEET_TIME_PAY_FROM && cols.meet >= 0 && normTime(line[cols.meet])) || normTime(line[cols.start]);
       const tout = laterTime(normTime(cols.tout >= 0 ? line[cols.tout] : ''), normTime(cols.tend >= 0 ? line[cols.tend] : ''));
       const note = cols.note >= 0 ? String(line[cols.note] || '').trim() : '';
       const org = cols.org >= 0 ? String(line[cols.org] || '').trim() : '';
@@ -3122,7 +3188,7 @@ async function api(req, env, url) {
   // ---- 台帳の深夜自動再取り込みの実行時刻設定 ----
   if (method === 'GET' && path === '/daicho-reload-settings') {
     if (!has(me, 'wage_settings')) return ERR('ページが見つかりません', 404);
-    return J({ hour: parseInt(await getSetting(env, 'daicho_reload_hour', '0'), 10) });
+    return J({ hour: parseInt(await getSetting(env, 'daicho_reload_hour', '7'), 10) });
   }
   if (method === 'PUT' && path === '/daicho-reload-settings') {
     if (!has(me, 'wage_settings')) return ERR('権限がありません', 403);
@@ -3301,6 +3367,40 @@ async function api(req, env, url) {
     const okCount = results.filter(r => r.ok).length;
     const totalApplied = results.reduce((s, r) => s + (r.ok ? (r.applied || 0) : 0), 0);
     return J({ ok: 1, okCount, ngCount: results.length - okCount, totalApplied, results, clearedAbsent: absentResult.clearedPeople, clearedRegistrations: registryResult.clearedRegistrations });
+  }
+
+  // ---- 【一時的な作業用、2026年10月】集合時間ベースの給与再計算 ----
+  // 給与の起算点を「開始時間」から「集合時間」へ切り替えた際(MEET_TIME_PAY_FROM参照)、
+  // 既に2026-10-01以降分として取り込まれていたスケジュールは、まだ古いロジック(開始時間)で
+  // 計算済みのまま残っている。保管済みの台帳Excel原本(daicho_archive、R2)を新しいロジックで
+  // 再パースし、applyImportRowsで再反映(=既存のreimport-from-archiveと同じ仕組みを全件分まとめて
+  // 実行)することで、集合時間を使った正しい値に是正する。管理者が1回実行すれば完了する想定の
+  // 作業用エンドポイントのため、目的を終えたら(docgen更新時等に)削除してよい。
+  if (method === 'POST' && path === '/admin/recalc-meet-time') {
+    if (!me || me.role !== 'admin') return ERR('権限がありません', 403);
+    if (!env.DAICHO) return ERR('R2が未設定のため使用できません', 500);
+    // 2026-10-01より前のファイルは再計算しても結果が変わらないため、安全マージンを含めて
+    // ts(取り込み日時)が2026-09-25以降のものだけに絞る(古いファイルを無駄に処理しない)。
+    const cutoff = '2026-09-25';
+    const recs = (await env.DB.prepare('SELECT id, r2_key, file_name FROM daicho_archive WHERE ts >= ? ORDER BY id').bind(cutoff).all()).results as any[];
+    const keywordMap = await loadNonSiteKeywords(env);
+    const results = [];
+    for (const rec of recs) {
+      try {
+        const obj = await env.DAICHO.get(rec.r2_key);
+        if (!obj) { results.push({ id: rec.id, fileName: rec.file_name, ok: false, error: 'R2本体が見つかりません(削除済みの可能性)' }); continue; }
+        const buf = new Uint8Array(await obj.arrayBuffer());
+        const pr = await processDaichoExcelBuffer(env, buf, rec.file_name || `台帳_${rec.id}.xlsx`, '', me.id, keywordMap);
+        if (!pr.ok) { results.push({ id: rec.id, fileName: rec.file_name, ok: false, error: pr.error }); continue; }
+        await env.DB.prepare('UPDATE daicho_archive SET applied=? WHERE id=?').bind(pr.applied, rec.id).run();
+        results.push({ id: rec.id, fileName: rec.file_name, ok: true, applied: pr.applied, changes: pr.changes ? pr.changes.length : 0 });
+      } catch (e) {
+        results.push({ id: rec.id, fileName: rec.file_name, ok: false, error: e.message });
+      }
+    }
+    const okCount = results.filter((r: any) => r.ok).length;
+    const totalApplied = results.reduce((s: number, r: any) => s + (r.ok ? (r.applied || 0) : 0), 0);
+    return J({ ok: 1, count: recs.length, okCount, ngCount: results.length - okCount, totalApplied, results });
   }
 
   // ---- 給与確定ロック期間の設定 ----
@@ -5426,7 +5526,7 @@ async function api(req, env, url) {
     const emptyAll = { results: [] };
 
     const [
-      daichoLastRun, rankLastRun, notifyLastRun, rankCacheLastRun, schedSourcesRes,
+      daichoLastRun, rankLastRun, notifyLastRun, rankCacheLastRun, drivePollLastRun, schedSourcesRes,
       selfReportsRes, nominationsRes, reportsRes, rookieUnevaluatedRes,
       monthRowsRes, prevMonthRowsRes, usersRes, lockDays, trendRes,
     ] = await Promise.all([
@@ -5434,6 +5534,7 @@ async function api(req, env, url) {
       safe(getSetting(env, 'rank_promotion_last_run', ''), ''),
       safe(getSetting(env, 'notify_last_run', ''), ''),
       safe(getSetting(env, 'rank_cache_last_run', ''), ''),
+      safe(getSetting(env, 'drive_poll_last_run', ''), ''),
       safe(env.DB.prepare("SELECT label, last_run, last_result, freq_type, interval_hours, hour FROM sched_sources WHERE enabled=1 ORDER BY last_run ASC").all(), emptyAll),
       safe(env.DB.prepare("SELECT created_at FROM self_reports WHERE status='pending'").all(), emptyAll),
       safe(env.DB.prepare("SELECT created_at FROM site_nominations WHERE status='pending'").all(), emptyAll),
@@ -5467,6 +5568,7 @@ async function api(req, env, url) {
       { key: 'rankPromotion', label: 'ランク昇格の適用', lastRun: rankLastRun, bad: isStale(rankLastRun) },
       { key: 'notify', label: '新人報告リマインド', lastRun: notifyLastRun, bad: isStale(notifyLastRun) },
       { key: 'rankCache', label: '会場/公演ランキングのキャッシュ更新', lastRun: rankCacheLastRun, bad: isStale(rankCacheLastRun) },
+      { key: 'drivePoll', label: '共有ドライブの自動取込', lastRun: drivePollLastRun, bad: isStale(drivePollLastRun) },
     ];
     const systemStatus = { jobs, hasIssue: jobs.some(j => j.bad) };
 
@@ -5755,28 +5857,8 @@ async function api(req, env, url) {
         } catch (e2) { results.push({ url: rawUrl, ok: false, error: '取得エラー: ' + e2.message }); continue; }
       }
 
-      // 各シートを解析して1つにまとめる。シート名では判定せず、実際に登録番号の列を持つ
-      // (=社員データの表である)シートだけが結果的に件数を持つので、それ以外は自動的に0件になる。
-      // 1シートずつtry-catchし、あるシートの解析でエラーが起きても他のシート(最大20枚程度)の
-      // 取り込みが巻き添えにならないようにする(1シートあたり数百行になることもあるため)。
-      let allRows = [];
-      const sheetReport = [];
-      for (const sh of sheets) {
-        const nm = sh.name || '';
-        const grid = sh.grid;
-        if (!grid || !grid.length) { sheetReport.push({ name: nm, count: 0, note: '空シート' }); continue; }
-        try {
-          const fmt = body.format && body.format !== 'auto' ? body.format : detectFormat(grid);
-          let parsed;
-          if (fmt === 'C') parsed = parseFormatC(grid, body.cfg, fileDate).rows;
-          else if (fmt === 'D') parsed = parseFormatD(grid, detectYmFromGrid(grid, month), keywordMap).rows; // シートに記載の年月を優先。無ければ画面で選択した対象月を使う
-          else parsed = parseFormatAB(grid, month, body.cfg, keywordMap).rows;
-          if (parsed && parsed.length) { allRows = allRows.concat(parsed); sheetReport.push({ name: nm, count: parsed.length }); }
-          else sheetReport.push({ name: nm, count: 0 });
-        } catch (e) {
-          sheetReport.push({ name: nm, count: 0, note: `解析エラー: ${e.message}` });
-        }
-      }
+      // 各シートを解析して1つにまとめる(最大20枚程度でもシートごとに独立してエラー処理される)。
+      const { allRows, sheetReport } = parseSheetsForImport(sheets, { format: body.format, fileDate, month, cfg: body.cfg, keywordMap });
 
       if (!allRows.length) {
         const detail = sheetReport.length ? `(読み込んだシート: ${sheetReport.map(s => `${s.name}=${s.count}件`).join(', ')})` : '(シートが1枚も読めませんでした)';
@@ -5912,6 +5994,47 @@ async function api(req, env, url) {
     await removeImportUrls(env, toRemove);
     const raw = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
     return J({ ok: 1, urls: raw.map(x => typeof x === 'string' ? { url: x, sheetTitle: '', savedAt: '', targetDate: '' } : x) });
+  }
+
+  // ---- 共有ドライブフォルダ(台帳の自動取込元)の一覧・追加・変更・削除(手配者以上) ----
+  // 深夜1時のcronDrivePollが、ここに登録された各フォルダを毎日ポーリングし、新規に追加された
+  // 台帳スプレッドシートを見つけて自動取込・URL保存する(詳細はcronDrivePoll参照)。
+  if (method === 'GET' && path === '/drive-folders') {
+    if (!has(me, 'import_data')) return ERR('ページが見つかりません', 404);
+    const rows = (await env.DB.prepare('SELECT id, url, label, last_cursor_time, created_at FROM drive_folders ORDER BY id').all()).results;
+    return J({ folders: rows });
+  }
+  if (method === 'POST' && path === '/drive-folders') {
+    if (!has(me, 'import_data')) return ERR('権限がありません', 403);
+    const url = String(body.url || '').trim();
+    const folderId = parseDriveFolderUrl(url);
+    if (!folderId) return ERR('共有ドライブのフォルダURLの形式が正しくありません(https://drive.google.com/drive/folders/... の形式で入力してください)');
+    const label = String(body.label || '').trim();
+    await env.DB.prepare('INSERT INTO drive_folders(url, folder_id, label, last_cursor_time, created_at) VALUES(?,?,?,?,?)')
+      .bind(url, folderId, label, '', jstTs()).run();
+    return J({ ok: 1 });
+  }
+  let dfm;
+  if (method === 'PUT' && (dfm = path.match(/^\/drive-folders\/(\d+)$/))) {
+    if (!has(me, 'import_data')) return ERR('権限がありません', 403);
+    const id = Number(dfm[1]);
+    const existing = await env.DB.prepare('SELECT url FROM drive_folders WHERE id=?').bind(id).first();
+    if (!existing) return ERR('見つかりません', 404);
+    const url = String(body.url || '').trim();
+    const folderId = parseDriveFolderUrl(url);
+    if (!folderId) return ERR('共有ドライブのフォルダURLの形式が正しくありません');
+    const label = String(body.label || '').trim();
+    // URLを変更した場合は別のフォルダを指す可能性があるため、前回確認済みのカーソルをリセットする
+    // (次回ポーリング時は既存ファイルの一括取込を避けるため、最新ファイルをベースラインとして再設定するだけになる)
+    const resetCursor = url !== existing.url;
+    await env.DB.prepare(`UPDATE drive_folders SET url=?, folder_id=?, label=?${resetCursor ? ', last_cursor_time=\'\'' : ''} WHERE id=?`)
+      .bind(url, folderId, label, id).run();
+    return J({ ok: 1 });
+  }
+  if (method === 'DELETE' && (dfm = path.match(/^\/drive-folders\/(\d+)$/))) {
+    if (!has(me, 'import_data')) return ERR('権限がありません', 403);
+    await env.DB.prepare('DELETE FROM drive_folders WHERE id=?').bind(Number(dfm[1])).run();
+    return J({ ok: 1 });
   }
 
   // ---- 手配者専用 ----
@@ -6710,7 +6833,9 @@ async function runDaichoReload(env, urls, opt: any = {}) {
 }
 
 async function cronDaichoReload(env) {
-  const targetHour = parseInt(await getSetting(env, 'daicho_reload_hour', '0'), 10);
+  // 既定値は朝7時(2026年10月、深夜1時の共有ドライブ自動ポーリング[cronDrivePoll]導入に伴い
+  // 0時→7時へ変更。ドライブ側に新しい台帳が揃ってから確定取り込みする順序にするため)。
+  const targetHour = parseInt(await getSetting(env, 'daicho_reload_hour', '7'), 10);
   const now = new Date(Date.now() + 9 * 3600e3); // JST
   // 「ちょうどtargetHourの回」だけを狙うと、Cron Triggerの実行頻度が低い場合に
   // タイミングが合わず永遠に実行されないことがあるため、「targetHourを過ぎていれば」実行する。
@@ -6720,15 +6845,19 @@ async function cronDaichoReload(env) {
   const lastRun = await getSetting(env, 'daicho_reload_last_run', '');
   if (lastRun === today) return; // 1日1回のみ
 
-  let urls;
+  let allSaved;
   try {
     const urlsRaw = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
-    urls = urlsRaw.map(x => typeof x === 'string' ? x : x.url);
+    allSaved = urlsRaw.map(x => typeof x === 'string' ? { url: x, targetDate: '' } : x);
   } catch (e) {
     console.error('[cronDaichoReload] import_urls の読み込みに失敗しました。フラグは立てず、次回に再試行します:', e);
     return; // ここでフラグを立てると、壊れたデータを直すまで毎日再取込が止まったままになる
   }
-  if (!urls.length) {
+  // 対象日(targetDate)が「今日」と一致する分は、台帳の入力がまだ完了していない進行中の日のため
+  // 今回は対象外にする(例: 7時台に実行した場合、前日分だけを確定取り込みし、今日分はそのまま
+  // 保存済みリストに残して翌朝の実行まで待つ。2026年10月、ユーザーより指示)。
+  const dueUrls = allSaved.filter(x => x.targetDate !== today).map(x => x.url);
+  if (!dueUrls.length) {
     await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_run',?)").bind(today).run();
     return;
   }
@@ -6736,12 +6865,12 @@ async function cronDaichoReload(env) {
   // 前回の起動が時間予算切れで未完了(incomplete)だった場合、その続きから再開する。
   // 進捗は import_urls とは別の import_urls_progress に保持しており、当日分の記録だけを使う
   // (import_urls 自体は保存済みURL設定そのものなので、絶対に書き換えない)。
-  let resumeUrls = urls;
+  let resumeUrls = dueUrls;
   try {
     const progress = JSON.parse(await getSetting(env, 'import_urls_progress', 'null') || 'null');
     if (progress && progress.date === today && Array.isArray(progress.remaining) && progress.remaining.length) {
-      resumeUrls = progress.remaining.filter(u => urls.includes(u));
-      if (!resumeUrls.length) resumeUrls = urls;
+      resumeUrls = progress.remaining.filter(u => dueUrls.includes(u));
+      if (!resumeUrls.length) resumeUrls = dueUrls;
     }
   } catch (e) {}
 
@@ -6760,14 +6889,15 @@ async function cronDaichoReload(env) {
 
   // 保存済みURLは、その日の深夜取り込み(確定版の上書き)を終えたら使い捨てで削除する
   // (1URL=1日分のデータという運用のため。「毎日自動で」は、翌日以降は新しいURLを
-  // 保存し直すことで続けられる、という前提)。ここに到達した時点でincomplete=falseが
-  // 確定しているため、削除しても「時間切れで一部だけ処理した回に消してしまう」事故は起きない。
-  try { await removeImportUrls(env, urls); } catch (e) { console.error('[cronDaichoReload] failed to remove processed import_urls:', e); }
+  // 保存し直すことで続けられる、という前提)。今日分(dueUrlsに含まれない)は削除せず残す。
+  // ここに到達した時点でincomplete=falseが確定しているため、削除しても「時間切れで
+  // 一部だけ処理した回に消してしまう」事故は起きない。
+  try { await removeImportUrls(env, dueUrls); } catch (e) { console.error('[cronDaichoReload] failed to remove processed import_urls:', e); }
 
   // 取り込み結果を確定・通知しておく(この後の不在者判定・照合処理でタイムアウトしても、
   // 取り込み自体の成否は必ず管理者に届くようにするため)
   await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_result',?)").bind(
-    JSON.stringify({ ts: jstTs(), count: urls.length, results: r.results, clearedAbsent: r.absentResult.clearedPeople, clearedRegistrations: r.registryResult.clearedRegistrations })
+    JSON.stringify({ ts: jstTs(), count: dueUrls.length, results: r.results, clearedAbsent: r.absentResult.clearedPeople, clearedRegistrations: r.registryResult.clearedRegistrations })
   ).run();
   try {
     const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
@@ -6783,6 +6913,125 @@ async function cronDaichoReload(env) {
       }
     }
   } catch (e) {}
+}
+
+// ===== 共有ドライブフォルダの深夜自動ポーリング(2026年10月導入) =====
+// drive_foldersに登録された各フォルダを毎日深夜1時(JST)にポーリングし、前回確認時点より
+// 新しく作成されたスプレッドシートを見つけたら、台帳として仮取込(applyImportRows)した上で、
+// 朝7時のcronDaichoReloadで確定取込・使い捨て削除されるようURLをimport_urlsへ保存する
+// (=既存の「手動でURLを登録して取り込む」操作を、ドライブ監視によって自動化したもの)。
+//
+// 「新規ファイル」の判定は、フォルダごとに保持する last_cursor_time(前回確認時点で最も新しい
+// ファイルのcreatedTime)をカーソルとして使う方式(2026年10月、ユーザーの選択)。フォルダを
+// 新規登録した直後の初回ポーリングでは、既存ファイルを誤って一括取込しないよう、その時点の
+// 最新ファイルをベースラインとして記録するだけに留める。
+//
+// 対象日の特定は、既存の手動URL取込と同じくファイル名からの自動抽出(normSheetDate)を使う。
+// 抽出できなかったファイルはカーソルだけ進め(無限に再試行しない)、管理者へ手動対応を促す通知を送る。
+async function cronDrivePoll(env) {
+  const targetHour = 1; // 深夜1時(JST)。他のcronと同じ「過ぎていれば実行」方式
+  const now = new Date(Date.now() + 9 * 3600e3);
+  if (now.getUTCHours() < targetHour) return;
+  const today = jstDate();
+  const lastRun = await getSetting(env, 'drive_poll_last_run', '');
+  if (lastRun === today) return; // 1日1回のみ
+
+  const folders = (await env.DB.prepare('SELECT id, url, folder_id, label, last_cursor_time FROM drive_folders').all()).results as any[];
+  if (!folders.length) {
+    await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('drive_poll_last_run',?)").bind(today).run();
+    return;
+  }
+
+  const keywordMap = await loadNonSiteKeywords(env);
+  const ym = today.slice(0, 7);
+  let importedCount = 0, errorCount = 0;
+  const errorMessages: string[] = [];
+
+  for (const folder of folders) {
+    let files;
+    try {
+      files = await fetchDriveFolderFiles(env, folder.folder_id);
+    } catch (e) {
+      console.error(`[cronDrivePoll] folder ${folder.id} の一覧取得に失敗:`, e);
+      errorCount++; errorMessages.push(`「${folder.label || folder.url}」: ${e.message}`);
+      continue;
+    }
+    if (!files.length) continue;
+
+    if (!folder.last_cursor_time) {
+      // 新規登録したフォルダ: 既存ファイルは取り込まず、現在の最新ファイルをベースラインとして記録するだけ
+      const maxCreated = files.reduce((m, f) => f.createdTime > m ? f.createdTime : m, '');
+      await env.DB.prepare('UPDATE drive_folders SET last_cursor_time=? WHERE id=?').bind(maxCreated, folder.id).run();
+      continue;
+    }
+
+    const newFiles = files.filter(f => f.createdTime > folder.last_cursor_time);
+    if (!newFiles.length) continue;
+
+    let cursorAdvance = folder.last_cursor_time;
+    for (const file of newFiles) {
+      cursorAdvance = file.createdTime; // 成功・失敗にかかわらず処理したファイルまでカーソルを進める(無限再試行を避ける)
+      const fileDate = normSheetDate(file.name, ym);
+      if (!fileDate || !/^\d{4}-\d{2}-\d{2}$/.test(fileDate)) {
+        errorCount++;
+        errorMessages.push(`「${file.name}」: ファイル名から日付を読み取れませんでした。手動でURLを登録してください(https://docs.google.com/spreadsheets/d/${file.id}/edit)`);
+        continue;
+      }
+      try {
+        const got = await fetchXlsxSheets(file.id);
+        const { allRows, sheetReport } = parseSheetsForImport(got.sheets, { format: 'auto', fileDate, month: fileDate.slice(0, 7), cfg: null, keywordMap });
+        if (!allRows.length) { errorCount++; errorMessages.push(`「${file.name}」: 取り込めるデータが見つかりませんでした`); continue; }
+
+        const r = await applyImportRows(env, allRows, 0, 'replace-person-day', '共有ドライブ自動取込', true); // editorId=0は「スプレッドシート(自動)」の既存の扱い
+        try { await matchRookieAndBlacklist(env, allRows); } catch (e) {}
+
+        // 監査・証拠用に元Excelを保管(手動URL取込と同じ扱い)
+        if (got.raw && env.DAICHO) {
+          try {
+            const ts = jstTs();
+            const r2key = `daicho/${ts.replace(/[: ]/g, '-')}_${file.id}.xlsx`;
+            await env.DAICHO.put(r2key, got.raw, { httpMetadata: { contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' } });
+            const safeTitle = (got.fileTitle || file.name).replace(/[\\/:*?"<>|]/g, '_').trim();
+            const fname = safeTitle ? `${safeTitle}.xlsx` : `台帳_${ts.slice(0, 10)}_${file.id.slice(0, 8)}.xlsx`;
+            await env.DB.prepare(
+              'INSERT INTO daicho_archive(ts,importer_id,importer_name,source_url,file_id,r2_key,file_name,size,applied,sheets) VALUES(?,?,?,?,?,?,?,?,?,?)'
+            ).bind(ts, null, '共有ドライブ自動取込', `https://docs.google.com/spreadsheets/d/${file.id}/edit`, file.id, r2key, fname, got.raw.length, r.applied, sheetReport.length).run();
+          } catch (e) { console.error('[cronDrivePoll] R2保管失敗:', e); }
+        }
+
+        // 朝7時のcronDaichoReloadで確定取込・使い捨て削除されるよう、手動の「URLを保存する」と同じ形でURLを登録する
+        const url = `https://docs.google.com/spreadsheets/d/${file.id}/edit`;
+        const savedRaw = JSON.parse(await getSetting(env, 'import_urls', '[]') || '[]');
+        const saved = savedRaw.map(x => typeof x === 'string' ? { url: x, sheetTitle: '', savedAt: '', targetDate: '' } : x);
+        const existing = saved.find((x: any) => x.url === url);
+        const savedAt = jstTs();
+        if (existing) { existing.sheetTitle = got.fileTitle || file.name; existing.targetDate = fileDate; existing.savedAt = savedAt; }
+        else saved.push({ url, sheetTitle: got.fileTitle || file.name, targetDate: fileDate, savedAt });
+        await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('import_urls',?)").bind(JSON.stringify(saved.slice(-50))).run();
+
+        importedCount++;
+      } catch (e) {
+        errorCount++; errorMessages.push(`「${file.name}」: ${e.message}`);
+      }
+    }
+    await env.DB.prepare('UPDATE drive_folders SET last_cursor_time=? WHERE id=?').bind(cursorAdvance, folder.id).run();
+  }
+
+  await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('drive_poll_last_run',?)").bind(today).run();
+
+  if (importedCount || errorCount) {
+    try {
+      const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
+      if (admins.length) {
+        await notify(env, admins.map(a => a.id), 'sched_import',
+          `📂 共有ドライブの自動取込が完了しました(${jstTs()})。新規${importedCount}件を仮取込${errorCount ? ` / ${errorCount}件要確認` : ''}`,
+          '#/import');
+        if (errorMessages.length) {
+          await notify(env, admins.map(a => a.id), 'sched_import', `📂 要確認: ${errorMessages.slice(0, 5).join(' / ')}`, '#/import');
+        }
+      }
+    } catch (e) {}
+  }
 }
 
 // 新人報告リマインド通知。
@@ -7085,6 +7334,7 @@ export default {
       else if (event.cron === '10 * * * *') await cronRankPromotion(env);
       else if (event.cron === '15 * * * *') await cronNotify(env);
       else if (event.cron === '20 * * * *') await cronRankCache(env);
+      else if (event.cron === '25 * * * *') await cronDrivePoll(env);
     } catch (e) { console.error(`[scheduled] cron=${event.cron} failed:`, e); }
     console.log(`[scheduled] end (cron=${event.cron}, started at ${startTs})`);
   }
