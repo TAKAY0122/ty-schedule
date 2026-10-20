@@ -7991,15 +7991,6 @@ async function pageImport(app, hash){
     </label>
     <button class="btn gold sm" id="xl-import-btn" disabled>${icon('play',{size:'13px'})} 選択したファイルを取り込む</button>
     <div id="xl-import-msg" class="muted" style="margin-top:10px"></div>
-  </div>` : ''}
-  ${ME.role === 'admin' ? `
-  <div class="card" style="margin-top:16px;border-color:#e0b840">
-    <h3 style="margin-bottom:8px">${icon('alertTriangle')} 【一時作業】集合時間ベースの給与再計算</h3>
-    <div class="muted" style="margin-bottom:12px">2026-10-01以降の給与の起算点を「開始時間」から「集合時間」へ変更したことに伴い、既に取り込み済みの
-    2026-10-01以降分を、保管済みの台帳原本から再計算します。<b>1回だけ実行してください。</b>実行すると、保管済みの台帳Excel原本(2026-09-25以降に取り込んだもの)を
-    新しいロジックで再度読み込み、該当するスケジュール・給与を上書きします。</div>
-    <button class="btn danger sm" id="recalc-meet-btn">${icon('refresh',{size:'13px'})} 再計算を実行</button>
-    <div id="recalc-meet-msg" class="muted" style="margin-top:10px"></div>
   </div>` : ''}`;
 
   const renderNsk = (list) => {
@@ -8362,20 +8353,6 @@ async function pageImport(app, hash){
       });
     };
   }
-
-  const recalcBtn = $('#recalc-meet-btn');
-  if(recalcBtn) recalcBtn.onclick = async () => {
-    if(!confirm('2026-10-01以降の給与を、集合時間ベースで再計算します。\n\n保管済みの台帳原本(2026-09-25以降に取り込んだもの)を再度読み込み、該当するスケジュール・給与を上書きします。1回だけ実行してください。よろしいですか？')) return;
-    $('#recalc-meet-msg').innerHTML = '<span class="spinner" style="width:13px;height:13px;border-width:2px;margin-right:5px"></span>再計算中…(保管ファイル数によって数十秒〜数分かかります)';
-    await withLoading(recalcBtn, async () => {
-      try{
-        const r = await api('/admin/recalc-meet-time', { method:'POST' });
-        $('#recalc-meet-msg').innerHTML = `<b>対象${r.count}件中 ${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}<br>` +
-          r.results.filter(x=>!x.ok).map(x=>`${icon('xCircle',{size:'12px'})} ${h(x.fileName||'')}: ${h(x.error)}`).join('<br>');
-        popup(`再計算が完了しました(${r.okCount}件成功)`);
-      }catch(e){ $('#recalc-meet-msg').innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
-    });
-  };
 }
 
 /* ===== ログイン中メンバー・編集履歴(handler_tools権限・専用ページ) ===== */

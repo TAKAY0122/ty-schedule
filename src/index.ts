@@ -3369,40 +3369,6 @@ async function api(req, env, url) {
     return J({ ok: 1, okCount, ngCount: results.length - okCount, totalApplied, results, clearedAbsent: absentResult.clearedPeople, clearedRegistrations: registryResult.clearedRegistrations });
   }
 
-  // ---- 【一時的な作業用、2026年10月】集合時間ベースの給与再計算 ----
-  // 給与の起算点を「開始時間」から「集合時間」へ切り替えた際(MEET_TIME_PAY_FROM参照)、
-  // 既に2026-10-01以降分として取り込まれていたスケジュールは、まだ古いロジック(開始時間)で
-  // 計算済みのまま残っている。保管済みの台帳Excel原本(daicho_archive、R2)を新しいロジックで
-  // 再パースし、applyImportRowsで再反映(=既存のreimport-from-archiveと同じ仕組みを全件分まとめて
-  // 実行)することで、集合時間を使った正しい値に是正する。管理者が1回実行すれば完了する想定の
-  // 作業用エンドポイントのため、目的を終えたら(docgen更新時等に)削除してよい。
-  if (method === 'POST' && path === '/admin/recalc-meet-time') {
-    if (!me || me.role !== 'admin') return ERR('権限がありません', 403);
-    if (!env.DAICHO) return ERR('R2が未設定のため使用できません', 500);
-    // 2026-10-01より前のファイルは再計算しても結果が変わらないため、安全マージンを含めて
-    // ts(取り込み日時)が2026-09-25以降のものだけに絞る(古いファイルを無駄に処理しない)。
-    const cutoff = '2026-09-25';
-    const recs = (await env.DB.prepare('SELECT id, r2_key, file_name FROM daicho_archive WHERE ts >= ? ORDER BY id').bind(cutoff).all()).results as any[];
-    const keywordMap = await loadNonSiteKeywords(env);
-    const results = [];
-    for (const rec of recs) {
-      try {
-        const obj = await env.DAICHO.get(rec.r2_key);
-        if (!obj) { results.push({ id: rec.id, fileName: rec.file_name, ok: false, error: 'R2本体が見つかりません(削除済みの可能性)' }); continue; }
-        const buf = new Uint8Array(await obj.arrayBuffer());
-        const pr = await processDaichoExcelBuffer(env, buf, rec.file_name || `台帳_${rec.id}.xlsx`, '', me.id, keywordMap);
-        if (!pr.ok) { results.push({ id: rec.id, fileName: rec.file_name, ok: false, error: pr.error }); continue; }
-        await env.DB.prepare('UPDATE daicho_archive SET applied=? WHERE id=?').bind(pr.applied, rec.id).run();
-        results.push({ id: rec.id, fileName: rec.file_name, ok: true, applied: pr.applied, changes: pr.changes ? pr.changes.length : 0 });
-      } catch (e) {
-        results.push({ id: rec.id, fileName: rec.file_name, ok: false, error: e.message });
-      }
-    }
-    const okCount = results.filter((r: any) => r.ok).length;
-    const totalApplied = results.reduce((s: number, r: any) => s + (r.ok ? (r.applied || 0) : 0), 0);
-    return J({ ok: 1, count: recs.length, okCount, ngCount: results.length - okCount, totalApplied, results });
-  }
-
   // ---- 給与確定ロック期間の設定 ----
   if (method === 'GET' && path === '/lock-settings') {
     if (!has(me, 'wage_settings')) return ERR('ページが見つかりません', 404);
