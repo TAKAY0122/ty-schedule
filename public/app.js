@@ -5322,8 +5322,9 @@ function openMemberArtistList(uid, name){
 }
 
 // 会場マニュアルの写真/動画URL。<img>/<video>のsrcはAuthorizationヘッダーを送れないため、
-// セッショントークンをクエリ文字列で渡す専用配信経路(GET /venue-manual/media/:key)を使う。
-function manualMediaUrl(key){ return `/api/venue-manual/media/${key}?t=${encodeURIComponent(TOKEN)}`; }
+// GET /venue-manualのレスポンスで発行された短命(2時間)の専用トークンをクエリ文字列で渡す
+// 専用配信経路(GET /venue-manual/media/:key)を使う(本体のセッショントークンそのものは渡さない)。
+function manualMediaUrl(key, mediaToken){ return `/api/venue-manual/media/${key}?t=${encodeURIComponent(mediaToken || '')}`; }
 // 会場マニュアルの写真/動画アップロード。multipart/form-dataを使うため、JSON専用の共通api()は使わず
 // 個別にfetchする(認証ヘッダーの付け方はapi()と同じ)。
 async function uploadManualMedia(venue, kind, file){
@@ -5378,6 +5379,7 @@ async function pageVenueManual(app, hash){
 
   const CANVAS_W = 1000;
   const canEdit = has('sites_view');
+  const mediaToken = data.mediaToken;
   const state = { blocks: data.blocks.map(vmHydrateBlock), history: data.history, editMode: false, dirty: false, selected: null, nextTemp: -1 };
   let onResize = null;
 
@@ -5423,8 +5425,8 @@ async function pageVenueManual(app, hash){
       const bodyStyle = `text-align:${align};color:${color};font-size:${fs}px;font-weight:${b.style.bold?'bold':'normal'};font-style:${b.style.italic?'italic':'normal'};text-decoration:${b.style.underline?'underline':'none'}`;
       return `<div class="vm-block-body" style="${bodyStyle}">${b.content ? h(b.content) : (state.editMode ? '<span class="muted">(クリックして編集)</span>' : '')}</div>`;
     }
-    if(b.type === 'photo') return b.content ? `<img src="${manualMediaUrl(b.content)}" alt="">` : `<div class="vm-block-empty">${icon('image',{size:'22px'})}</div>`;
-    if(b.type === 'video') return b.content ? `<video src="${manualMediaUrl(b.content)}" controls></video>` : `<div class="vm-block-empty">${icon('video',{size:'22px'})}</div>`;
+    if(b.type === 'photo') return b.content ? `<img src="${manualMediaUrl(b.content, mediaToken)}" alt="">` : `<div class="vm-block-empty">${icon('image',{size:'22px'})}</div>`;
+    if(b.type === 'video') return b.content ? `<video src="${manualMediaUrl(b.content, mediaToken)}" controls></video>` : `<div class="vm-block-empty">${icon('video',{size:'22px'})}</div>`;
     if(b.type === 'shape'){
       const shape = ['rect','ellipse','line','arrow'].includes(b.style.shape) ? b.style.shape : 'rect';
       if(shape !== 'line' && shape !== 'arrow') return ''; // rect/ellipseは外枠div自体(blockOuterStyle)で表現する
@@ -7961,6 +7963,8 @@ async function pageImport(app, hash){
       <button class="btn gold sm" id="df-add">追加</button>
     </div>
     <div id="df-msg" class="muted" style="margin-top:6px"></div>
+    <button class="btn ghost sm" id="df-run-now" style="width:100%;margin-top:10px">${icon('play',{size:'13px'})} 深夜を待たず今すぐ確認する</button>
+    <div id="df-run-msg" class="muted" style="margin-top:6px"></div>
   </div>` : ''}
   ${canReloadSettings ? `
   <div class="card" style="margin-top:16px">
@@ -8120,6 +8124,20 @@ async function pageImport(app, hash){
     };
     const loadDriveFolders = () => { api('/drive-folders').then(d => renderDriveFolders(d.folders || [])).catch(()=>{ const el=$('#drive-folder-list'); if(el) el.textContent='読み込みに失敗しました'; }); };
     loadDriveFolders();
+    const dfRunNow = $('#df-run-now');
+    if(dfRunNow) dfRunNow.onclick = async () => {
+      const msgEl = $('#df-run-msg');
+      msgEl.textContent = '確認中…(内容によっては数十秒かかります)';
+      await withLoading(dfRunNow, async () => {
+        try{
+          const r = await api('/drive-folders/run-now', { method:'POST' });
+          msgEl.innerHTML = `新規${r.importedCount}件を仮取込${r.errorCount ? ` / ${r.errorCount}件要確認` : ''}` +
+            (r.errorMessages && r.errorMessages.length ? '<br>' + r.errorMessages.map(m=>h(m)).join('<br>') : '');
+          popup(r.importedCount || r.errorCount ? `確認が完了しました(新規${r.importedCount}件)` : '新しいファイルは見つかりませんでした');
+          loadDriveFolders();
+        }catch(e){ popup(e.message,'error'); msgEl.textContent=''; }
+      });
+    };
     const dfAdd = $('#df-add');
     if(dfAdd) dfAdd.onclick = async () => {
       const url = $('#df-url').value.trim();

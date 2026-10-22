@@ -213,10 +213,10 @@ const APP_STRUCTURE_API_GROUPS = [
     ['GET', '/venue-history', '指定した会場の現場一覧を今日を境に過去/今後に分けて返す(チーフ以上)。hasManual・visitedも返す'],
     ['POST', '/venues/bulk-rename', 'チェックした複数の会場名をまとめて統一名称に変更(手配者以上)。site_registry.venue・venue_manuals・site_group_membersも引き継ぐ'],
     ['POST', '/venues/manual-flag', '会場マニュアルの有無フラグを設定(手配者以上)'],
-    ['GET', '/venue-manual', '会場マニュアル本文(自由配置キャンバス方式)のブロック一覧・更新履歴を取得(準備中機能、チーフ以上)。ブロック種別はtext/photo/video/shape(図形)/table(簡易表)'],
+    ['GET', '/venue-manual', '会場マニュアル本文(自由配置キャンバス方式)のブロック一覧・更新履歴を取得(準備中機能、チーフ以上)。ブロック種別はtext/photo/video/shape(図形)/table(簡易表)。写真/動画配信用の短命(2時間)専用トークン(mediaToken)も発行して返す'],
     ['PUT', '/venue-manual', '会場マニュアル本文を差分保存(追加/変更/削除を判定し、変化したブロックだけ履歴に記録。追加・保存・編集はチーフ以上)。style列(JSON)で文字装飾・図形の塗り/線・表の色等を保持'],
-    ['POST', '/venue-manual/upload', '会場マニュアル用の写真/動画をR2(MANUALSバケット)へアップロードしキーを返す(チーフ以上)'],
-    ['GET', '/venue-manual/media/:key', '会場マニュアルの写真/動画配信。<img>/<video>から直接読み込むため、セッショントークンをクエリ文字列(?t=)で受け取る専用経路'],
+    ['POST', '/venue-manual/upload', '会場マニュアル用の写真/動画をR2(MANUALSバケット)へアップロードしキーを返す(チーフ以上)。ファイルの実際の種別はクライアント申告のContent-Typeではなく先頭バイト(マジックナンバー)から判定する'],
+    ['GET', '/venue-manual/media/:key', '会場マニュアルの写真/動画配信。<img>/<video>から直接読み込むため、GET /venue-manualで発行した短命(2時間)の専用トークンをクエリ文字列(?t=)で受け取る専用経路'],
     ['GET', '/venue-members', '指定した会場を経験したことのあるメンバー一覧(チーフ以上)。sortパラメータでcnt/recent/rankに切替可能。停止中アカウントも含む'],
     ['GET', '/member-venues', '指定したメンバーが行ったことのある会場一覧(使用回数・使用日数・最終日。全員が閲覧可能)。各行に、その会場を経験した全員の中での順位(rank/total)と、あと何回で1つ上の順位に並べるか(nextRank/gap)を付与。一覧のタップ先(会場詳細)はsites_view権限(チーフ以上)に限る'],
     ['GET/POST', '/site-groups', '会場・公演のグループ一覧取得・新規作成(kindでvenue/artistを指定)。GETはチーフ以上、POSTは手配者以上'],
@@ -454,6 +454,24 @@ const rnd = () => crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().re
 // rnd()(128桁)より短くしている。URLに載せて共有する用途のため、単独では推測困難な長さを確保しつつ
 // 短くする、というトレードオフ。
 const rndShort = () => crypto.randomUUID().replace(/-/g, '');
+
+// アップロードされたファイルの先頭バイト(マジックナンバー)から実際の種別を判定する。
+// クライアントが送るfile.type(Content-Type)は偽装可能なため、会場マニュアルの画像/動画
+// アップロードではこちらの判定結果だけを信用し、保存するContent-Typeにも使う
+// (file.typeをimage/svg+xml等に偽装してスクリプトを埋め込んだファイルを「写真」として
+// 保存・配信させる攻撃を防ぐため。SVGはどの署名にも一致せず拒否される)。
+function sniffMediaType(bytes: Uint8Array): string | null {
+  const at = (off: number, ...seq: number[]) => seq.every((b, i) => bytes[off + i] === b);
+  const ascii = (off: number, len: number) => String.fromCharCode(...bytes.slice(off, off + len));
+  if (at(0, 0xff, 0xd8, 0xff)) return 'image/jpeg';
+  if (at(0, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return 'image/png';
+  if (at(0, 0x47, 0x49, 0x46, 0x38)) return 'image/gif';
+  if (bytes.length >= 12 && ascii(0, 4) === 'RIFF' && ascii(8, 4) === 'WEBP') return 'image/webp';
+  if (at(0, 0x1a, 0x45, 0xdf, 0xa3)) return 'video/webm';
+  if (bytes.length >= 12 && ascii(8, 4) === 'AVI ' && ascii(0, 4) === 'RIFF') return 'video/avi';
+  if (bytes.length >= 12 && ascii(4, 4) === 'ftyp') return 'video/mp4';
+  return null;
+}
 
 async function pbkdf2(pw, salt) {
   const enc = new TextEncoder();
@@ -2588,14 +2606,16 @@ async function api(req, env, url) {
   }
 
   // ---- 会場マニュアルの写真/動画配信(準備中機能)。<img>/<video>のsrcはAuthorizationヘッダーを
-  //      送れないため、この経路だけ例外的に、共通のセッショントークンをクエリ文字列(?t=)で受け取って
-  //      本人確認する(/calendar/:token.icsと同じ「認証不要ブロックでの専用トークン確認」方式)。
+  //      送れないため、この経路だけ例外的に、GET /venue-manualで発行した短命(2時間)の専用トークンを
+  //      クエリ文字列(?t=)で受け取って本人確認する(/calendar/:token.icsと同じ「認証不要ブロックでの
+  //      専用トークン確認」方式だが、こちらは本体のセッショントークンそのものではなく、有効期限を
+  //      別途厳密にチェックする専用トークンを使う。漏洩時の被害・有効期間を限定するため)。
   //      動画のシーク操作に対応するため、Rangeリクエストにも対応する。 ----
   if (method === 'GET' && path.startsWith('/venue-manual/media/')) {
     const qtoken = url.searchParams.get('t') || '';
     const s = qtoken ? await env.DB.prepare(
-      'SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token=?'
-    ).bind(qtoken).first() : null;
+      'SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.media_token=? AND s.media_token_exp > ?'
+    ).bind(qtoken, Date.now()).first() : null;
     if (!s || !has(s, 'sites_view')) return new Response('Not Found', { status: 404 });
     if (!env.MANUALS) return ERR('R2が未設定です', 500);
     // キーはPOST /venue-manual/uploadでencodeURIComponent(venue)を含む形でR2に保存しているため、
@@ -4947,7 +4967,14 @@ async function api(req, env, url) {
       env.DB.prepare('SELECT * FROM venue_manual_blocks WHERE venue=? ORDER BY z ASC, id ASC').bind(venue).all(),
       env.DB.prepare('SELECT * FROM venue_manual_history WHERE venue=? ORDER BY id DESC LIMIT 100').bind(venue).all(),
     ]);
-    return J({ venue, blocks: blocksRes.results, history: historyRes.results });
+    // 写真/動画配信(/venue-manual/media/:key)は<img>/<video>のsrcから読み込むためAuthorizationヘッダーが
+    // 使えず、クエリ文字列でトークン確認する必要がある。本体のセッショントークン(最長90日有効)を
+    // そのまま載せると漏洩時の被害・有効期間が大きすぎるため、この画面を開くたびに発行する
+    // 短命(2時間)の専用トークンを使う(セッション本体とは別カラムで管理し、期限はここで厳密に判定する)。
+    const mediaToken = rnd();
+    const mediaTokenExp = Date.now() + 2 * 3600 * 1000;
+    await env.DB.prepare('UPDATE sessions SET media_token=?, media_token_exp=? WHERE token=?').bind(mediaToken, mediaTokenExp, me._tk).run();
+    return J({ venue, blocks: blocksRes.results, history: historyRes.results, mediaToken, mediaTokenExp });
   }
 
   // ---- 会場マニュアル本文の一括保存(sites_view、チーフ以上。マニュアルの追加・保存・編集は
@@ -5101,14 +5128,18 @@ async function api(req, env, url) {
     if (!venue) return ERR('会場名が必要です');
     if (kind !== 'photo' && kind !== 'video') return ERR('種別が不正です');
     if (!file || typeof file === 'string' || typeof file.arrayBuffer !== 'function') return ERR('ファイルが指定されていません');
-    const contentType = file.type || '';
-    if (kind === 'photo' && !contentType.startsWith('image/')) return ERR('画像ファイルを選択してください');
-    if (kind === 'video' && !contentType.startsWith('video/')) return ERR('動画ファイルを選択してください');
     const MAX = kind === 'photo' ? 8 * 1024 * 1024 : 80 * 1024 * 1024;
     if (file.size > MAX) return ERR(`ファイルが大きすぎます(上限${Math.round(MAX / 1024 / 1024)}MB)`);
+    const buf = await file.arrayBuffer();
+    // file.type(クライアント申告のContent-Type)は偽装可能なため信用せず、ファイル先頭の
+    // マジックナンバーから実際の種別を判定した結果だけを使う(SVG等スクリプト実行可能な形式は
+    // どの署名にも一致しないため、この時点で弾かれる)。
+    const sniffed = sniffMediaType(new Uint8Array(buf));
+    if (kind === 'photo' && !(sniffed && sniffed.startsWith('image/'))) return ERR('画像ファイルを選択してください(対応形式: JPEG/PNG/GIF/WEBP)');
+    if (kind === 'video' && !(sniffed && sniffed.startsWith('video/'))) return ERR('動画ファイルを選択してください(対応形式: MP4/WEBM/AVI)');
     const ext = (String(file.name || '').match(/\.[a-zA-Z0-9]+$/) || [''])[0] || (kind === 'photo' ? '.jpg' : '.mp4');
     const key = `manuals/${encodeURIComponent(venue)}/${jstTs().replace(/[: ]/g, '-')}_${rnd().slice(0, 10)}${ext}`;
-    await env.MANUALS.put(key, await file.arrayBuffer(), { httpMetadata: { contentType } });
+    await env.MANUALS.put(key, buf, { httpMetadata: { contentType: sniffed } });
     return J({ key });
   }
 
@@ -6001,6 +6032,15 @@ async function api(req, env, url) {
     if (!has(me, 'import_data')) return ERR('権限がありません', 403);
     await env.DB.prepare('DELETE FROM drive_folders WHERE id=?').bind(Number(dfm[1])).run();
     return J({ ok: 1 });
+  }
+  // 深夜1時のポーリングを待たずに今すぐ手動で実行する(1日1回の実行済みフラグには触れない。
+  // 深夜の自動実行を妨げず、動作確認・リトライ目的で何度でも呼べるようにするため)。
+  if (method === 'POST' && path === '/drive-folders/run-now') {
+    if (!has(me, 'import_data')) return ERR('権限がありません', 403);
+    const folders = (await env.DB.prepare('SELECT id, url, folder_id, label, last_cursor_time FROM drive_folders').all()).results as any[];
+    if (!folders.length) return ERR('登録済みの共有ドライブフォルダがありません');
+    const r = await runDrivePoll(env, folders);
+    return J({ ok: 1, ...r });
   }
 
   // ---- 手配者専用 ----
@@ -6903,11 +6943,16 @@ async function cronDrivePoll(env) {
   if (lastRun === today) return; // 1日1回のみ
 
   const folders = (await env.DB.prepare('SELECT id, url, folder_id, label, last_cursor_time FROM drive_folders').all()).results as any[];
-  if (!folders.length) {
-    await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('drive_poll_last_run',?)").bind(today).run();
-    return;
-  }
+  await runDrivePoll(env, folders);
+  await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('drive_poll_last_run',?)").bind(today).run();
+}
 
+// 共有ドライブフォルダのポーリング本体。深夜cron(cronDrivePoll)と手動実行
+// (POST /drive-folders/run-now)の両方から呼ばれる共通ロジック(日次1回ガードは呼び出し側の責務)。
+async function runDrivePoll(env, folders) {
+  if (!folders.length) return { importedCount: 0, errorCount: 0, errorMessages: [] };
+
+  const today = jstDate();
   const keywordMap = await loadNonSiteKeywords(env);
   const ym = today.slice(0, 7);
   let importedCount = 0, errorCount = 0;
@@ -6983,8 +7028,6 @@ async function cronDrivePoll(env) {
     await env.DB.prepare('UPDATE drive_folders SET last_cursor_time=? WHERE id=?').bind(cursorAdvance, folder.id).run();
   }
 
-  await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('drive_poll_last_run',?)").bind(today).run();
-
   if (importedCount || errorCount) {
     try {
       const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
@@ -6998,6 +7041,7 @@ async function cronDrivePoll(env) {
       }
     } catch (e) {}
   }
+  return { importedCount, errorCount, errorMessages };
 }
 
 // 新人報告リマインド通知。

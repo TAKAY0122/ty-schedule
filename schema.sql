@@ -40,8 +40,11 @@ CREATE TABLE IF NOT EXISTS sessions(
   handler INTEGER DEFAULT 0,             -- 手配者モード(PIN 111111入力済み)
   last_seen INTEGER,
   created INTEGER,
-  last_page TEXT DEFAULT ''              -- 最後にアクセスしたページ(location.hash。activity_view権限で確認可)
+  last_page TEXT DEFAULT '',             -- 最後にアクセスしたページ(location.hash。activity_view権限で確認可)
+  media_token TEXT,                      -- 会場マニュアルの写真/動画配信用の短命トークン(<img>/<video>はAuthorizationヘッダーを送れないため)
+  media_token_exp INTEGER                -- 上記の有効期限(ミリ秒epoch)。本体セッションより短い寿命にする
 );
+CREATE INDEX IF NOT EXISTS idx_sessions_media_token ON sessions(media_token);
 
 -- スケジュール:1日に複数現場を持てる(id採番 + slotで同日内の順番)
 CREATE TABLE IF NOT EXISTS schedule(
