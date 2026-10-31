@@ -826,7 +826,7 @@ function radioPickHtml(name, targetId, candidates, selected){
   if(candidates.length < 2) return '';
   return `<div class="muted" style="font-size:11.5px;margin:2px 0 6px">候補から統一先を選ぶ:</div>
     <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px">
-      ${candidates.map(v=>`<label style="display:flex;align-items:center;gap:8px;font-size:12px;padding:5px 8px;background:var(--adm-highlight2);border:1px solid var(--line);border-radius:6px;cursor:pointer">
+      ${candidates.map(v=>`<label style="display:flex;align-items:center;gap:8px;font-size:12px;padding:5px 8px;background:var(--modal-highlight2);border:1px solid var(--line);border-radius:6px;cursor:pointer">
         <input type="radio" name="${name}" data-radio-target="${targetId}" value="${h(v)}" ${v===selected?'checked':''}>
         <span>${h(v)}</span>
       </label>`).join('')}
@@ -4971,7 +4971,7 @@ function openSiteBulkRename(targets, onDone, opt={}){
   modal(`<h3>${icon('edit',{size:'15px'})} ${h(title)}</h3>
     <div class="muted" style="font-size:12px;margin-bottom:10px">対象(${targets.length}件):</div>
     <div style="max-height:30vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-bottom:12px">
-      ${targets.map(s=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:var(--adm-highlight2);border:1px solid var(--line);border-radius:6px">${h(s.date)} ${h(s.site)}${s.venue?` (${h(s.venue)})`:''} ・${s.cnt}名</div>`).join('')}
+      ${targets.map(s=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:var(--modal-highlight2);border:1px solid var(--line);border-radius:6px">${h(s.date)} ${h(s.site)}${s.venue?` (${h(s.venue)})`:''} ・${s.cnt}名</div>`).join('')}
     </div>
     ${showSite?`<div style="margin-bottom:10px">
       <div style="margin-bottom:4px">新しい現場名</div>
@@ -5014,7 +5014,7 @@ function openGroupPicker(kind, memberLabel, groups, selectedMembers, onDone){
   modal(`<h3>${icon('tag',{size:'15px'})} グループに追加</h3>
     <div class="muted" style="font-size:12px;margin-bottom:10px">対象(${selectedMembers.length}件):</div>
     <div style="max-height:20vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-bottom:12px">
-      ${selectedMembers.map(m=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:var(--adm-highlight2);border:1px solid var(--line);border-radius:6px">${h(m)}</div>`).join('')}
+      ${selectedMembers.map(m=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:var(--modal-highlight2);border:1px solid var(--line);border-radius:6px">${h(m)}</div>`).join('')}
     </div>
     ${groups.length ? `<label style="display:block;margin-bottom:10px">既存のグループに追加<br>
       <select id="gp-existing" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;margin-top:4px">
@@ -5224,7 +5224,7 @@ function openVenueBulkRename(venues, onDone){
   modal(`<h3>${icon('edit',{size:'15px'})} ${title}</h3>
     ${venues.length > 1 ? `<div class="muted" style="font-size:12px;margin-bottom:10px">対象(${venues.length}件):</div>
     <div style="max-height:30vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-bottom:12px">
-      ${venues.map(v=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:var(--adm-highlight2);border:1px solid var(--line);border-radius:6px">${h(v)}</div>`).join('')}
+      ${venues.map(v=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:var(--modal-highlight2);border:1px solid var(--line);border-radius:6px">${h(v)}</div>`).join('')}
     </div>` : ''}
     <div style="margin-bottom:10px">
       <div style="margin-bottom:4px">新しい会場名</div>
@@ -6132,7 +6132,7 @@ function openArtistFolderPicker(folders, selectedArtists, onDone, opts){
   modal(`<h3>${icon('package',{size:'15px'})} ${title}</h3>
     <div class="muted" style="font-size:12px;margin-bottom:10px">対象(${selectedArtists.length}件):</div>
     <div style="max-height:20vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-bottom:12px">
-      ${selectedArtists.map(a=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:var(--adm-highlight2);border:1px solid var(--line);border-radius:6px">${h(a)}</div>`).join('')}
+      ${selectedArtists.map(a=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:var(--modal-highlight2);border:1px solid var(--line);border-radius:6px">${h(a)}</div>`).join('')}
     </div>
     ${pickableFolders.length ? `<label style="display:block;margin-bottom:10px">既存のフォルダに追加<br>
       <select id="afp-existing" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;margin-top:4px">
@@ -6250,7 +6250,7 @@ function openArtistFindReplace(onDone, scope){
         }
         area.innerHTML = `<div class="muted" style="font-size:12px;margin-bottom:6px">${r.changes.length}件が変更されます:</div>
           <div style="max-height:30vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-bottom:10px">
-            ${r.changes.map(c=>`<div style="font-size:12px;padding:5px 8px;background:var(--adm-highlight2);border:1px solid var(--line);border-radius:6px">${h(c.from)} → <b>${h(c.to)}</b></div>`).join('')}
+            ${r.changes.map(c=>`<div style="font-size:12px;padding:5px 8px;background:var(--modal-highlight2);border:1px solid var(--line);border-radius:6px">${h(c.from)} → <b>${h(c.to)}</b></div>`).join('')}
           </div>
           <button class="btn gold" id="afr-apply" style="width:100%">この内容で適用する</button>`;
         $('#afr-apply').onclick = async () => {
@@ -6277,7 +6277,7 @@ function openArtistBulkRename(artists, onDone){
   modal(`<h3>${icon('edit',{size:'15px'})} ${title}</h3>
     ${artists.length > 1 ? `<div class="muted" style="font-size:12px;margin-bottom:10px">対象(${artists.length}件):</div>
     <div style="max-height:30vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-bottom:12px">
-      ${artists.map(a=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:var(--adm-highlight2);border:1px solid var(--line);border-radius:6px">${h(a)}</div>`).join('')}
+      ${artists.map(a=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:var(--modal-highlight2);border:1px solid var(--line);border-radius:6px">${h(a)}</div>`).join('')}
     </div>` : ''}
     <div style="margin-bottom:10px">
       <div style="margin-bottom:4px">新しい公演名</div>
@@ -7745,7 +7745,7 @@ async function openNameSiteLog(name){
     ${multi?`<div class="muted" style="font-size:12px;margin-bottom:10px">同姓同名が${matchedUsers.length}名見つかったため、まとめて表示しています。</div>`:''}
     ${!matchedUsers.length && rows.length ? `<div class="muted" style="font-size:12px;margin-bottom:10px">この名前でアプリに登録されているメンバーは見つかりませんでしたが、台帳の記録から現場歴が見つかりました。</div>` : ''}
     ${rows.length ? `<div style="max-height:50vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px">
-      ${rows.map(r=>`<div style="font-size:12.5px;padding:6px 8px;background:var(--adm-highlight2);border:1px solid var(--line);border-radius:6px">
+      ${rows.map(r=>`<div style="font-size:12.5px;padding:6px 8px;background:var(--modal-highlight2);border:1px solid var(--line);border-radius:6px">
         <b style="color:var(--ink)">${h(r.date)}</b> ${h(r.site)}${r.venue?` <span class="muted">(${h(r.venue)})</span>`:''}${r.source==='rookie'?` <span class="muted">(未登録・台帳より)</span>`:''}
       </div>`).join('')}
     </div>` : `<div class="muted" style="padding:16px 0;text-align:center">${matchedUsers.length?'アプリへの登録はありますが、':''}現場の実績はまだ見つかりませんでした。</div>`}
@@ -10312,14 +10312,14 @@ async function pageDaicho(app){
     modal(`<h3>${icon('play',{size:'14px'})} 選択した${targets.length}件を取り込む</h3>
       <div class="muted" style="font-size:12px;margin-bottom:10px">台帳保管に保存済みのファイルを、もう一度パースして反映します。ファイルごとに対象日を指定してください(ファイル名から推測できた場合は自動入力されています)。</div>
       <div style="max-height:50vh;overflow-y:auto;display:flex;flex-direction:column;gap:6px;margin-bottom:10px">
-        ${targets.map(it=>`<div class="row" style="gap:8px;align-items:center;padding:7px 9px;background:var(--adm-highlight2);border:1px solid var(--line);border-radius:8px;flex-wrap:wrap">
+        ${targets.map(it=>`<div class="row" style="gap:8px;align-items:center;padding:7px 9px;background:var(--modal-highlight2);border:1px solid var(--line);border-radius:8px;flex-wrap:wrap">
           <span style="flex:1;min-width:0;font-size:12.5px;word-break:break-all">${h(it.file_name||'(名称不明)')}</span>
           <label style="display:flex;align-items:center;gap:5px;font-size:12px;white-space:nowrap">対象日
             <input type="date" class="dcr-date-input" data-id="${it.id}" value="${h(guessDateFromName(it.file_name||''))}" style="padding:4px 6px;border:1px solid var(--line);border-radius:6px">
           </label>
         </div>`).join('')}
       </div>
-      <label style="display:flex;align-items:flex-start;gap:7px;font-size:12.5px;margin-bottom:10px;padding:8px 10px;background:var(--adm-highlight2);border-radius:8px;border:1px solid var(--line)">
+      <label style="display:flex;align-items:flex-start;gap:7px;font-size:12.5px;margin-bottom:10px;padding:8px 10px;background:var(--modal-highlight2);border-radius:8px;border:1px solid var(--line)">
         <input type="checkbox" id="dcr-check-absent" style="margin-top:2px">
         <span>選択した全ファイルのどれにも登場しない人を、休暇に変更する<br><span class="muted" style="font-size:11px">複数の日付をまたぐため、既定ではオフです。</span></span>
       </label>

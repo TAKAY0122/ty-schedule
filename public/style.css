@@ -36,6 +36,11 @@
   /* 同様に、エラー・警告文言の赤系文字色/枠線色(元は#b03030・#b85042・#e0b0b0を直書き)。 */
   --adm-err:#b03030;
   --adm-err-border:#e0b0b0;
+  /* --adm-highlight2のモーダル専用版。値はライト時同じだが、ダーク化のトリガーが異なる
+     (下記「モーダル・完了ポップアップ…」のコメント参照)。モーダル内の軽い強調背景には
+     必ずこちらを使うこと(--adm-highlight2を使うと、body.ops-page配下で開いた時だけ
+     背景が暗転し、ライトモード用の文字色のまま読めなくなる事故が実際に起きた)。 */
+  --modal-highlight2:#faf9f6;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",Meiryo,sans-serif;background:var(--paper);color:#222;font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
@@ -1699,7 +1704,11 @@ a.ops-hash.link{display:inline-flex;align-items:center;gap:4px;cursor:pointer}
    table.list/.btn/.tag/.dcard等、#app側と同じ共通コンポーネントが出てくることがあるため、
    ここだけ同じルールをbody.theme-dark #modal-layer向けに個別に用意する
    (body.ops-pageと合成すると「白いモーダルの中に暗いカードが浮く」事故になるため、
-   :is(#app,#modal-layer)のようにまとめて対象を広げることはしない)。 */
+   :is(#app,#modal-layer)のようにまとめて対象を広げることはしない)。
+   同じ理由で、--modal-highlight2(モーダル内の軽い強調背景専用)もbody.theme-dark単独でのみ
+   暗くする。--adm-highlight2はbody.ops-pageでも暗くなる変数のため、モーダル側はそちらを
+   参照せずこちらを使うこと。 */
+body.theme-dark{--modal-highlight2:var(--ops-panel2)}
 body.theme-dark #modal-layer{color:var(--ops-txt)}
 body.theme-dark #modal-layer .modal{background:rgba(21,29,44,.97)}
 body.theme-dark #modal-layer h2,
