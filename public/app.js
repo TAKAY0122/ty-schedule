@@ -108,14 +108,74 @@ const matchedBadge = ka => ka ? `<span class="tag matched" title="既にアプ�
 // 台帳Excelの手動アップロード・台帳保管からの再取込、両方で使う。
 function guessDateFromName(name){
   const today = jstToday();
-  const [ty] = today.split('-');
+  const [ty, tm] = today.split('-').map(s=>Number(s));
+  // 今日の月(tm)を基準に、ファイル名の月が年末年始をまたぐ場合だけ年を補正する
+  // (例: 今日が12月でファイル名が1月分なら来年、今日が1月でファイル名が12月分なら前年)。
+  // これをしないと、年末に来月分を先行して保存・再取込した際に年が1つずれる
+  // (あくまで入力候補の初期値であり、画面上の対象日入力欄で必ず修正できる)。
+  const yearFor = month => tm === 12 && month === 1 ? ty+1 : tm === 1 && month === 12 ? ty-1 : ty;
   let m = name.match(/(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})/);
   if (m) return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
   m = name.match(/(\d{1,2})月(\d{1,2})日/);
-  if (m) return `${ty}-${String(m[1]).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`;
+  if (m) return `${yearFor(Number(m[1]))}-${String(m[1]).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`;
   m = name.match(/(\d{1,2})[-/](\d{1,2})(?!\d)/);
-  if (m) return `${ty}-${String(m[1]).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`;
+  if (m) return `${yearFor(Number(m[1]))}-${String(m[1]).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`;
   return '';
+}
+// 台帳の取込結果(r: { ts, results, clearedAbsentList?, clearedRegistrationsList? })から、
+// 反映された現場の変更内容・不在者の休暇化・台帳に見当たらない登録現場の削除の3種を1つのモーダルで
+// まとめて表示する。深夜自動実行・各種手動取込(スプレッドシートURL・Excelアップロード・台帳保管からの
+// 再取込)すべてから共通で呼ばれる(どの経路でも「何が・誰が対象になったか分からない」という
+// 指摘への対応のため、件数だけでなく明細を必ず見られるようにしている)。
+// onAfterUndo: 「反映を取り消す」が成功した後、呼び出し元の一覧を更新するための任意のコールバック。
+function showDaichoChanges(r, onAfterUndo){
+  const withChanges = (r.results || []).filter(x => x.changes && x.changes.length);
+  const allChanges = withChanges.flatMap(x => x.changes.map(c => ({ ...c, _url: x.url, _ts: x.ts })));
+  const absentList = r.clearedAbsentList || [];
+  const registryList = r.clearedRegistrationsList || [];
+  modal(`<h3>台帳再取り込みの変更内容</h3>
+    <div class="muted" style="font-size:12px;margin-bottom:10px">最終実行: ${h(r.ts)} 時点の反映内容(${allChanges.length}件)</div>
+    ${withChanges.length?`<div style="margin-bottom:10px;display:flex;flex-direction:column;gap:6px">
+      ${withChanges.map(x=>`<button class="btn danger xs daicho-undo-one" data-ts="${h(x.ts)}">${icon('undo',{size:'12px'})} 「${h((x.url||'').slice(0,40))}…」の反映(${x.changes.length}件)を取り消す</button>`).join('')}
+    </div>`:''}
+    <div style="max-height:40vh;overflow-y:auto;margin-bottom:${(absentList.length||registryList.length)?'14px':'0'}">
+      <table class="list" style="font-size:12.5px">
+        <tr><th>氏名</th><th>日付</th><th>変更前</th><th></th><th>変更後</th></tr>
+        ${allChanges.map(c=>`<tr>
+          <td class="nowrap">${h(c.name||'(氏名不明)')}</td>
+          <td class="nowrap">${h(c.date)}</td>
+          <td>${h(c.before)}</td>
+          <td class="nowrap">${icon('arrowRight',{size:'11px'})}</td>
+          <td><b>${h(c.after)}</b></td>
+        </tr>`).join('') || '<tr><td colspan="5" class="muted">詳細データがありません</td></tr>'}
+      </table>
+    </div>
+    ${absentList.length ? `<h3 style="margin-bottom:6px;font-size:14px">${icon('sun',{size:'13px'})} 不在者の休暇化(${absentList.length}件)</h3>
+    <div style="max-height:30vh;overflow-y:auto;margin-bottom:14px">
+      <table class="list" style="font-size:12.5px">
+        <tr><th>氏名</th><th>日付</th><th>休暇化前の現場</th></tr>
+        ${absentList.map(x=>`<tr><td class="nowrap">${h(x.name||'(氏名不明)')}</td><td class="nowrap">${h(x.date)}</td><td>${h(x.site||'—')}</td></tr>`).join('')}
+      </table>
+    </div>` : ''}
+    ${registryList.length ? `<h3 style="margin-bottom:6px;font-size:14px">台帳に見当たらなくなった登録現場の削除(${registryList.length}件)</h3>
+    <div style="max-height:30vh;overflow-y:auto">
+      <table class="list" style="font-size:12.5px">
+        <tr><th>日付</th><th>現場名</th></tr>
+        ${registryList.map(x=>`<tr><td class="nowrap">${h(x.date)}</td><td>${h(x.site)}</td></tr>`).join('')}
+      </table>
+    </div>` : ''}`);
+  document.querySelectorAll('.daicho-undo-one').forEach(btn => btn.onclick = async () => {
+    const undoTs = btn.dataset.ts;
+    if(!confirm('この分の反映を全て取り消し、取り込み前の状態に戻します。よろしいですか？\n\n※手配者モードが必要です。')) return;
+    await withLoading(btn, async () => {
+      try{
+        const res = await api('/history/undo-by-ts', { method:'POST', body:{ ts: undoTs } });
+        closeModal();
+        popup(`${res.okCount}件を取り消しました${res.failed.length?`(${res.failed.length}件は失敗)`:''}`);
+        if(onAfterUndo) onAfterUndo();
+      }catch(e){ popup(e.message, 'error'); }
+    });
+  });
 }
 // <input type="time">はHH:MM(2桁ゼロ埋め)でないと値を認識しないため、DBの値をこの形式に正規化する
 const timeInputVal = t => { const m = String(t||'').match(/^(\d{1,2}):(\d{2})$/); return m ? `${m[1].padStart(2,'0')}:${m[2]}` : ''; };
@@ -766,7 +826,7 @@ function radioPickHtml(name, targetId, candidates, selected){
   if(candidates.length < 2) return '';
   return `<div class="muted" style="font-size:11.5px;margin:2px 0 6px">候補から統一先を選ぶ:</div>
     <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px">
-      ${candidates.map(v=>`<label style="display:flex;align-items:center;gap:8px;font-size:12px;padding:5px 8px;background:#faf9f6;border:1px solid var(--line);border-radius:6px;cursor:pointer">
+      ${candidates.map(v=>`<label style="display:flex;align-items:center;gap:8px;font-size:12px;padding:5px 8px;background:var(--adm-highlight2);border:1px solid var(--line);border-radius:6px;cursor:pointer">
         <input type="radio" name="${name}" data-radio-target="${targetId}" value="${h(v)}" ${v===selected?'checked':''}>
         <span>${h(v)}</span>
       </label>`).join('')}
@@ -4911,7 +4971,7 @@ function openSiteBulkRename(targets, onDone, opt={}){
   modal(`<h3>${icon('edit',{size:'15px'})} ${h(title)}</h3>
     <div class="muted" style="font-size:12px;margin-bottom:10px">対象(${targets.length}件):</div>
     <div style="max-height:30vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-bottom:12px">
-      ${targets.map(s=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:#faf9f6;border:1px solid var(--line);border-radius:6px">${h(s.date)} ${h(s.site)}${s.venue?` (${h(s.venue)})`:''} ・${s.cnt}名</div>`).join('')}
+      ${targets.map(s=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:var(--adm-highlight2);border:1px solid var(--line);border-radius:6px">${h(s.date)} ${h(s.site)}${s.venue?` (${h(s.venue)})`:''} ・${s.cnt}名</div>`).join('')}
     </div>
     ${showSite?`<div style="margin-bottom:10px">
       <div style="margin-bottom:4px">新しい現場名</div>
@@ -4954,7 +5014,7 @@ function openGroupPicker(kind, memberLabel, groups, selectedMembers, onDone){
   modal(`<h3>${icon('tag',{size:'15px'})} グループに追加</h3>
     <div class="muted" style="font-size:12px;margin-bottom:10px">対象(${selectedMembers.length}件):</div>
     <div style="max-height:20vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-bottom:12px">
-      ${selectedMembers.map(m=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:#faf9f6;border:1px solid var(--line);border-radius:6px">${h(m)}</div>`).join('')}
+      ${selectedMembers.map(m=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:var(--adm-highlight2);border:1px solid var(--line);border-radius:6px">${h(m)}</div>`).join('')}
     </div>
     ${groups.length ? `<label style="display:block;margin-bottom:10px">既存のグループに追加<br>
       <select id="gp-existing" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;margin-top:4px">
@@ -5164,7 +5224,7 @@ function openVenueBulkRename(venues, onDone){
   modal(`<h3>${icon('edit',{size:'15px'})} ${title}</h3>
     ${venues.length > 1 ? `<div class="muted" style="font-size:12px;margin-bottom:10px">対象(${venues.length}件):</div>
     <div style="max-height:30vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-bottom:12px">
-      ${venues.map(v=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:#faf9f6;border:1px solid var(--line);border-radius:6px">${h(v)}</div>`).join('')}
+      ${venues.map(v=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:var(--adm-highlight2);border:1px solid var(--line);border-radius:6px">${h(v)}</div>`).join('')}
     </div>` : ''}
     <div style="margin-bottom:10px">
       <div style="margin-bottom:4px">新しい会場名</div>
@@ -6072,7 +6132,7 @@ function openArtistFolderPicker(folders, selectedArtists, onDone, opts){
   modal(`<h3>${icon('package',{size:'15px'})} ${title}</h3>
     <div class="muted" style="font-size:12px;margin-bottom:10px">対象(${selectedArtists.length}件):</div>
     <div style="max-height:20vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-bottom:12px">
-      ${selectedArtists.map(a=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:#faf9f6;border:1px solid var(--line);border-radius:6px">${h(a)}</div>`).join('')}
+      ${selectedArtists.map(a=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:var(--adm-highlight2);border:1px solid var(--line);border-radius:6px">${h(a)}</div>`).join('')}
     </div>
     ${pickableFolders.length ? `<label style="display:block;margin-bottom:10px">既存のフォルダに追加<br>
       <select id="afp-existing" style="width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;margin-top:4px">
@@ -6190,7 +6250,7 @@ function openArtistFindReplace(onDone, scope){
         }
         area.innerHTML = `<div class="muted" style="font-size:12px;margin-bottom:6px">${r.changes.length}件が変更されます:</div>
           <div style="max-height:30vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-bottom:10px">
-            ${r.changes.map(c=>`<div style="font-size:12px;padding:5px 8px;background:#faf9f6;border:1px solid var(--line);border-radius:6px">${h(c.from)} → <b>${h(c.to)}</b></div>`).join('')}
+            ${r.changes.map(c=>`<div style="font-size:12px;padding:5px 8px;background:var(--adm-highlight2);border:1px solid var(--line);border-radius:6px">${h(c.from)} → <b>${h(c.to)}</b></div>`).join('')}
           </div>
           <button class="btn gold" id="afr-apply" style="width:100%">この内容で適用する</button>`;
         $('#afr-apply').onclick = async () => {
@@ -6217,7 +6277,7 @@ function openArtistBulkRename(artists, onDone){
   modal(`<h3>${icon('edit',{size:'15px'})} ${title}</h3>
     ${artists.length > 1 ? `<div class="muted" style="font-size:12px;margin-bottom:10px">対象(${artists.length}件):</div>
     <div style="max-height:30vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-bottom:12px">
-      ${artists.map(a=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:#faf9f6;border:1px solid var(--line);border-radius:6px">${h(a)}</div>`).join('')}
+      ${artists.map(a=>`<div class="muted" style="font-size:12px;padding:5px 8px;background:var(--adm-highlight2);border:1px solid var(--line);border-radius:6px">${h(a)}</div>`).join('')}
     </div>` : ''}
     <div style="margin-bottom:10px">
       <div style="margin-bottom:4px">新しい公演名</div>
@@ -7685,7 +7745,7 @@ async function openNameSiteLog(name){
     ${multi?`<div class="muted" style="font-size:12px;margin-bottom:10px">同姓同名が${matchedUsers.length}名見つかったため、まとめて表示しています。</div>`:''}
     ${!matchedUsers.length && rows.length ? `<div class="muted" style="font-size:12px;margin-bottom:10px">この名前でアプリに登録されているメンバーは見つかりませんでしたが、台帳の記録から現場歴が見つかりました。</div>` : ''}
     ${rows.length ? `<div style="max-height:50vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px">
-      ${rows.map(r=>`<div style="font-size:12.5px;padding:6px 8px;background:#faf9f6;border:1px solid var(--line);border-radius:6px">
+      ${rows.map(r=>`<div style="font-size:12.5px;padding:6px 8px;background:var(--adm-highlight2);border:1px solid var(--line);border-radius:6px">
         <b style="color:var(--ink)">${h(r.date)}</b> ${h(r.site)}${r.venue?` <span class="muted">(${h(r.venue)})</span>`:''}${r.source==='rookie'?` <span class="muted">(未登録・台帳より)</span>`:''}
       </div>`).join('')}
     </div>` : `<div class="muted" style="padding:16px 0;text-align:center">${matchedUsers.length?'アプリへの登録はありますが、':''}現場の実績はまだ見つかりませんでした。</div>`}
@@ -7989,7 +8049,7 @@ async function pageImport(app, hash){
     <div class="muted" style="margin-bottom:12px">PCに保存してあるExcelファイル(手配管理表と同じ形式)を、直接アップロードして取り込みます。複数ファイルをまとめて選び、ファイルごとに対象日を指定できます(月をまたいだ一括取込も可能)。<b>この機能は深夜の自動再取り込みには含まれません。常に手動での実行です。</b></div>
     <input type="file" id="xl-file-input" multiple accept=".xlsx" style="margin-bottom:12px;width:100%;max-width:100%;box-sizing:border-box">
     <div id="xl-file-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px"></div>
-    <label style="display:flex;align-items:flex-start;gap:7px;font-size:12.5px;margin-bottom:10px;padding:8px 10px;background:#faf9f6;border-radius:8px;border:1px solid var(--line)">
+    <label style="display:flex;align-items:flex-start;gap:7px;font-size:12.5px;margin-bottom:10px;padding:8px 10px;background:var(--adm-highlight2);border-radius:8px;border:1px solid var(--line)">
       <input type="checkbox" id="xl-check-absent" style="margin-top:2px">
       <span>選択した全ファイルのどれにも登場しない人を、休暇に変更する<br><span class="muted" style="font-size:11px">複数の日付をまたぐため、既定ではオフです。日ごとに対象者が異なる場合、意図せず休暇化されることがあります。</span></span>
     </label>
@@ -8182,7 +8242,7 @@ async function pageImport(app, hash){
           <button class="btn ghost xs" id="dr-sel-all" style="display:inline-block;width:auto">全選択</button>
           <button class="btn ghost xs" id="dr-sel-none" style="display:inline-block;width:auto">全解除</button>
         </div>
-        <label style="display:flex;align-items:flex-start;gap:7px;font-size:12.5px;margin-bottom:4px;padding:8px 10px;background:#faf9f6;border-radius:8px;border:1px solid var(--line)">
+        <label style="display:flex;align-items:flex-start;gap:7px;font-size:12.5px;margin-bottom:4px;padding:8px 10px;background:var(--adm-highlight2);border-radius:8px;border:1px solid var(--line)">
           <input type="checkbox" id="dr-check-absent" checked style="margin-top:2px">
           <span>選択したファイルのどれにも登場しない人を、休暇に変更する<br><span class="muted" id="dr-absent-warn"></span></span>
         </label>
@@ -8220,14 +8280,14 @@ async function pageImport(app, hash){
         await withLoading(runBtn, async () => {
           try{
             const r = await api('/daicho-reload-run-now', { method:'POST', body:{ urls: selected, checkAbsent } });
-            const hasChanges = (r.results||[]).some(x => x.changes && x.changes.length);
+            const hasChanges = (r.results||[]).some(x => x.changes && x.changes.length) || (r.clearedAbsentList||[]).length || (r.clearedRegistrationsList||[]).length;
             const skipNote = r.incomplete
               ? '<span class="muted" style="font-size:11px">⚠ 件数が多く時間の都合で一部は今回処理できませんでした。未処理分は今夜の深夜自動再取り込みで続けて処理されます。</span><br>'
               : '<span class="muted" style="font-size:11px">今夜の深夜自動再取り込みは、今回の手動実行分としてスキップされます。</span><br>';
             msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${r.checkedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''}${r.checkedAbsent&&r.clearedRegistrations?` / 台帳に見当たらない登録現場を削除 ${r.clearedRegistrations}件`:''} / 残りの保存済みURL ${r.remainingCount}件${hasChanges?` <button class="btn ghost xs" id="dr-run-show-changes" style="display:inline-block;width:auto">変更内容を見る</button>`:''}<br>${skipNote}`
               + r.results.map(x=>`${x.ok?icon('checkCircle',{size:'12px'}):icon('xCircle',{size:'12px'})} ${h((x.url||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>');
             const showBtn2 = $('#dr-run-show-changes');
-            if(showBtn2) showBtn2.onclick = () => showDaichoChanges({ ts: '今回の実行結果', results: r.results });
+            if(showBtn2) showBtn2.onclick = () => showDaichoChanges({ ts: '今回の実行結果', results: r.results, clearedAbsentList: r.clearedAbsentList, clearedRegistrationsList: r.clearedRegistrationsList }, loadStatus);
             popup(r.incomplete ? `一部処理しました(${r.okCount}件成功、残りは今夜の自動実行で継続)` : `取り込みが完了しました(${r.okCount}件成功)`);
             // 実際に処理できたURLだけを一覧から取り除く(incomplete時は選んだ全部が処理された
             // わけではないため、resultsに含まれるURLだけを対象にする。チェック状態を保つため
@@ -8247,39 +8307,6 @@ async function pageImport(app, hash){
         });
       };
     };
-    const showDaichoChanges = (r) => {
-      const withChanges = (r.results || []).filter(x => x.changes && x.changes.length);
-      const allChanges = withChanges.flatMap(x => x.changes.map(c => ({ ...c, _url: x.url, _ts: x.ts })));
-      modal(`<h3>台帳再取り込みの変更内容</h3>
-        <div class="muted" style="font-size:12px;margin-bottom:10px">最終実行: ${h(r.ts)} 時点の反映内容(${allChanges.length}件)</div>
-        ${withChanges.length?`<div style="margin-bottom:10px;display:flex;flex-direction:column;gap:6px">
-          ${withChanges.map(x=>`<button class="btn danger xs daicho-undo-one" data-ts="${h(x.ts)}">${icon('undo',{size:'12px'})} 「${h((x.url||'').slice(0,40))}…」の反映(${x.changes.length}件)を取り消す</button>`).join('')}
-        </div>`:''}
-        <div style="max-height:60vh;overflow-y:auto">
-          <table class="list" style="font-size:12.5px">
-            <tr><th>氏名</th><th>日付</th><th>変更前</th><th></th><th>変更後</th></tr>
-            ${allChanges.map(c=>`<tr>
-              <td class="nowrap">${h(c.name||'(氏名不明)')}</td>
-              <td class="nowrap">${h(c.date)}</td>
-              <td>${h(c.before)}</td>
-              <td class="nowrap">${icon('arrowRight',{size:'11px'})}</td>
-              <td><b>${h(c.after)}</b></td>
-            </tr>`).join('') || '<tr><td colspan="5" class="muted">詳細データがありません</td></tr>'}
-          </table>
-        </div>`);
-      document.querySelectorAll('.daicho-undo-one').forEach(btn => btn.onclick = async () => {
-        const undoTs = btn.dataset.ts;
-        if(!confirm('この分の反映を全て取り消し、取り込み前の状態に戻します。よろしいですか？\n\n※手配者モードが必要です。')) return;
-        await withLoading(btn, async () => {
-          try{
-            const res = await api('/history/undo-by-ts', { method:'POST', body:{ ts: undoTs } });
-            closeModal();
-            popup(`${res.okCount}件を取り消しました${res.failed.length?`(${res.failed.length}件は失敗)`:''}`);
-            loadStatus();
-          }catch(e){ popup(e.message, 'error'); }
-        });
-      });
-    };
     const loadStatus = (skipUrlsRerender) => {
       api('/import-urls').then(d => {
         const el = $('#daicho-reload-status'); if(!el) return;
@@ -8287,14 +8314,14 @@ async function pageImport(app, hash){
         api('/settings/daicho-reload-result').then(res => {
           const savedCount = d.urls.length;
           const r = res && res.result;
-          const hasChanges = r && (r.results||[]).some(x => x.changes && x.changes.length);
+          const hasChanges = r && ((r.results||[]).some(x => x.changes && x.changes.length) || (r.clearedAbsentList||[]).length || (r.clearedRegistrationsList||[]).length);
           el.innerHTML = `<div style="margin-bottom:6px">現在の保存済みURL: <b>${savedCount}件</b>${savedCount?` <span class="muted">(次回0:00に自動再取り込み後、削除されます)</span>`:' <span class="muted">(再取り込み対象なし)</span>'}</div>`
             + (r ? `<div class="muted" style="word-break:break-all">最終実行: ${h(r.ts)} / ${r.count}件のURLを再取り込み${r.clearedAbsent?` / ${icon('sun',{size:'12px'})} どのファイルにも登場しなかった人の現場を${r.clearedAbsent}件、休暇に変更`:''}${r.clearedRegistrations?` / 台帳に見当たらない登録現場を${r.clearedRegistrations}件削除`:''}${hasChanges?` <button class="btn ghost xs" id="daicho-show-changes">変更内容を見る</button>`:''}<br>${r.results.map(x=>`${x.ok?icon('checkCircle',{size:'12px'}):icon('xCircle',{size:'12px'})} ${h((x.url||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>')}</div>` : '<div class="muted">まだ自動実行されていません</div>');
           const showBtn = $('#daicho-show-changes');
-          if(showBtn) showBtn.onclick = () => showDaichoChanges(r);
+          if(showBtn) showBtn.onclick = () => showDaichoChanges(r, loadStatus);
           // 通知から「#/import?result=daicho」で遷移してきた場合、変更内容を自動で開く
           const resultParam = new URLSearchParams((hash||'').split('?')[1] || '').get('result');
-          if(resultParam === 'daicho' && hasChanges) showDaichoChanges(r);
+          if(resultParam === 'daicho' && hasChanges) showDaichoChanges(r, loadStatus);
         }).catch(()=>{ el.textContent='設定を取得できませんでした'; });
       }).catch(()=>{});
     };
@@ -8311,7 +8338,7 @@ async function pageImport(app, hash){
 
     const renderXlFileList = () => {
       fileListEl.innerHTML = xlState.files.map((f,i) => `
-        <div class="row" style="gap:8px;align-items:center;padding:8px 10px;background:#faf9f6;border:1px solid var(--line);border-radius:8px;flex-wrap:wrap">
+        <div class="row" style="gap:8px;align-items:center;padding:8px 10px;background:var(--adm-highlight2);border:1px solid var(--line);border-radius:8px;flex-wrap:wrap">
           <span style="flex:1;min-width:0;font-size:12.5px;word-break:break-all">${h(f.file.name)}</span>
           <label style="display:flex;align-items:center;gap:5px;font-size:12px;white-space:nowrap">対象日
             <input type="date" class="xl-date-input" data-idx="${i}" value="${h(f.dateStr)}" style="padding:4px 6px;border:1px solid var(--line);border-radius:6px">
@@ -8362,8 +8389,11 @@ async function pageImport(app, hash){
             fileBase64: await fileToBase64(f.file),
           })));
           const r = await api('/import-excel-daicho', { method:'POST', body:{ files: filesPayload, checkAbsent } });
-          msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${checkAbsent&&r.clearedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''}${checkAbsent&&r.clearedRegistrations?` / 台帳に見当たらない登録現場を削除 ${r.clearedRegistrations}件`:''}<br>`
+          const hasCleared = (r.clearedAbsentList||[]).length || (r.clearedRegistrationsList||[]).length;
+          msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${checkAbsent&&r.clearedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''}${checkAbsent&&r.clearedRegistrations?` / 台帳に見当たらない登録現場を削除 ${r.clearedRegistrations}件`:''}${hasCleared?` <button class="btn ghost xs" id="xl-show-cleared" style="display:inline-block;width:auto">詳細を見る</button>`:''}<br>`
             + r.results.map(x=>`${x.ok?icon('checkCircle',{size:'12px'}):icon('xCircle',{size:'12px'})} ${h(x.fileName)}${x.targetDate?` (${h(x.targetDate)})`:''} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>');
+          const xlShowCleared = $('#xl-show-cleared');
+          if(xlShowCleared) xlShowCleared.onclick = () => showDaichoChanges({ ts: '今回の実行結果', results: r.results, clearedAbsentList: r.clearedAbsentList, clearedRegistrationsList: r.clearedRegistrationsList }, loadStatus);
           popup(`Excel取り込みが完了しました(${r.okCount}件成功)`);
           xlState.files = [];
           renderXlFileList();
@@ -9028,19 +9058,19 @@ function yearSummaryCardsHtml(data, notesData, canPay){
   <div class="card" style="margin-bottom:14px">
     <div class="card-t" style="font-weight:800;margin-bottom:10px">年間トータル</div>
     <div class="kpis" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
-      <div class="kpi" style="background:#faf9f6;border:1px solid var(--line);border-radius:11px;padding:11px 6px;text-align:center">
+      <div class="kpi" style="background:var(--adm-highlight2);border:1px solid var(--line);border-radius:11px;padding:11px 6px;text-align:center">
         <div style="font-size:20px;font-weight:800">${data.total.workDays}<span style="font-size:11px;color:var(--muted)">日</span></div>
         <div style="font-size:11px;color:var(--muted)">勤務日数</div>
       </div>
-      <div class="kpi" style="background:#faf9f6;border:1px solid var(--line);border-radius:11px;padding:11px 6px;text-align:center">
+      <div class="kpi" style="background:var(--adm-highlight2);border:1px solid var(--line);border-radius:11px;padding:11px 6px;text-align:center">
         <div style="font-size:20px;font-weight:800">${data.total.hours}<span style="font-size:11px;color:var(--muted)">h</span></div>
         <div style="font-size:11px;color:var(--muted)">総勤務時間</div>
       </div>
-      <div class="kpi" style="background:#faf9f6;border:1px solid var(--line);border-radius:11px;padding:11px 6px;text-align:center">
+      <div class="kpi" style="background:var(--adm-highlight2);border:1px solid var(--line);border-radius:11px;padding:11px 6px;text-align:center">
         <div style="font-size:20px;font-weight:800">${data.total.overtime}<span style="font-size:11px;color:var(--muted)">h</span></div>
         <div style="font-size:11px;color:var(--muted)">総残業時間</div>
       </div>
-      <div class="kpi" style="background:#faf9f6;border:1px solid var(--line);border-radius:11px;padding:11px 6px;text-align:center">
+      <div class="kpi" style="background:var(--adm-highlight2);border:1px solid var(--line);border-radius:11px;padding:11px 6px;text-align:center">
         ${canPay?`<div style="font-size:20px;font-weight:800">${Math.round(data.total.pay/10000)}<span style="font-size:11px;color:var(--muted)">万円</span></div>`:'<div class="muted" style="font-size:12px">権限なし</div>'}
         <div style="font-size:11px;color:var(--muted)">給料合計</div>
       </div>
@@ -10254,7 +10284,7 @@ function openRookieBackfillModal(totalFiles){
 }
 
 async function pageDaicho(app){
-  if(ME.role !== 'admin'){ notFound(app); return; }
+  if(!has('daicho_manage')){ notFound(app); return; }
   app.innerHTML = `<h2>${icon('package')} 台帳保管</h2><div class="card"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>`;
   let data;
   try{ data = await api('/daicho'); }
@@ -10307,8 +10337,11 @@ async function pageDaicho(app){
       await withLoading(runBtn, async () => {
         try{
           const r = await api('/daicho/reimport-from-archive', { method:'POST', body:{ items, checkAbsent } });
-          msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${checkAbsent&&r.clearedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''}${checkAbsent&&r.clearedRegistrations?` / 台帳に見当たらない登録現場を削除 ${r.clearedRegistrations}件`:''}<br>`
+          const hasCleared = (r.clearedAbsentList||[]).length || (r.clearedRegistrationsList||[]).length;
+          msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${checkAbsent&&r.clearedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''}${checkAbsent&&r.clearedRegistrations?` / 台帳に見当たらない登録現場を削除 ${r.clearedRegistrations}件`:''}${hasCleared?` <button class="btn ghost xs" id="dcr-show-cleared" style="display:inline-block;width:auto">詳細を見る</button>`:''}<br>`
             + r.results.map(x=>`${x.ok?icon('checkCircle',{size:'12px'}):icon('xCircle',{size:'12px'})} ${h(x.fileName)}${x.targetDate?` (${h(x.targetDate)})`:''} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>');
+          const dcrShowCleared = $('#dcr-show-cleared');
+          if(dcrShowCleared) dcrShowCleared.onclick = () => showDaichoChanges({ ts: '今回の実行結果', results: r.results, clearedAbsentList: r.clearedAbsentList, clearedRegistrationsList: r.clearedRegistrationsList });
           popup(`取り込みが完了しました(${r.okCount}件成功)`);
         }catch(e){ msgEl.innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
       });

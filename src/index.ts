@@ -1134,14 +1134,17 @@ async function clearAbsentFromDaicho(env, rows, editorId) {
   // 含まれておらず、これから出勤する人まで誤って休暇化してしまう事故が実際に起きたため)。
   const today = jstDate();
   const dates = Object.keys(datesRegnos).filter(d => d < today);
-  if (!dates.length) return { clearedPeople: 0, clearedDays: 0 };
+  if (!dates.length) return { clearedPeople: 0, clearedDays: 0, list: [] };
 
-  const allUsers = (await env.DB.prepare('SELECT id, regno FROM users').all()).results;
-  const regnoById = {}; for (const u of allUsers) regnoById[u.id] = normRegno(u.regno);
+  const allUsers = (await env.DB.prepare('SELECT id, regno, name FROM users').all()).results;
+  const regnoById = {}; const nameById = {};
+  for (const u of allUsers) { regnoById[u.id] = normRegno(u.regno); nameById[u.id] = u.name; }
 
   const ts = jstTs();
   const batch = [];
   let clearedPeople = 0;
+  // 通知・結果画面で「誰の・いつの・どの現場が」休暇化されたのか具体的に示せるよう、件数だけでなく明細も返す
+  const list: any[] = [];
   const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
 
   for (const date of dates) {
@@ -1168,11 +1171,12 @@ async function clearAbsentFromDaicho(env, rows, editorId) {
       batch.push(env.DB.prepare('INSERT INTO schedule_history(ts,editor_id,target_id,date,before_json,after_json) VALUES(?,?,?,?,?,?)')
         .bind(ts, editorId, wu.user_id, date, beforeJson, JSON.stringify({ slots: JSON.parse(afterJson), _src: '台帳照合(不在のため休暇に変更)' })));
       clearedPeople++;
+      list.push({ name: nameById[wu.user_id] || '', date, site: [...new Set(before.filter(b => b.type === 'work').map(b => b.site).filter(Boolean))].join('/') });
     }
   }
 
   if (batch.length) for (const part of chunk(batch, 200)) await env.DB.batch(part);
-  return { clearedPeople, clearedDays: dates.length };
+  return { clearedPeople, clearedDays: dates.length, list };
 }
 
 // 台帳取込(不在者を休暇にするcheckAbsentと同じタイミング・同じ判定材料)にあわせて、
@@ -1191,15 +1195,17 @@ async function clearAbsentSiteRegistry(env, rows) {
   // clearAbsentFromDaicho と同じ理由(当日はまだ台帳の入力が完了していない)で、当日(JST)は対象外とする。
   const today = jstDate();
   const dates = Object.keys(datesSites).filter(d => d < today);
-  if (!dates.length) return { clearedRegistrations: 0 };
+  if (!dates.length) return { clearedRegistrations: 0, list: [] };
   const ph = dates.map(() => '?').join(',');
   const registryRows = (await env.DB.prepare(`SELECT id, date, site FROM site_registry WHERE date IN (${ph})`).bind(...dates).all()).results;
-  const toDelete = registryRows.filter(rg => !datesSites[rg.date].has(rg.site)).map(rg => rg.id);
+  const toDeleteRows = registryRows.filter(rg => !datesSites[rg.date].has(rg.site));
+  const toDelete = toDeleteRows.map(rg => rg.id);
   if (toDelete.length) {
     const ph2 = toDelete.map(() => '?').join(',');
     await env.DB.prepare(`DELETE FROM site_registry WHERE id IN (${ph2})`).bind(...toDelete).run();
   }
-  return { clearedRegistrations: toDelete.length };
+  // 通知・結果画面で「どの現場が消えたのか」を具体的に示せるよう、件数だけでなく明細も返す
+  return { clearedRegistrations: toDelete.length, list: toDeleteRows.map(rg => ({ date: rg.date, site: rg.site })) };
 }
 
 // 新人リストから除外する登録番号の一覧(誤検知の恒久的な除外用、settingsテーブルに保存)。
@@ -1921,13 +1927,26 @@ async function applyArtistRenameMap(env, me, renameMap, srcLabel, artistRenameMa
   return { updatedDays, ts };
 }
 
-// 日付文字列を YYYY-MM-DD に正規化。基準年月(ym='2026-06')を補完に使う
-function normSheetDate(v, ym) {
+// 日付文字列を YYYY-MM-DD に正規化。基準年月(ym='2026-06')を補完に使う。
+// opt.allowBareDay=false を渡すと、月の情報を一切含まない「13」「13日」のような表記からの
+// 推測を禁止する(呼び出し側に人間のチェックが入らない自動処理向け。下記参照)。
+function normSheetDate(v, ym, opt: any = {}) {
   const s = String(v == null ? '' : v).trim();
   let m = s.match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);          // 2026-06-13
   if (m) return `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;
   m = s.match(/(\d{1,2})\s*\/\s*(\d{1,2})/);                      // 6/13(土)
-  if (m && ym) return `${ym.slice(0, 4)}-${String(m[1]).padStart(2, '0')}-${String(m[2]).padStart(2, '0')}`;
+  if (m && ym) {
+    // 年をymから補うが、月だけ年末年始をまたぐ場合は年を補正する(例: 基準月が12月で
+    // ファイル名の月が1月なら来年、基準月が1月でファイル名の月が12月なら前年)。
+    // これをしないと、年末に来月分を先行して取り込んだ場合などに年を1つ誤ってしまう。
+    let year = Number(ym.slice(0, 4));
+    const refMonth = Number(ym.slice(5, 7));
+    const month = Number(m[1]);
+    if (refMonth === 12 && month === 1) year += 1;
+    else if (refMonth === 1 && month === 12) year -= 1;
+    return `${year}-${String(month).padStart(2, '0')}-${String(m[2]).padStart(2, '0')}`;
+  }
+  if (opt.allowBareDay === false) return '';
   m = s.match(/^(\d{1,2})日?$/);                                  // "13" / "13日"
   if (m && ym) return `${ym}-${String(m[1]).padStart(2, '0')}`;
   return '';
@@ -2364,6 +2383,35 @@ async function sendPushToUsers(env, userIds, title, body, link) {
       } catch (e) {}
     }
   } catch (e) { console.error('sendPushToUsers failed:', e); }
+}
+
+// clearAbsentFromDaicho/clearAbsentSiteRegistryのlistを、通知文に埋め込む短い要約文字列に変換する
+// (「どの現場・誰が」までを通知本文自体に含めることで、通知をタップしなくても内容が分かるようにする)。
+function summarizeClearedList(list, fmt, max = 3) {
+  if (!list || !list.length) return '';
+  const shown = list.slice(0, max).map(fmt).join('、');
+  const rest = list.length > max ? ` ほか${list.length - max}件` : '';
+  return `${shown}${rest}`;
+}
+
+// 台帳Excelの直接アップロード(/import-excel-daicho)・台帳保管からの再取込
+// (/daicho/reimport-from-archive)は、深夜自動実行(cronDaichoReload)・手動再取り込み
+// (/daicho-reload-run-now)と違ってこれまで通知を送っておらず、実行した本人以外の管理者が
+// 「いつ・どの現場が休暇化/削除されたか」を後から追えなかった。この2経路でも同じ内容を
+// 他の管理者へ通知し、#/import?result=daicho の「変更内容を見る」から明細を確認できるようにする。
+async function notifyDaichoClearResults(env, me, absentResult, registryResult, sourceLabel) {
+  try {
+    const otherAdmins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0 AND id<>?").bind(me.id).all()).results;
+    if (!otherAdmins.length) return;
+    if (absentResult.clearedPeople) {
+      const detail = summarizeClearedList(absentResult.list, x => `${x.name || '(氏名不明)'}(${x.date})`);
+      await notify(env, otherAdmins.map(a => a.id), 'sched_import', `🔔 ${me.name}さんが${sourceLabel}し、不在者の休暇化を${absentResult.clearedPeople}件行いました。${detail}`, '#/import?result=daicho');
+    }
+    if (registryResult.clearedRegistrations) {
+      const detail = summarizeClearedList(registryResult.list, x => `${x.date} ${x.site}`);
+      await notify(env, otherAdmins.map(a => a.id), 'sched_import', `🔔 ${me.name}さんが${sourceLabel}し、台帳に見当たらなくなった登録現場を${registryResult.clearedRegistrations}件削除しました。${detail}`, '#/import?result=daicho');
+    }
+  } catch (e) {}
 }
 
 async function notify(env, userIds, type, message, link = '') {
@@ -3244,7 +3292,11 @@ async function api(req, env, url) {
       // 保存する(以前はdaicho_reload_last_runのみ更新しており、last_resultが前回の深夜実行分の
       // まま古くなる不具合があった)。
       await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_result',?)").bind(
-        JSON.stringify({ ts: jstTs(), count: targetUrls.length, results: r.results, clearedAbsent: r.absentResult.clearedPeople, clearedRegistrations: r.registryResult.clearedRegistrations })
+        JSON.stringify({
+          ts: jstTs(), count: targetUrls.length, results: r.results,
+          clearedAbsent: r.absentResult.clearedPeople, clearedAbsentList: r.absentResult.list || [],
+          clearedRegistrations: r.registryResult.clearedRegistrations, clearedRegistrationsList: r.registryResult.list || [],
+        })
       ).run();
       // 実際に取り込みを試みたURL(成功・失敗どちらも)は使い捨てで保存済みリストから削除する
       // (深夜自動実行と同じ扱い。1URL=1日分のデータという運用のため)。時間予算切れで
@@ -3260,9 +3312,14 @@ async function api(req, env, url) {
         // フラグも合わせて更新しておく。これにより、その夜のcronDaichoReloadは通常通りスキップされる。
         await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_run',?)").bind(jstDate()).run();
       }
+      // 実行した本人は画面上の結果をそのまま見られるが、他の管理者は見逃す恐れがあるため、
+      // 不在者の休暇化・登録現場の削除が発生した場合は自分以外の管理者にも通知する
+      // (手動実行のみ通知が無く、後から「いつ・どの現場が消えたか」を追えないという問題への対応)。
+      await notifyDaichoClearResults(env, me, r.absentResult, r.registryResult, '台帳を手動再取り込み');
       return J({
         ok: 1, okCount: r.okCount, ngCount: r.ngCount, totalApplied: r.totalApplied,
-        results: r.results, clearedAbsent: r.absentResult.clearedPeople, clearedRegistrations: r.registryResult.clearedRegistrations, checkedAbsent: checkAbsent,
+        results: r.results, clearedAbsent: r.absentResult.clearedPeople, clearedAbsentList: r.absentResult.list || [],
+        clearedRegistrations: r.registryResult.clearedRegistrations, clearedRegistrationsList: r.registryResult.list || [], checkedAbsent: checkAbsent,
         remainingCount: r.incomplete ? Math.max(0, targetUrls.length - r.results.length) : 0, incomplete: !!r.incomplete,
       });
     } catch (e) {
@@ -3316,8 +3373,8 @@ async function api(req, env, url) {
 
     // 不在者の休暇化は、既定オフ(複数日をまたぐ取込のため、日ごとに対象者が違うと誤爆しやすい)。
     // 明示的にcheckAbsentが指定された場合のみ、今回アップロードした全ファイル分をまとめて判定する。
-    let absentResult = { clearedPeople: 0, clearedDays: 0 };
-    let registryResult = { clearedRegistrations: 0 };
+    let absentResult = { clearedPeople: 0, clearedDays: 0, list: [] as any[] };
+    let registryResult = { clearedRegistrations: 0, list: [] as any[] };
     if (body.checkAbsent && allRowsCombined.length) {
       try { absentResult = await clearAbsentFromDaicho(env, allRowsCombined, me.id); }
       catch (e) { console.error('clearAbsentFromDaicho failed:', e); }
@@ -3327,10 +3384,20 @@ async function api(req, env, url) {
     } else if (allRowsCombined.length) {
       try { await matchRookieAndBlacklist(env, allRowsCombined); } catch (e) {}
     }
+    if (absentResult.clearedPeople || registryResult.clearedRegistrations) {
+      await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_result',?)").bind(
+        JSON.stringify({
+          ts: jstTs(), count: results.length, results,
+          clearedAbsent: absentResult.clearedPeople, clearedAbsentList: absentResult.list || [],
+          clearedRegistrations: registryResult.clearedRegistrations, clearedRegistrationsList: registryResult.list || [],
+        })
+      ).run();
+      await notifyDaichoClearResults(env, me, absentResult, registryResult, '台帳Excelファイルを取り込み');
+    }
 
     const okCount = results.filter(r => r.ok).length;
     const totalApplied = results.reduce((s, r) => s + (r.ok ? (r.applied || 0) : 0), 0);
-    return J({ ok: 1, okCount, ngCount: results.length - okCount, totalApplied, results, clearedAbsent: absentResult.clearedPeople, clearedRegistrations: registryResult.clearedRegistrations });
+    return J({ ok: 1, okCount, ngCount: results.length - okCount, totalApplied, results, clearedAbsent: absentResult.clearedPeople, clearedAbsentList: absentResult.list || [], clearedRegistrations: registryResult.clearedRegistrations, clearedRegistrationsList: registryResult.list || [] });
   }
 
   // ---- 台帳保管(R2)に既に保存済みのExcelファイルから、再度取り込む(新規機能) ----
@@ -3372,8 +3439,8 @@ async function api(req, env, url) {
       }
     }
 
-    let absentResult = { clearedPeople: 0, clearedDays: 0 };
-    let registryResult = { clearedRegistrations: 0 };
+    let absentResult = { clearedPeople: 0, clearedDays: 0, list: [] as any[] };
+    let registryResult = { clearedRegistrations: 0, list: [] as any[] };
     if (body.checkAbsent && allRowsCombined.length) {
       try { absentResult = await clearAbsentFromDaicho(env, allRowsCombined, me.id); }
       catch (e) { console.error('clearAbsentFromDaicho failed:', e); }
@@ -3383,10 +3450,20 @@ async function api(req, env, url) {
     } else if (allRowsCombined.length) {
       try { await matchRookieAndBlacklist(env, allRowsCombined); } catch (e) {}
     }
+    if (absentResult.clearedPeople || registryResult.clearedRegistrations) {
+      await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_result',?)").bind(
+        JSON.stringify({
+          ts: jstTs(), count: results.length, results,
+          clearedAbsent: absentResult.clearedPeople, clearedAbsentList: absentResult.list || [],
+          clearedRegistrations: registryResult.clearedRegistrations, clearedRegistrationsList: registryResult.list || [],
+        })
+      ).run();
+      await notifyDaichoClearResults(env, me, absentResult, registryResult, '台帳保管から再取込');
+    }
 
     const okCount = results.filter(r => r.ok).length;
     const totalApplied = results.reduce((s, r) => s + (r.ok ? (r.applied || 0) : 0), 0);
-    return J({ ok: 1, okCount, ngCount: results.length - okCount, totalApplied, results, clearedAbsent: absentResult.clearedPeople, clearedRegistrations: registryResult.clearedRegistrations });
+    return J({ ok: 1, okCount, ngCount: results.length - okCount, totalApplied, results, clearedAbsent: absentResult.clearedPeople, clearedAbsentList: absentResult.list || [], clearedRegistrations: registryResult.clearedRegistrations, clearedRegistrationsList: registryResult.list || [] });
   }
 
   // ---- 給与確定ロック期間の設定 ----
@@ -6707,7 +6784,7 @@ async function api(req, env, url) {
 // opt.sourceLabel: daicho_archive に残す取込元ラベル。
 async function runDaichoReload(env, urls, opt: any = {}) {
   const sourceLabel = opt.sourceLabel || '台帳再取り込み';
-  if (!urls.length) return { okCount: 0, ngCount: 0, totalApplied: 0, results: [], absentResult: { clearedPeople: 0, clearedDays: 0 }, incomplete: false };
+  if (!urls.length) return { okCount: 0, ngCount: 0, totalApplied: 0, results: [], absentResult: { clearedPeople: 0, clearedDays: 0, list: [] as any[] }, registryResult: { clearedRegistrations: 0, list: [] as any[] }, incomplete: false };
 
   // この起動全体で使ってよい時間の目安(保険的な安全策。専用cronトリガーに分離した後は
   // 他のcron処理を巻き込む心配は無いが、URL件数が多い日でも1回の起動が際限なく
@@ -6819,8 +6896,8 @@ async function runDaichoReload(env, urls, opt: any = {}) {
   // (1ファイルごとに判定すると、Aファイルには載っているがBファイルには載っていない人まで
   //  誤って休暇にしてしまうため、必ず全ファイル分を集めてから最後に1回だけ行う。
   //  一部URLのみの手動実行では、他の未選択ファイルの人を巻き込む恐れがあるため実行しない)
-  let absentResult = { clearedPeople: 0, clearedDays: 0 };
-  let registryResult = { clearedRegistrations: 0 };
+  let absentResult = { clearedPeople: 0, clearedDays: 0, list: [] as any[] };
+  let registryResult = { clearedRegistrations: 0, list: [] as any[] };
   if (allRowsCombined.length) {
     // incomplete(時間予算切れで一部URL未処理)の場合、allRowsCombinedは対象ファイルの一部でしか
     // ないため、不在者判定は行わない(未処理ファイルに載っている人まで誤って休暇化してしまうため)。
@@ -6903,7 +6980,11 @@ async function cronDaichoReload(env) {
   // 取り込み結果を確定・通知しておく(この後の不在者判定・照合処理でタイムアウトしても、
   // 取り込み自体の成否は必ず管理者に届くようにするため)
   await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_result',?)").bind(
-    JSON.stringify({ ts: jstTs(), count: dueUrls.length, results: r.results, clearedAbsent: r.absentResult.clearedPeople, clearedRegistrations: r.registryResult.clearedRegistrations })
+    JSON.stringify({
+      ts: jstTs(), count: dueUrls.length, results: r.results,
+      clearedAbsent: r.absentResult.clearedPeople, clearedAbsentList: r.absentResult.list || [],
+      clearedRegistrations: r.registryResult.clearedRegistrations, clearedRegistrationsList: r.registryResult.list || [],
+    })
   ).run();
   try {
     const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
@@ -6912,10 +6993,14 @@ async function cronDaichoReload(env) {
         `🌙 台帳の深夜自動再取り込みが完了しました(${jstTs()})。${r.okCount}件成功(反映${r.totalApplied}件)${r.ngCount ? ` / ${r.ngCount}件失敗` : ''}`,
         '#/import?result=daicho');
       if (r.absentResult.clearedPeople) {
-        await notify(env, admins.map(a => a.id), 'sched_import', `🌙 台帳自動再取り込みに伴い、不在者の休暇化を${r.absentResult.clearedPeople}件行いました。`, '#/import?result=daicho');
+        // 誰が・いつ休暇に変更されたのかを通知本文自体に含める(タップ後の「変更内容を見る」でも全件確認できる)
+        const detail = summarizeClearedList(r.absentResult.list, x => `${x.name || '(氏名不明)'}(${x.date})`);
+        await notify(env, admins.map(a => a.id), 'sched_import', `🌙 台帳自動再取り込みに伴い、不在者の休暇化を${r.absentResult.clearedPeople}件行いました。${detail}`, '#/import?result=daicho');
       }
       if (r.registryResult.clearedRegistrations) {
-        await notify(env, admins.map(a => a.id), 'sched_import', `🌙 台帳自動再取り込みに伴い、台帳に見当たらなくなった登録現場を${r.registryResult.clearedRegistrations}件削除しました。`, '#/sites');
+        // どの現場が消えたのかを通知本文自体に含め、リンク先でも明細を確認できるようにする
+        const detail = summarizeClearedList(r.registryResult.list, x => `${x.date} ${x.site}`);
+        await notify(env, admins.map(a => a.id), 'sched_import', `🌙 台帳自動再取り込みに伴い、台帳に見当たらなくなった登録現場を${r.registryResult.clearedRegistrations}件削除しました。${detail}`, '#/import?result=daicho');
       }
     }
   } catch (e) {}
@@ -6982,7 +7067,11 @@ async function runDrivePoll(env, folders) {
     let cursorAdvance = folder.last_cursor_time;
     for (const file of newFiles) {
       cursorAdvance = file.createdTime; // 成功・失敗にかかわらず処理したファイルまでカーソルを進める(無限再試行を避ける)
-      const fileDate = normSheetDate(file.name, ym);
+      // 月の情報を一切含まない「13」のようなファイル名からの日付推測は、ここでは禁止する
+      // (allowBareDay:false)。手動URL取込と違い、この自動処理には人間のチェックが入らないため、
+      // 「実行時点の月」への当てはめが外れた場合に誤った日付でそのまま取り込まれてしまう
+      // (xlsx-parser.mdに記載の「検出できない場合は実行時点の月へfallbackしない」と同じ理由)。
+      const fileDate = normSheetDate(file.name, ym, { allowBareDay: false });
       if (!fileDate || !/^\d{4}-\d{2}-\d{2}$/.test(fileDate)) {
         errorCount++;
         errorMessages.push(`「${file.name}」: ファイル名から日付を読み取れませんでした。手動でURLを登録してください(https://docs.google.com/spreadsheets/d/${file.id}/edit)`);
