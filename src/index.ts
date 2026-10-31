@@ -2394,22 +2394,51 @@ function summarizeClearedList(list, fmt, max = 3) {
   return `${shown}${rest}`;
 }
 
+// daicho_manage権限を持つ人のid一覧(個別付与されたチーフ/手配者を含む。excludeIdは除外)。
+// 台帳保管(pageDaicho)自体がhas('daicho_manage')で開けるようにしてある以上、台帳関連の
+// 通知だけrole='admin'固定にすると個別付与された人が蚊帳の外になるため、通知先はここに揃える。
+async function getDaichoManageUserIds(env, excludeId) {
+  const rows = (await env.DB.prepare(
+    "SELECT id, role, extra_perms, revoked_perms FROM users WHERE COALESCE(suspended,0)=0 AND id<>?"
+  ).bind(excludeId || 0).all()).results;
+  return rows.filter(u => has(u, 'daicho_manage')).map(u => u.id);
+}
+
+// daicho_reload_last_result設定(#/importの「最終実行」欄、GET /settings/daicho-reload-result)への
+// 保存を4経路(cronDaichoReload・/daicho-reload-run-now・/import-excel-daicho・
+// /daicho/reimport-from-archive)で共通化する。results配列の各要素は経路によって識別子の
+// フィールドが異なる(URL取込はurl、Excel直接アップロードはfileName、台帳保管からの再取込は
+// archiveId+fileName)が、フロント側(public/app.js showDaichoChanges/loadStatus)は
+// x.url決め打ちで表示していたため、Excel/archive経由の結果だと空欄になっていた
+// (2026年10月発覚)。ここでlabel(表示用の識別子文字列)を必ず付与して正規化する。
+async function recordDaichoReloadResult(env, { count, results, absentResult, registryResult }) {
+  const normalizedResults = results.map(x => ({ ...x, label: x.url || x.fileName || (x.archiveId != null ? `#${x.archiveId}` : '') }));
+  await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_result',?)").bind(
+    JSON.stringify({
+      ts: jstTs(), count, results: normalizedResults,
+      clearedAbsent: absentResult.clearedPeople, clearedAbsentList: absentResult.list || [],
+      clearedRegistrations: registryResult.clearedRegistrations, clearedRegistrationsList: registryResult.list || [],
+    })
+  ).run();
+}
+
 // 台帳Excelの直接アップロード(/import-excel-daicho)・台帳保管からの再取込
 // (/daicho/reimport-from-archive)は、深夜自動実行(cronDaichoReload)・手動再取り込み
-// (/daicho-reload-run-now)と違ってこれまで通知を送っておらず、実行した本人以外の管理者が
+// (/daicho-reload-run-now)と違ってこれまで通知を送っておらず、実行した本人以外に
 // 「いつ・どの現場が休暇化/削除されたか」を後から追えなかった。この2経路でも同じ内容を
-// 他の管理者へ通知し、#/import?result=daicho の「変更内容を見る」から明細を確認できるようにする。
+// 通知し、#/import?result=daicho の「変更内容を見る」から明細を確認できるようにする。
 async function notifyDaichoClearResults(env, me, absentResult, registryResult, sourceLabel) {
   try {
-    const otherAdmins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0 AND id<>?").bind(me.id).all()).results;
-    if (!otherAdmins.length) return;
+    if (!absentResult.clearedPeople && !registryResult.clearedRegistrations) return;
+    const targetIds = await getDaichoManageUserIds(env, me.id);
+    if (!targetIds.length) return;
     if (absentResult.clearedPeople) {
       const detail = summarizeClearedList(absentResult.list, x => `${x.name || '(氏名不明)'}(${x.date})`);
-      await notify(env, otherAdmins.map(a => a.id), 'sched_import', `🔔 ${me.name}さんが${sourceLabel}し、不在者の休暇化を${absentResult.clearedPeople}件行いました。${detail}`, '#/import?result=daicho');
+      await notify(env, targetIds, 'sched_import', `🔔 ${me.name}さんが${sourceLabel}し、不在者の休暇化を${absentResult.clearedPeople}件行いました。${detail}`, '#/import?result=daicho');
     }
     if (registryResult.clearedRegistrations) {
       const detail = summarizeClearedList(registryResult.list, x => `${x.date} ${x.site}`);
-      await notify(env, otherAdmins.map(a => a.id), 'sched_import', `🔔 ${me.name}さんが${sourceLabel}し、台帳に見当たらなくなった登録現場を${registryResult.clearedRegistrations}件削除しました。${detail}`, '#/import?result=daicho');
+      await notify(env, targetIds, 'sched_import', `🔔 ${me.name}さんが${sourceLabel}し、台帳に見当たらなくなった登録現場を${registryResult.clearedRegistrations}件削除しました。${detail}`, '#/import?result=daicho');
     }
   } catch (e) {}
 }
@@ -3291,13 +3320,7 @@ async function api(req, env, url) {
       // 手動実行の場合も深夜自動実行(cronDaichoReload)と同じ内容をdaicho_reload_last_resultへ
       // 保存する(以前はdaicho_reload_last_runのみ更新しており、last_resultが前回の深夜実行分の
       // まま古くなる不具合があった)。
-      await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_result',?)").bind(
-        JSON.stringify({
-          ts: jstTs(), count: targetUrls.length, results: r.results,
-          clearedAbsent: r.absentResult.clearedPeople, clearedAbsentList: r.absentResult.list || [],
-          clearedRegistrations: r.registryResult.clearedRegistrations, clearedRegistrationsList: r.registryResult.list || [],
-        })
-      ).run();
+      await recordDaichoReloadResult(env, { count: targetUrls.length, results: r.results, absentResult: r.absentResult, registryResult: r.registryResult });
       // 実際に取り込みを試みたURL(成功・失敗どちらも)は使い捨てで保存済みリストから削除する
       // (深夜自動実行と同じ扱い。1URL=1日分のデータという運用のため)。時間予算切れで
       // 手をつけられなかった分(r.results に含まれない)は削除しない。
@@ -3385,13 +3408,7 @@ async function api(req, env, url) {
       try { await matchRookieAndBlacklist(env, allRowsCombined); } catch (e) {}
     }
     if (absentResult.clearedPeople || registryResult.clearedRegistrations) {
-      await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_result',?)").bind(
-        JSON.stringify({
-          ts: jstTs(), count: results.length, results,
-          clearedAbsent: absentResult.clearedPeople, clearedAbsentList: absentResult.list || [],
-          clearedRegistrations: registryResult.clearedRegistrations, clearedRegistrationsList: registryResult.list || [],
-        })
-      ).run();
+      await recordDaichoReloadResult(env, { count: results.length, results, absentResult, registryResult });
       await notifyDaichoClearResults(env, me, absentResult, registryResult, '台帳Excelファイルを取り込み');
     }
 
@@ -3451,13 +3468,7 @@ async function api(req, env, url) {
       try { await matchRookieAndBlacklist(env, allRowsCombined); } catch (e) {}
     }
     if (absentResult.clearedPeople || registryResult.clearedRegistrations) {
-      await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_result',?)").bind(
-        JSON.stringify({
-          ts: jstTs(), count: results.length, results,
-          clearedAbsent: absentResult.clearedPeople, clearedAbsentList: absentResult.list || [],
-          clearedRegistrations: registryResult.clearedRegistrations, clearedRegistrationsList: registryResult.list || [],
-        })
-      ).run();
+      await recordDaichoReloadResult(env, { count: results.length, results, absentResult, registryResult });
       await notifyDaichoClearResults(env, me, absentResult, registryResult, '台帳保管から再取込');
     }
 
@@ -6978,29 +6989,23 @@ async function cronDaichoReload(env) {
   try { await removeImportUrls(env, dueUrls); } catch (e) { console.error('[cronDaichoReload] failed to remove processed import_urls:', e); }
 
   // 取り込み結果を確定・通知しておく(この後の不在者判定・照合処理でタイムアウトしても、
-  // 取り込み自体の成否は必ず管理者に届くようにするため)
-  await env.DB.prepare("REPLACE INTO settings(key,value) VALUES('daicho_reload_last_result',?)").bind(
-    JSON.stringify({
-      ts: jstTs(), count: dueUrls.length, results: r.results,
-      clearedAbsent: r.absentResult.clearedPeople, clearedAbsentList: r.absentResult.list || [],
-      clearedRegistrations: r.registryResult.clearedRegistrations, clearedRegistrationsList: r.registryResult.list || [],
-    })
-  ).run();
+  // 取り込み自体の成否は必ず台帳保管の担当者に届くようにするため)
+  await recordDaichoReloadResult(env, { count: dueUrls.length, results: r.results, absentResult: r.absentResult, registryResult: r.registryResult });
   try {
-    const admins = (await env.DB.prepare("SELECT id FROM users WHERE role='admin' AND COALESCE(suspended,0)=0").all()).results;
-    if (admins.length) {
-      await notify(env, admins.map(a => a.id), 'sched_import',
+    const targetIds = await getDaichoManageUserIds(env, 0);
+    if (targetIds.length) {
+      await notify(env, targetIds, 'sched_import',
         `🌙 台帳の深夜自動再取り込みが完了しました(${jstTs()})。${r.okCount}件成功(反映${r.totalApplied}件)${r.ngCount ? ` / ${r.ngCount}件失敗` : ''}`,
         '#/import?result=daicho');
       if (r.absentResult.clearedPeople) {
         // 誰が・いつ休暇に変更されたのかを通知本文自体に含める(タップ後の「変更内容を見る」でも全件確認できる)
         const detail = summarizeClearedList(r.absentResult.list, x => `${x.name || '(氏名不明)'}(${x.date})`);
-        await notify(env, admins.map(a => a.id), 'sched_import', `🌙 台帳自動再取り込みに伴い、不在者の休暇化を${r.absentResult.clearedPeople}件行いました。${detail}`, '#/import?result=daicho');
+        await notify(env, targetIds, 'sched_import', `🌙 台帳自動再取り込みに伴い、不在者の休暇化を${r.absentResult.clearedPeople}件行いました。${detail}`, '#/import?result=daicho');
       }
       if (r.registryResult.clearedRegistrations) {
         // どの現場が消えたのかを通知本文自体に含め、リンク先でも明細を確認できるようにする
         const detail = summarizeClearedList(r.registryResult.list, x => `${x.date} ${x.site}`);
-        await notify(env, admins.map(a => a.id), 'sched_import', `🌙 台帳自動再取り込みに伴い、台帳に見当たらなくなった登録現場を${r.registryResult.clearedRegistrations}件削除しました。${detail}`, '#/import?result=daicho');
+        await notify(env, targetIds, 'sched_import', `🌙 台帳自動再取り込みに伴い、台帳に見当たらなくなった登録現場を${r.registryResult.clearedRegistrations}件削除しました。${detail}`, '#/import?result=daicho');
       }
     }
   } catch (e) {}

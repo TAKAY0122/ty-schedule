@@ -136,7 +136,7 @@ function showDaichoChanges(r, onAfterUndo){
   modal(`<h3>台帳再取り込みの変更内容</h3>
     <div class="muted" style="font-size:12px;margin-bottom:10px">最終実行: ${h(r.ts)} 時点の反映内容(${allChanges.length}件)</div>
     ${withChanges.length?`<div style="margin-bottom:10px;display:flex;flex-direction:column;gap:6px">
-      ${withChanges.map(x=>`<button class="btn danger xs daicho-undo-one" data-ts="${h(x.ts)}">${icon('undo',{size:'12px'})} 「${h((x.url||'').slice(0,40))}…」の反映(${x.changes.length}件)を取り消す</button>`).join('')}
+      ${withChanges.map(x=>`<button class="btn danger xs daicho-undo-one" data-ts="${h(x.ts)}">${icon('undo',{size:'12px'})} 「${h((x.label||x.url||x.fileName||'').slice(0,40))}…」の反映(${x.changes.length}件)を取り消す</button>`).join('')}
     </div>`:''}
     <div style="max-height:40vh;overflow-y:auto;margin-bottom:${(absentList.length||registryList.length)?'14px':'0'}">
       <table class="list" style="font-size:12.5px">
@@ -8316,7 +8316,7 @@ async function pageImport(app, hash){
           const r = res && res.result;
           const hasChanges = r && ((r.results||[]).some(x => x.changes && x.changes.length) || (r.clearedAbsentList||[]).length || (r.clearedRegistrationsList||[]).length);
           el.innerHTML = `<div style="margin-bottom:6px">現在の保存済みURL: <b>${savedCount}件</b>${savedCount?` <span class="muted">(次回0:00に自動再取り込み後、削除されます)</span>`:' <span class="muted">(再取り込み対象なし)</span>'}</div>`
-            + (r ? `<div class="muted" style="word-break:break-all">最終実行: ${h(r.ts)} / ${r.count}件のURLを再取り込み${r.clearedAbsent?` / ${icon('sun',{size:'12px'})} どのファイルにも登場しなかった人の現場を${r.clearedAbsent}件、休暇に変更`:''}${r.clearedRegistrations?` / 台帳に見当たらない登録現場を${r.clearedRegistrations}件削除`:''}${hasChanges?` <button class="btn ghost xs" id="daicho-show-changes">変更内容を見る</button>`:''}<br>${r.results.map(x=>`${x.ok?icon('checkCircle',{size:'12px'}):icon('xCircle',{size:'12px'})} ${h((x.url||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>')}</div>` : '<div class="muted">まだ自動実行されていません</div>');
+            + (r ? `<div class="muted" style="word-break:break-all">最終実行: ${h(r.ts)} / ${r.count}件を取り込み${r.clearedAbsent?` / ${icon('sun',{size:'12px'})} どのファイルにも登場しなかった人の現場を${r.clearedAbsent}件、休暇に変更`:''}${r.clearedRegistrations?` / 台帳に見当たらない登録現場を${r.clearedRegistrations}件削除`:''}${hasChanges?` <button class="btn ghost xs" id="daicho-show-changes">変更内容を見る</button>`:''}<br>${r.results.map(x=>`${x.ok?icon('checkCircle',{size:'12px'}):icon('xCircle',{size:'12px'})} ${h((x.label||x.url||x.fileName||'').slice(0,60)+'…')} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>')}</div>` : '<div class="muted">まだ自動実行されていません</div>');
           const showBtn = $('#daicho-show-changes');
           if(showBtn) showBtn.onclick = () => showDaichoChanges(r, loadStatus);
           // 通知から「#/import?result=daicho」で遷移してきた場合、変更内容を自動で開く
@@ -10341,7 +10341,7 @@ async function pageDaicho(app){
           msgEl.innerHTML = `<b>${r.okCount}件成功(反映${r.totalApplied}件)</b>${r.ngCount?` / ${r.ngCount}件失敗`:''}${checkAbsent&&r.clearedAbsent?` / 不在者の休暇化 ${r.clearedAbsent}件`:''}${checkAbsent&&r.clearedRegistrations?` / 台帳に見当たらない登録現場を削除 ${r.clearedRegistrations}件`:''}${hasCleared?` <button class="btn ghost xs" id="dcr-show-cleared" style="display:inline-block;width:auto">詳細を見る</button>`:''}<br>`
             + r.results.map(x=>`${x.ok?icon('checkCircle',{size:'12px'}):icon('xCircle',{size:'12px'})} ${h(x.fileName)}${x.targetDate?` (${h(x.targetDate)})`:''} ${x.ok?`反映${x.applied}件`:`エラー:${h(x.error)}`}`).join('<br>');
           const dcrShowCleared = $('#dcr-show-cleared');
-          if(dcrShowCleared) dcrShowCleared.onclick = () => showDaichoChanges({ ts: '今回の実行結果', results: r.results, clearedAbsentList: r.clearedAbsentList, clearedRegistrationsList: r.clearedRegistrationsList });
+          if(dcrShowCleared) dcrShowCleared.onclick = () => showDaichoChanges({ ts: '今回の実行結果', results: r.results, clearedAbsentList: r.clearedAbsentList, clearedRegistrationsList: r.clearedRegistrationsList }, () => pageDaicho(app));
           popup(`取り込みが完了しました(${r.okCount}件成功)`);
         }catch(e){ msgEl.innerHTML = `<span class="msg err">${h(e.message)}</span>`; }
       });
