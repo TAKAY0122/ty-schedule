@@ -246,6 +246,7 @@ const APP_STRUCTURE_API_GROUPS = [
     ['GET/PUT/POST', '/sched-sources', '予定表ソースの一覧・追加・個別実行(excludeUnmanagedオプション対応。上書き判定は日単位のスプレッドシート差分ベース)'],
     ['POST', '/import-schedule', 'GAS連携による取込(トークン認証)'],
     ['GET', '/daicho', '台帳保管一覧'],
+    ['GET', '/site-registry-history', '台帳照合で自動削除された登録現場の履歴'],
     ['GET', '/daicho/:id/download', '台帳原本ダウンロード'],
     ['POST', '/daicho/bulk-download', '台帳の一括ダウンロード'],
     ['POST', '/daicho/bulk-delete', '台帳の一括削除'],
@@ -1197,12 +1198,22 @@ async function clearAbsentSiteRegistry(env, rows) {
   const dates = Object.keys(datesSites).filter(d => d < today);
   if (!dates.length) return { clearedRegistrations: 0, list: [] };
   const ph = dates.map(() => '?').join(',');
-  const registryRows = (await env.DB.prepare(`SELECT id, date, site FROM site_registry WHERE date IN (${ph})`).bind(...dates).all()).results;
+  const registryRows = (await env.DB.prepare(`SELECT id, date, site, venue FROM site_registry WHERE date IN (${ph})`).bind(...dates).all()).results;
   const toDeleteRows = registryRows.filter(rg => !datesSites[rg.date].has(rg.site));
   const toDelete = toDeleteRows.map(rg => rg.id);
   if (toDelete.length) {
     const ph2 = toDelete.map(() => '?').join(',');
     await env.DB.prepare(`DELETE FROM site_registry WHERE id IN (${ph2})`).bind(...toDelete).run();
+    // daicho_reload_last_result設定は次の取込で上書きされ、何が消えたか追えなくなるため、
+    // 永続的な履歴テーブルにも必ず残す(2026年10月、「通知を押しても消去された現場が
+    // 見れない」という指摘で発覚した不具合への対応)。
+    const ts = jstTs();
+    const chunk = (arr, n) => { const out = []; for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; };
+    for (const part of chunk(toDeleteRows, 200)) {
+      await env.DB.batch(part.map(rg => env.DB.prepare(
+        'INSERT INTO site_registry_history(ts,date,site,venue) VALUES(?,?,?,?)'
+      ).bind(ts, rg.date, rg.site, rg.venue || '')));
+    }
   }
   // 通知・結果画面で「どの現場が消えたのか」を具体的に示せるよう、件数だけでなく明細も返す
   return { clearedRegistrations: toDelete.length, list: toDeleteRows.map(rg => ({ date: rg.date, site: rg.site })) };
@@ -2438,7 +2449,9 @@ async function notifyDaichoClearResults(env, me, absentResult, registryResult, s
     }
     if (registryResult.clearedRegistrations) {
       const detail = summarizeClearedList(registryResult.list, x => `${x.date} ${x.site}`);
-      await notify(env, targetIds, 'sched_import', `🔔 ${me.name}さんが${sourceLabel}し、台帳に見当たらなくなった登録現場を${registryResult.clearedRegistrations}件削除しました。${detail}`, '#/import?result=daicho');
+      // daicho_reload_last_result設定は次の取込で上書きされるため、#/import?result=daichoではなく
+      // 永続的な履歴(site_registry_history、#/daichoの「消去された現場の履歴」)へ誘導する。
+      await notify(env, targetIds, 'sched_import', `🔔 ${me.name}さんが${sourceLabel}し、台帳に見当たらなくなった登録現場を${registryResult.clearedRegistrations}件削除しました。${detail}`, '#/daicho');
     }
   } catch (e) {}
 }
@@ -6030,6 +6043,16 @@ async function api(req, env, url) {
     ).all()).results;
     return J({ items: rows });
   }
+  // 台帳照合(不在者チェック)で「見当たらない」と自動削除された登録現場(site_registry)の履歴。
+  // daicho_reload_last_result設定は直近1回分しか保持せず次の取込で上書きされるため、通知を
+  // 後から開いても何が消えたか分からなくなる問題への対応として、永続的に残す(2026年10月)。
+  if (method === 'GET' && path === '/site-registry-history') {
+    if (!has(me, 'daicho_manage')) return ERR('権限がありません', 403);
+    const rows = (await env.DB.prepare(
+      'SELECT id,ts,date,site,venue FROM site_registry_history ORDER BY id DESC LIMIT 300'
+    ).all()).results;
+    return J({ items: rows });
+  }
   let dm;
   if (method === 'GET' && (dm = path.match(/^\/daicho\/(\d+)\/download$/))) {
     if (!has(me, 'daicho_manage')) return ERR('権限がありません', 403);
@@ -7003,9 +7026,11 @@ async function cronDaichoReload(env) {
         await notify(env, targetIds, 'sched_import', `🌙 台帳自動再取り込みに伴い、不在者の休暇化を${r.absentResult.clearedPeople}件行いました。${detail}`, '#/import?result=daicho');
       }
       if (r.registryResult.clearedRegistrations) {
-        // どの現場が消えたのかを通知本文自体に含め、リンク先でも明細を確認できるようにする
+        // どの現場が消えたのかを通知本文自体に含め、リンク先でも明細を確認できるようにする。
+        // daicho_reload_last_result設定は次の取込で上書きされるため、#/import?result=daichoではなく
+        // 永続的な履歴(site_registry_history、#/daichoの「消去された現場の履歴」)へ誘導する。
         const detail = summarizeClearedList(r.registryResult.list, x => `${x.date} ${x.site}`);
-        await notify(env, targetIds, 'sched_import', `🌙 台帳自動再取り込みに伴い、台帳に見当たらなくなった登録現場を${r.registryResult.clearedRegistrations}件削除しました。${detail}`, '#/import?result=daicho');
+        await notify(env, targetIds, 'sched_import', `🌙 台帳自動再取り込みに伴い、台帳に見当たらなくなった登録現場を${r.registryResult.clearedRegistrations}件削除しました。${detail}`, '#/daicho');
       }
     }
   } catch (e) {}

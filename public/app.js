@@ -10492,7 +10492,10 @@ async function pageDaicho(app){
   };
 
   app.innerHTML = `
-  <h2 style="margin-bottom:8px">${icon('package')} 台帳保管</h2>
+  <h2 style="margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+    <span>${icon('package')} 台帳保管</span>
+    <button class="btn ghost sm" id="dc-deleted-history" style="display:inline-flex">${icon('clock',{size:'13px'})} 消去された現場の履歴</button>
+  </h2>
   ${items.length ? `<div class="card" style="margin-bottom:14px">
     <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
       <div style="max-width:640px">
@@ -10525,6 +10528,23 @@ async function pageDaicho(app){
     <div id="dc-list-area"></div>
     ` : '<div class="muted" style="padding:24px 0;text-align:center">まだ保管された台帳はありません。スプレッドシートを取り込むと、ここに元Excelが保管されます。</div>'}
   </div>`;
+
+  $('#dc-deleted-history').onclick = async () => {
+    modal(`<h3>${icon('clock',{size:'15px'})} 消去された現場の履歴</h3>
+      <div class="muted" style="font-size:12px;margin-bottom:10px">台帳照合(不在者チェック)で「どの台帳にも見当たらない」と判定され、自動削除された登録現場の一覧です(直近300件)。</div>
+      <div id="srh-area"><div class="loading-box"><span class="spinner"></span>読み込み中…</div></div>`);
+    try{
+      const d = await api('/site-registry-history');
+      const rows = d.items || [];
+      const area = $('#srh-area');
+      area.innerHTML = rows.length ? `<div style="max-height:60vh;overflow-y:auto">
+        <table class="list" style="font-size:12.5px">
+          <tr><th>削除日時</th><th>対象日</th><th>現場名</th><th>会場</th></tr>
+          ${rows.map(r=>`<tr><td class="nowrap">${h(r.ts)}</td><td class="nowrap">${h(r.date)}</td><td>${h(r.site)}</td><td>${h(r.venue||'—')}</td></tr>`).join('')}
+        </table>
+      </div>` : '<div class="muted" style="padding:16px 0;text-align:center">まだ削除履歴はありません</div>';
+    }catch(e){ $('#srh-area').innerHTML = `<div class="msg err">${h(e.message)}</div>`; }
+  };
 
   if(items.length){
     $('#dc-rookie-backfill').onclick = () => openRookieBackfillModal(items.length);

@@ -437,6 +437,17 @@ CREATE TABLE IF NOT EXISTS site_registry(
 );
 CREATE INDEX IF NOT EXISTS idx_site_registry_date ON site_registry(date);
 
+-- site_registryの自動削除(台帳照合で「見当たらない」と判定された登録現場の削除)を
+-- 永続的に記録する履歴(GET /site-registry-history、pageDaicho「削除履歴」参照)。
+CREATE TABLE IF NOT EXISTS site_registry_history(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  date TEXT NOT NULL,
+  site TEXT NOT NULL,
+  venue TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_site_registry_history_ts ON site_registry_history(ts);
+
 -- 会場マニュアルの有無フラグ。会場一覧で「この会場は既にマニュアルを用意済みか」を一目で分かる
 -- ようにするための機能。行の存在=あり、として扱う(無ければ「なし」)。本文自体は
 -- venue_manual_blocks/venue_manual_historyで管理する(機能公開設定は当面「準備中」のまま)。
