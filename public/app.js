@@ -10496,6 +10496,17 @@ async function pageDaicho(app){
     <span>${icon('package')} 台帳保管</span>
     <button class="btn ghost sm" id="dc-deleted-history" style="display:inline-flex">${icon('clock',{size:'13px'})} 消去された現場の履歴</button>
   </h2>
+  <div class="card" style="margin-bottom:14px">
+    <b>${icon('search',{size:'14px'})} 人物のスケジュール検索</b>
+    <div class="muted" style="font-size:12px;margin:2px 0 10px">登録番号と期間を指定すると、その期間の現場(催し物名・会場のみ)を一時的に表示します。給与・時間等は含みません。検索結果はこの画面を離れると消え、どこにも保存されません(他のブラウザ・タブでは見れません)。</div>
+    <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
+      <input id="dps-regno" class="search-input" placeholder="登録番号" style="flex:1 1 140px" inputmode="numeric">
+      <label class="muted" style="display:flex;align-items:center;gap:4px;font-size:13px;white-space:nowrap">開始<input type="date" id="dps-from" style="max-width:150px"></label>
+      <label class="muted" style="display:flex;align-items:center;gap:4px;font-size:13px;white-space:nowrap">終了<input type="date" id="dps-to" style="max-width:150px"></label>
+      <button class="btn gold sm" id="dps-search">${icon('search',{size:'13px'})} 検索</button>
+    </div>
+    <div id="dps-result" style="margin-top:10px"></div>
+  </div>
   ${items.length ? `<div class="card" style="margin-bottom:14px">
     <div class="row" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
       <div style="max-width:640px">
@@ -10528,6 +10539,38 @@ async function pageDaicho(app){
     <div id="dc-list-area"></div>
     ` : '<div class="muted" style="padding:24px 0;text-align:center">まだ保管された台帳はありません。スプレッドシートを取り込むと、ここに元Excelが保管されます。</div>'}
   </div>`;
+
+  $('#dps-search').onclick = async () => {
+    const regno = $('#dps-regno').value.trim();
+    const from = $('#dps-from').value;
+    const to = $('#dps-to').value;
+    const resultEl = $('#dps-result');
+    if(!regno){ popup('登録番号を入力してください','error'); return; }
+    if(!from || !to){ popup('期間(開始日・終了日)を入力してください','error'); return; }
+    if(from > to){ popup('開始日は終了日より前にしてください','error'); return; }
+    const btn = $('#dps-search');
+    await withLoading(btn, async () => {
+      try{
+        const r = await api(`/daicho/person-schedule?regno=${encodeURIComponent(regno)}&from=${from}&to=${to}`);
+        const rows = r.items || [];
+        resultEl.innerHTML = `<div class="muted" style="margin-bottom:6px">${h(r.name)}(${h(r.regno)}) / ${rows.length}件</div>`
+          + (rows.length ? `
+            <div class="list-scroll pc-only" style="max-height:50vh;overflow-y:auto">
+              <table class="list" style="font-size:12.5px">
+                <tr><th>日付</th><th>催し物名</th><th>会場</th></tr>
+                ${rows.map(it=>`<tr><td class="nowrap">${h(it.date)}</td><td>${h(it.site||'—')}</td><td>${h(it.venue||'—')}</td></tr>`).join('')}
+              </table>
+            </div>
+            <div class="cards sp-only" style="max-height:50vh;overflow-y:auto">
+              ${rows.map(it=>`<div class="dcard">
+                <div class="dcard-head"><span class="dcard-title">${h(it.date)}</span></div>
+                <div class="drow"><span class="dk">催し物名</span><span class="dv">${h(it.site||'—')}</span></div>
+                <div class="drow"><span class="dk">会場</span><span class="dv">${h(it.venue||'—')}</span></div>
+              </div>`).join('')}
+            </div>` : '<div class="muted" style="padding:10px 0;text-align:center">この期間に現場はありません</div>');
+      }catch(e){ resultEl.innerHTML = `<div class="msg err">${h(e.message)}</div>`; }
+    });
+  };
 
   $('#dc-deleted-history').onclick = async () => {
     modal(`<h3>${icon('clock',{size:'15px'})} 消去された現場の履歴</h3>

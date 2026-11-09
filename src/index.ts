@@ -246,6 +246,7 @@ const APP_STRUCTURE_API_GROUPS = [
     ['GET/PUT/POST', '/sched-sources', '予定表ソースの一覧・追加・個別実行(excludeUnmanagedオプション対応。上書き判定は日単位のスプレッドシート差分ベース)'],
     ['POST', '/import-schedule', 'GAS連携による取込(トークン認証)'],
     ['GET', '/daicho', '台帳保管一覧'],
+    ['GET', '/daicho/person-schedule', '台帳保管から、登録番号+期間で特定の人物の簡易スケジュール(日付・催し物名・会場のみ)をその場で検索。結果はどこにも保存せず都度scheduleテーブルから算出するため、他ブラウザ・再読込後には残らない'],
     ['GET', '/site-registry-history', '台帳照合で自動削除された登録現場の履歴'],
     ['GET', '/daicho/:id/download', '台帳原本ダウンロード'],
     ['POST', '/daicho/bulk-download', '台帳の一括ダウンロード'],
@@ -6043,6 +6044,25 @@ async function api(req, env, url) {
       'SELECT id,ts,importer_name,source_url,file_id,file_name,size,applied,sheets FROM daicho_archive ORDER BY id DESC LIMIT 500'
     ).all()).results;
     return J({ items: rows });
+  }
+  // 登録番号+期間で、特定の人物の簡易スケジュール(日付・催し物名・会場のみ)をその場で検索する。
+  // 給与・勤怠等は一切含めず、結果はどこにも保存せず都度scheduleテーブルから算出して返すだけなので、
+  // 他ブラウザ・タブを閉じた後には何も残らない(2026年11月、ユーザーからの明示的な要望によりこの設計)。
+  if (method === 'GET' && path === '/daicho/person-schedule') {
+    if (!has(me, 'daicho_manage')) return ERR('権限がありません', 403);
+    const regno = String(url.searchParams.get('regno') || '').trim();
+    const from = String(url.searchParams.get('from') || '').trim();
+    const to = String(url.searchParams.get('to') || '').trim();
+    const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+    if (!regno) return ERR('登録番号を入力してください');
+    if (!dateRe.test(from) || !dateRe.test(to)) return ERR('期間(開始日・終了日)を入力してください');
+    if (from > to) return ERR('開始日は終了日より前にしてください');
+    const person = await env.DB.prepare('SELECT id, name, regno FROM users WHERE regno=?').bind(regno).first();
+    if (!person) return ERR('その登録番号の人が見つかりません', 404);
+    const rows = (await env.DB.prepare(
+      "SELECT date, site, venue FROM schedule WHERE user_id=? AND date>=? AND date<=? AND type='work' ORDER BY date ASC, slot ASC"
+    ).bind(person.id, from, to).all()).results;
+    return J({ name: person.name, regno: person.regno, items: rows });
   }
   // 台帳照合(不在者チェック)で「見当たらない」と自動削除された登録現場(site_registry)の履歴。
   // daicho_reload_last_result設定は直近1回分しか保持せず次の取込で上書きされるため、通知を
