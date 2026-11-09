@@ -10498,7 +10498,7 @@ async function pageDaicho(app){
   </h2>
   <div class="card" style="margin-bottom:14px">
     <b>${icon('search',{size:'14px'})} 人物のスケジュール検索</b>
-    <div class="muted" style="font-size:12px;margin:2px 0 10px">登録番号と期間を指定すると、その期間の現場(催し物名・会場のみ)を一時的に表示します。給与・時間等は含みません。検索結果はこの画面を離れると消え、どこにも保存されません(他のブラウザ・タブでは見れません)。</div>
+    <div class="muted" style="font-size:12px;margin:2px 0 10px">登録番号と期間を指定すると、その期間の現場(催し物名・会場のみ)を一時的に表示します。給与・時間等は含みません。<b>アプリに登録していない人(他社委託スタッフ等)でも、台帳保管の原本から検索できます</b>(件数が多い期間は検索に時間がかかることがあります)。検索結果はこの画面を離れると消え、どこにも保存されません(他のブラウザ・タブでは見れません)。</div>
     <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
       <input id="dps-regno" class="search-input" placeholder="登録番号" style="flex:1 1 140px" inputmode="numeric">
       <label class="muted" style="display:flex;align-items:center;gap:4px;font-size:13px;white-space:nowrap">開始<input type="date" id="dps-from" style="max-width:150px"></label>
@@ -10551,9 +10551,29 @@ async function pageDaicho(app){
     const btn = $('#dps-search');
     await withLoading(btn, async () => {
       try{
-        const r = await api(`/daicho/person-schedule?regno=${encodeURIComponent(regno)}&from=${from}&to=${to}`);
-        const rows = r.items || [];
-        resultEl.innerHTML = `<div class="muted" style="margin-bottom:6px">${h(r.name)}(${h(r.regno)}) / ${rows.length}件</div>`
+        // アプリに登録済みの人はscheduleテーブルから1回で返るが、未登録の人(他社委託スタッフ等)は
+        // 台帳保管(R2)の生ファイルを都度解析するため、件数が多いと複数回に分けて返る
+        // (POST /rookie-candidates/backfillと同じcursor方式)。done:trueになるまで呼び出し続ける。
+        let cursor = 0, allItems = [], registered = true, name = '';
+        while(true){
+          const r = await api(`/daicho/person-schedule?regno=${encodeURIComponent(regno)}&from=${from}&to=${to}&cursor=${cursor}`);
+          registered = r.registered;
+          if(r.name) name = r.name;
+          allItems = allItems.concat(r.items || []);
+          if(r.done) break;
+          cursor = r.nextCursor;
+          resultEl.innerHTML = `<div class="muted" style="padding:10px 0;text-align:center"><span class="spinner" style="width:13px;height:13px;border-width:2px;margin-right:5px"></span>台帳保管を確認中…(現在${allItems.length}件見つかりました)</div>`;
+        }
+        // 同じ(日付,催し物名,会場)の行は、再取込等で複数ファイルに残っていることがあるため1件にまとめる
+        const seen = new Set();
+        const rows = allItems.filter(it => {
+          const key = `${it.date}|${it.site}|${it.venue}`;
+          if(seen.has(key)) return false;
+          seen.add(key); return true;
+        }).sort((a,b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+        const title = registered ? `${h(name)}(${h(regno)})`
+          : name ? `${h(name)}(${h(regno)}・アプリ未登録)` : `登録番号 ${h(regno)}(アプリ未登録)`;
+        resultEl.innerHTML = `<div class="muted" style="margin-bottom:6px">${title} / ${rows.length}件</div>`
           + (rows.length ? `
             <div class="list-scroll pc-only" style="max-height:50vh;overflow-y:auto">
               <table class="list" style="font-size:12.5px">
@@ -10567,7 +10587,7 @@ async function pageDaicho(app){
                 <div class="drow"><span class="dk">催し物名</span><span class="dv">${h(it.site||'—')}</span></div>
                 <div class="drow"><span class="dk">会場</span><span class="dv">${h(it.venue||'—')}</span></div>
               </div>`).join('')}
-            </div>` : '<div class="muted" style="padding:10px 0;text-align:center">この期間に現場はありません</div>');
+            </div>` : '<div class="muted" style="padding:10px 0;text-align:center">この期間に現場は見つかりませんでした</div>');
       }catch(e){ resultEl.innerHTML = `<div class="msg err">${h(e.message)}</div>`; }
     });
   };

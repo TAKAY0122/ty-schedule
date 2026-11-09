@@ -6046,23 +6046,64 @@ async function api(req, env, url) {
     return J({ items: rows });
   }
   // 登録番号+期間で、特定の人物の簡易スケジュール(日付・催し物名・会場のみ)をその場で検索する。
-  // 給与・勤怠等は一切含めず、結果はどこにも保存せず都度scheduleテーブルから算出して返すだけなので、
-  // 他ブラウザ・タブを閉じた後には何も残らない(2026年11月、ユーザーからの明示的な要望によりこの設計)。
+  // 給与・勤怠等は一切含めず、結果はどこにも保存せず都度算出して返すだけなので、他ブラウザ・
+  // タブを閉じた後には何も残らない(2026年11月、ユーザーからの明示的な要望によりこの設計)。
+  // アプリに登録済みの人は確定済みのscheduleテーブルから高速に返す。一方、台帳保管を使う主目的は
+  // 「アプリに登録していない人(他社委託スタッフ等、applyImportRowsで取込自体をスキップされ scheduleに
+  // 一切記録が残らない人)」も検索できることなので、usersに該当者がいない場合は台帳保管(daicho_archive、
+  // R2)の生ファイルを都度解析して集める(2026年11月、ユーザーからの明示的な要望による追加)。
+  // 件数が多いと1リクエストで終わらないため、POST /rookie-candidates/backfillと同じ時間予算+
+  // cursorのループ呼び出し方式で続きから処理する。
   if (method === 'GET' && path === '/daicho/person-schedule') {
     if (!has(me, 'daicho_manage')) return ERR('権限がありません', 403);
     const regno = String(url.searchParams.get('regno') || '').trim();
     const from = String(url.searchParams.get('from') || '').trim();
     const to = String(url.searchParams.get('to') || '').trim();
+    const cursor = Number(url.searchParams.get('cursor')) || 0;
     const dateRe = /^\d{4}-\d{2}-\d{2}$/;
     if (!regno) return ERR('登録番号を入力してください');
     if (!dateRe.test(from) || !dateRe.test(to)) return ERR('期間(開始日・終了日)を入力してください');
     if (from > to) return ERR('開始日は終了日より前にしてください');
+
     const person = await env.DB.prepare('SELECT id, name, regno FROM users WHERE regno=?').bind(regno).first();
-    if (!person) return ERR('その登録番号の人が見つかりません', 404);
-    const rows = (await env.DB.prepare(
-      "SELECT date, site, venue FROM schedule WHERE user_id=? AND date>=? AND date<=? AND type='work' ORDER BY date ASC, slot ASC"
-    ).bind(person.id, from, to).all()).results;
-    return J({ name: person.name, regno: person.regno, items: rows });
+    if (person) {
+      const rows = (await env.DB.prepare(
+        "SELECT date, site, venue FROM schedule WHERE user_id=? AND date>=? AND date<=? AND type='work' ORDER BY date ASC, slot ASC"
+      ).bind(person.id, from, to).all()).results;
+      return J({ registered: true, name: person.name, regno: person.regno, items: rows, done: true });
+    }
+
+    // 未登録者: 台帳保管(R2)の生ファイルを古い順に解析し、regno一致+期間内の行だけ集める
+    if (!env.DAICHO) return ERR('R2が未設定のため、未登録者の検索は使用できません', 500);
+    const regnoNorm = normRegno(regno);
+    const OVERALL_BUDGET_MS = 20000;
+    const startedAt = Date.now();
+    const keywordMap = await loadNonSiteKeywords(env);
+    const files = (await env.DB.prepare(
+      'SELECT id, r2_key, file_name FROM daicho_archive WHERE id>? ORDER BY id ASC LIMIT 500'
+    ).bind(cursor).all()).results;
+    let lastId = cursor, personName = '', scanned = 0;
+    const items: any[] = [];
+    const errors: any[] = [];
+    for (const f of files as any[]) {
+      if (Date.now() - startedAt > OVERALL_BUDGET_MS) break;
+      lastId = f.id; scanned++;
+      try {
+        const obj = await env.DAICHO.get(f.r2_key);
+        if (!obj) continue;
+        const buf = new Uint8Array(await obj.arrayBuffer());
+        const { allRows } = await parseDaichoExcelBuffer(env, buf, f.file_name || `台帳_${f.id}.xlsx`, null, keywordMap);
+        for (const row of allRows) {
+          if (normRegno(row.regno) !== regnoNorm) continue;
+          if (!row.date || row.date < from || row.date > to) continue;
+          if (row.type && row.type !== 'work') continue;
+          if (!personName && (row.personName || row.name)) personName = row.personName || row.name;
+          items.push({ date: row.date, site: row.site || '', venue: row.venue || '' });
+        }
+      } catch (e) { errors.push({ id: f.id, fileName: f.file_name, error: e.message }); }
+    }
+    const remaining = (await env.DB.prepare('SELECT COUNT(*) AS c FROM daicho_archive WHERE id>?').bind(lastId).first()).c;
+    return J({ registered: false, name: personName, regno, items, done: remaining === 0, nextCursor: lastId, scanned, errors: errors.slice(0, 5) });
   }
   // 台帳照合(不在者チェック)で「見当たらない」と自動削除された登録現場(site_registry)の履歴。
   // daicho_reload_last_result設定は直近1回分しか保持せず次の取込で上書きされるため、通知を
